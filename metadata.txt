@@ -1,0 +1,13 @@
+[general]
+name=Mapdex for QGIS
+description=Send map data to Mapdex workflows and add reviewed results back to QGIS.
+version=0.1.0
+qgisMinimumVersion=3.34
+author=Mapdex
+email=support@mapdex.ai
+about=Mapdex Companion Beta for georeferencing, parcel digitization, validation and batch delivery.
+category=Vector
+experimental=True
+homepage=https://mapdex.ai/qgis
+tracker=https://github.com/oriancelabs/mapdex/issues
+repository=https://github.com/oriancelabs/mapdex
