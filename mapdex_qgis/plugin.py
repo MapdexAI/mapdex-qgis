@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import traceback
@@ -83,6 +82,7 @@ class MapdexPlugin:
         self.batch_id = ""
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
         self.imported_layer_ids = set()  # type: set[str]
+        self.selected_paths = []  # type: list[str]
         self._last_batch = None  # type: Optional[dict]
         self._busy = False
         self.poll_timer = QTimer()
@@ -157,10 +157,13 @@ class MapdexPlugin:
         self.disconnect_button.clicked.connect(self.disconnect)
         self.save_settings_button.clicked.connect(self.save_connection_settings)
         self.run_button.clicked.connect(self.run_input)
+        self.input_box.currentIndexChanged.connect(self._source_changed)
+        self.workflow_box.currentIndexChanged.connect(self._workflow_changed)
         self.cancel_button.clicked.connect(self.cancel_batch)
         self.retry_button.clicked.connect(self.retry_failed)
         self.import_button.clicked.connect(self.import_results)
         self.review_button.clicked.connect(self.open_review)
+        self._workflow_changed(self.workflow_box.currentIndex())
 
         self.dock.setWidget(root)
         self.iface.addDockWidget(
@@ -321,6 +324,70 @@ class MapdexPlugin:
         data = self.project_box.currentData() if self.project_box is not None else None
         return str(data or self.project_id or "")
 
+    def _source_changed(self, _index):
+        mode = self.input_box.currentData()
+        if mode not in ("file", "files"):
+            self.selected_paths = []
+            return
+        # Let the combo popup close before opening the native Windows dialog.
+        # Opening it synchronously from currentIndexChanged can leave it behind
+        # the QGIS window on some Qt5 builds.
+        QTimer.singleShot(0, lambda selected_mode=mode: self._choose_source(selected_mode))
+
+    def _choose_source(self, mode):
+        if self.input_box.currentData() != mode:
+            return
+        file_filter = (
+            "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;"
+            "All files (*.*)"
+        )
+        if mode == "files":
+            paths, _ = QFileDialog.getOpenFileNames(
+                self.iface.mainWindow(), "Choose files for a Mapdex batch", "", file_filter
+            )
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self.iface.mainWindow(), "Choose a spatial file", "", file_filter
+            )
+            paths = [path] if path else []
+        if not paths:
+            self.input_box.blockSignals(True)
+            self.input_box.setCurrentIndex(0)
+            self.input_box.blockSignals(False)
+            self.selected_paths = []
+            return
+        self.selected_paths = list(paths)
+        label = (
+            os.path.basename(paths[0])
+            if len(paths) == 1
+            else "{} files selected".format(len(paths))
+        )
+        self.input_box.setItemText(self.input_box.currentIndex(), label)
+        self._set_status(
+            "Ready to start a task with {}.".format(label)
+            if len(paths) == 1
+            else "Ready to start a batch with {} files.".format(len(paths))
+        )
+
+    def _workflow_changed(self, _index):
+        kind = self.workflow_box.currentData()
+        current = self.input_box.currentData()
+        self.input_box.blockSignals(True)
+        self.input_box.clear()
+        self.input_box.addItem("Select source…", "")
+        if kind == BatchKind.VALIDATE_DELIVER:
+            self.input_box.addItem("Active vector layer", "active_layer")
+        self.input_box.addItem("Choose a file…", "file")
+        self.input_box.addItem("Choose multiple files…", "files")
+        target = self.input_box.findData(current)
+        self.input_box.setCurrentIndex(target if target >= 0 else 0)
+        self.input_box.blockSignals(False)
+        self.selected_paths = []
+        if kind == BatchKind.VALIDATE_DELIVER:
+            self._set_status("Choose the active vector layer or a delivery file.")
+        else:
+            self._set_status("Choose one file for a task, or multiple files for a batch.")
+
     def connect(self):
         self._apply_connection_settings_from_fields()
         self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
@@ -443,47 +510,20 @@ class MapdexPlugin:
             )
             return
         mode = self.input_box.currentData()
+        if not mode:
+            QMessageBox.information(
+                self.iface.mainWindow(), "Mapdex", "Choose a source file first."
+            )
+            return
         temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
+        paths = []
         try:
-            if mode == "file":
-                path, _ = QFileDialog.getOpenFileName(
-                    self.iface.mainWindow(),
-                    "Choose spatial input",
-                    "",
-                    "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;All files (*.*)",
-                )
-                if not path:
+            if mode in ("file", "files"):
+                if not self.selected_paths:
+                    self._choose_source(mode)
+                if not self.selected_paths:
                     return
-            elif mode == "extent":
-                extent = self.iface.mapCanvas().extent()
-                path = os.path.join(temp_dir, "map-extent.geojson")
-                ring = [
-                    [extent.xMinimum(), extent.yMinimum()],
-                    [extent.xMaximum(), extent.yMinimum()],
-                    [extent.xMaximum(), extent.yMaximum()],
-                    [extent.xMinimum(), extent.yMaximum()],
-                    [extent.xMinimum(), extent.yMinimum()],
-                ]
-                with open(path, "w", encoding="utf-8") as handle:
-                    json.dump(
-                        {
-                            "type": "FeatureCollection",
-                            "features": [
-                                {
-                                    "type": "Feature",
-                                    "properties": {
-                                        "mapdex_input": "extent",
-                                        "crs_authid": self.iface.mapCanvas()
-                                        .mapSettings()
-                                        .destinationCrs()
-                                        .authid(),
-                                    },
-                                    "geometry": {"type": "Polygon", "coordinates": [ring]},
-                                }
-                            ],
-                        },
-                        handle,
-                    )
+                paths = list(self.selected_paths)
             else:
                 layer = self.iface.activeLayer()
                 if layer is None or not layer.isValid():
@@ -502,6 +542,7 @@ class MapdexPlugin:
                 )
                 if result[0] != QgsVectorFileWriter.NoError:
                     raise RuntimeError("Could not export the active layer to GeoPackage.")
+                paths = [path]
         except Exception as exc:  # noqa: BLE001
             self._show_error("Could not prepare input", exc)
             return
@@ -511,16 +552,19 @@ class MapdexPlugin:
         self._set_status("Uploading to Mapdex…")
         self._task(
             "Send layer to Mapdex",
-            lambda: self._upload_and_run(path, project_id, kind),
+            lambda: self._upload_and_run(paths, project_id, kind),
             self._run_started,
         )
 
-    def _upload_and_run(self, path, project_id, kind):
-        uploaded = self.api.upload_file(path, project_id)
-        file_id = uploaded.get("id") or uploaded.get("source_file_id")
-        if not file_id:
-            raise RuntimeError("Upload succeeded but no file id was returned.")
-        return self.api.start_batch(project_id, file_id, kind)
+    def _upload_and_run(self, paths, project_id, kind):
+        file_ids = []
+        for path in paths:
+            uploaded = self.api.upload_file(path, project_id)
+            file_id = uploaded.get("id") or uploaded.get("source_file_id")
+            if not file_id:
+                raise RuntimeError("Upload succeeded but no file id was returned.")
+            file_ids.append(file_id)
+        return self.api.start_batch(project_id, file_ids, kind)
 
     def _run_started(self, exception, response):
         if exception:

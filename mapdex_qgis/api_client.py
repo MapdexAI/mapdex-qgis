@@ -166,11 +166,13 @@ class MapdexAPI:
         except error.HTTPError as exc:
             self._raise_http("POST", url, exc)
 
-    def start_batch(self, project_id: str, file_id: str, kind: str):
+    def start_batch(self, project_id: str, file_ids, kind: str):
+        if isinstance(file_ids, str):
+            file_ids = [file_ids]
         return self._request(
             "POST",
             "/v1/batches",
-            {"kind": kind, "sources": [{"file_id": file_id}]},
+            {"kind": kind, "sources": [{"file_id": file_id} for file_id in file_ids]},
             project_id,
         )
 

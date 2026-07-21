@@ -77,6 +77,25 @@ def test_workflow_payload_uses_server_batch_contract(monkeypatch):
     }
 
 
+def test_multiple_files_create_one_real_batch(monkeypatch):
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    captured = {}
+
+    def fake(method, path, payload=None, project_id=""):
+        captured.update(payload=payload, project_id=project_id)
+        return {"id": "batch_2"}
+
+    monkeypatch.setattr(api, "_request", fake)
+    api.start_batch("proj_1", ["file_1", "file_2"], "georeference")
+    assert captured == {
+        "payload": {
+            "kind": "georeference",
+            "sources": [{"file_id": "file_1"}, {"file_id": "file_2"}],
+        },
+        "project_id": "proj_1",
+    }
+
+
 def test_run_and_layer_geojson_paths(monkeypatch):
     api = MapdexAPI("https://api.mapdex.ai", "token")
     calls = []
