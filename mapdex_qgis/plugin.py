@@ -345,6 +345,11 @@ class MapdexPlugin:
             if exc.status in (400, 428):
                 # Still pending user approval.
                 return
+            if exc.status == 429:
+                delay = max(5, exc.retry_after or 30)
+                self.poll_timer.setInterval(delay * 1000)
+                self._set_status("Mapdex asked QGIS to slow down. Retrying in {} seconds…".format(delay))
+                return
             self.poll_timer.stop()
             self._show_error("Mapdex connection failed", exc)
             return
@@ -519,6 +524,11 @@ class MapdexPlugin:
     def _batch_updated(self, exception, response):
         self.progress_pending = False
         if exception:
+            if isinstance(exception, MapdexAPIError) and exception.status == 429:
+                delay = max(3, exception.retry_after or 15)
+                self.progress_timer.setInterval(delay * 1000)
+                self._set_status("Rate limit reached. Retrying batch status in {} seconds…".format(delay))
+                return
             self._show_error("Batch status failed", exception)
             return
         self._last_batch = response

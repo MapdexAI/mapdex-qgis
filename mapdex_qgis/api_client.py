@@ -16,12 +16,14 @@ class MapdexAPIError(RuntimeError):
         correlation_id: str = "",
         url: str = "",
         method: str = "",
+        retry_after: int = 0,
     ):
         super().__init__(message)
         self.status = status
         self.correlation_id = correlation_id
         self.url = url
         self.method = method
+        self.retry_after = retry_after
 
 
 def normalize_api_base(url: str) -> str:
@@ -74,7 +76,13 @@ class MapdexAPI:
                 message = "Device authorization is not enabled on this API deployment."
             else:
                 message = str(exc)
-        raise MapdexAPIError(str(message), exc.code, corr, url=url, method=method) from exc
+        try:
+            retry_after = max(0, int(exc.headers.get("Retry-After", "0")))
+        except (TypeError, ValueError):
+            retry_after = 0
+        raise MapdexAPIError(
+            str(message), exc.code, corr, url=url, method=method, retry_after=retry_after
+        ) from exc
 
     def _request(self, method: str, path: str, payload=None, project_id: str = ""):
         data = None if payload is None else json.dumps(payload).encode("utf-8")

@@ -114,7 +114,7 @@ def test_api_error_parses_nested_envelope(monkeypatch):
                 "https://api.mapdex.ai/v1/x",
                 404,
                 "Not Found",
-                hdrs={},
+                hdrs={"Retry-After": "17"},
                 fp=FakeResponse(),
             )
 
@@ -129,6 +129,7 @@ def test_api_error_parses_nested_envelope(monkeypatch):
         assert exc.status == 404
         assert "Batch not found" in str(exc)
         assert exc.correlation_id == "cor_1"
+        assert exc.retry_after == 17
 
 
 def test_succeeded_and_review_run_ids():
