@@ -1805,6 +1805,12 @@ ERROR_REGISTRY = [
         "template": "Guest limit reached — sign up to continue."
     },
     {
+        "code": "BATCH_ITEM_LIMIT_EXCEEDED",
+        "type": "bad_request",
+        "http": 422,
+        "template": "The batch has {items} items, above the plan limit of {limit}."
+    },
+    {
         "code": "OUTPUT_NOT_MATERIALIZED",
         "type": "system",
         "http": 500,
@@ -2447,7 +2453,7 @@ TOOLS = [
         "category": "georeference",
         "summary": "Apply GCPs (Ground Control Points) to georeference a raster image or PDF.",
         "executor": "georef:georeference@1",
-        "credits": 5,
+        "credits": 0,
         "capability": {
             "visibility": "contextual_action",
             "backend": "piri-extension-host",
