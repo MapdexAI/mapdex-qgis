@@ -16,6 +16,23 @@ def batch_state(detail: dict[str, Any]) -> str:
     return str(detail.get("state") or detail.get("status") or "").lower()
 
 
+def first_batch_error(detail: dict[str, Any]) -> str:
+    """Return one actionable server error without exposing raw envelopes."""
+    for item in detail.get("items") or []:
+        if str(item.get("state") or "").lower() != "failed":
+            continue
+        error = item.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            correlation_id = error.get("correlation_id")
+            if message:
+                suffix = " (reference {})".format(correlation_id) if correlation_id else ""
+                return "{}{}".format(message, suffix)
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+    return ""
+
+
 def batch_is_terminal(detail: dict[str, Any]) -> bool:
     return batch_state(detail) in TERMINAL_BATCH_STATES
 

@@ -26,6 +26,7 @@ from .results import (
     batch_state,
     collect_geojson_artifact_urls,
     collect_vector_layer_imports,
+    first_batch_error,
     review_run_ids,
     succeeded_run_ids,
 )
@@ -91,6 +92,7 @@ class MapdexPlugin:
         self.progress_pending = False
         # Widget refs filled in _ensure_dock
         self.status = None
+        self.connection_label = None
         self.api_url_input = None
         self.web_url_input = None
         self.save_settings_button = None
@@ -98,6 +100,7 @@ class MapdexPlugin:
         self.disconnect_button = None
         self.workspace = None
         self.batch_group = None
+        self.batch_title = None
         self.project_box = None
         self.workflow_box = None
         self.input_box = None
@@ -245,6 +248,15 @@ class MapdexPlugin:
             return
         connected = bool(self.api.token)
         has_batch = bool(self.batch_id)
+        state = batch_state(self._last_batch or {}) if has_batch else ""
+        counts = (self._last_batch or {}).get("counts") or {}
+        active = state in ("created", "queued", "running", "pending", "cancelling")
+        failed = int(counts.get("failed", 0) or 0)
+        succeeded = int(counts.get("succeeded", 0) or 0)
+        needs_review = int(counts.get("needs_review", 0) or 0)
+
+        if self.connection_label is not None:
+            self.connection_label.setText("Connected to Mapdex" if connected else "Not connected")
 
         self.connect_button.setVisible(not connected)
         self.connect_button.setEnabled(not self._busy)
@@ -253,13 +265,28 @@ class MapdexPlugin:
 
         self.workspace.setVisible(connected)
         self.workspace.setEnabled(connected and not self._busy)
-        self.run_button.setEnabled(connected and not self._busy)
+        self.run_button.setEnabled(connected and not self._busy and not active)
 
         self.batch_group.setVisible(connected and has_batch)
-        self.cancel_button.setEnabled(has_batch and not self._busy)
-        self.retry_button.setEnabled(has_batch and not self._busy)
-        self.import_button.setEnabled(has_batch and not self._busy)
-        self.review_button.setEnabled(has_batch)
+        self.cancel_button.setVisible(active)
+        self.cancel_button.setEnabled(active and not self._busy)
+        self.retry_button.setVisible(has_batch and failed > 0 and not active)
+        self.retry_button.setEnabled(not self._busy)
+        self.retry_button.setText(
+            "Retry failed item" if failed == 1 else "Retry {} failed items".format(failed)
+        )
+        self.import_button.setVisible(has_batch and succeeded > 0 and not active)
+        self.import_button.setEnabled(not self._busy)
+        self.import_button.setText(
+            "Add result to QGIS" if succeeded == 1 else "Add {} results to QGIS".format(succeeded)
+        )
+        self.review_button.setVisible(has_batch and (needs_review > 0 or failed > 0))
+        self.review_button.setEnabled(not self._busy)
+        self.review_button.setText(
+            "Review in Mapdex" if needs_review > 0 else "View details in Mapdex"
+        )
+        if self.batch_title is not None:
+            self.batch_title.setText("Task in progress" if active else "Latest task")
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
@@ -534,14 +561,22 @@ class MapdexPlugin:
         self._last_batch = response
         state = batch_state(response)
         counts = (response or {}).get("counts") or {}
-        self._set_status(
-            "Mapdex: {state} · {ok} completed · {review} need review · {failed} failed".format(
-                state=state or "unknown",
-                ok=counts.get("succeeded", 0),
-                review=counts.get("needs_review", 0),
-                failed=counts.get("failed", 0),
-            )
-        )
+        ok = int(counts.get("succeeded", 0) or 0)
+        review = int(counts.get("needs_review", 0) or 0)
+        failed = int(counts.get("failed", 0) or 0)
+        if state in ("created", "queued", "pending"):
+            message = "Task queued. Mapdex will start processing shortly."
+        elif state == "running":
+            message = "Processing in Mapdex…"
+        elif failed and not ok and not review:
+            message = first_batch_error(response or {}) or "Task failed. Retry it, or open Mapdex for details."
+        elif failed:
+            message = "Task finished with {} failed item(s). {} result(s) are ready.".format(failed, ok)
+        elif review:
+            message = "{} item(s) need review before they can be added to QGIS.".format(review)
+        else:
+            message = "Task complete. {} result(s) are ready to add to QGIS.".format(ok)
+        self._set_status(message)
         self._refresh_ui()
         if batch_is_terminal(response or {}):
             self.progress_timer.stop()

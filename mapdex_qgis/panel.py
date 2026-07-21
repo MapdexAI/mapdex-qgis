@@ -1,4 +1,4 @@
-"""Mapdex for QGIS dock panel — layout only (no network)."""
+"""Compact, QGIS-native Mapdex task panel (layout only)."""
 from __future__ import annotations
 
 from qgis.PyQt.QtCore import Qt
@@ -6,7 +6,6 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,11 +19,15 @@ from qgis.PyQt.QtWidgets import (
 from .qt_compat import enum_member
 
 
+def _section_label(text):
+    label = QLabel(text)
+    label.setObjectName("mapdexSectionLabel")
+    return label
+
+
 def build_companion_panel(workflows):
-    """Return (root_widget, refs) for the Mapdex for QGIS dock body."""
     root = QWidget()
     root.setObjectName("mapdexPluginRoot")
-    root.setAutoFillBackground(True)
     root.setMinimumWidth(300)
     root.setSizePolicy(
         enum_member(QSizePolicy, "Policy", "Preferred"),
@@ -32,180 +35,149 @@ def build_companion_panel(workflows):
     )
     root.setStyleSheet(
         """
-        QWidget#mapdexPluginRoot {
-            background-color: palette(window);
-        }
-        QFrame#mapdexCard {
-            background-color: palette(base);
-            border: 1px solid palette(mid);
-            border-radius: 4px;
+        QWidget#mapdexPluginRoot { background: palette(window); }
+        QLabel#mapdexSectionLabel {
+            color: palette(placeholder-text);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
         }
         QLabel#mapdexStatus {
-            color: palette(window-text);
-            padding: 8px;
-            background-color: palette(base);
+            padding: 9px 10px;
+            background: palette(base);
+            border-left: 3px solid palette(highlight);
+        }
+        QFrame#mapdexResultCard {
+            background: palette(base);
             border: 1px solid palette(mid);
-            border-radius: 4px;
+            border-radius: 3px;
         }
-        QGroupBox {
+        QPushButton#mapdexPrimaryButton {
+            min-height: 34px;
             font-weight: 600;
-            margin-top: 10px;
-            padding-top: 8px;
         }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 8px;
-            padding: 0 4px;
-        }
+        QToolButton#mapdexSettingsButton { padding: 3px 6px; }
         """
     )
 
     outer = QVBoxLayout(root)
-    outer.setContentsMargins(10, 10, 10, 10)
-    outer.setSpacing(10)
-
+    outer.setContentsMargins(0, 0, 0, 0)
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(enum_member(QFrame, "Shape", "NoFrame"))
     scroll.setHorizontalScrollBarPolicy(
         enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
     )
-
     body = QWidget()
     body.setObjectName("mapdexPluginRoot")
-    body.setAutoFillBackground(True)
     layout = QVBoxLayout(body)
-    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(10)
 
-    heading = QLabel("Mapdex for QGIS")
-    heading.setStyleSheet("font-size: 14px; font-weight: 600;")
-    subtitle = QLabel("Send layers from QGIS to Mapdex. Bring verified vector results back.")
-    subtitle.setWordWrap(True)
-    subtitle.setStyleSheet("color: palette(placeholder-text);")
+    connection_row = QHBoxLayout()
+    connection_label = QLabel("Not connected")
+    connection_label.setStyleSheet("font-weight: 600;")
+    settings_button = QToolButton()
+    settings_button.setObjectName("mapdexSettingsButton")
+    settings_button.setText("Connection settings")
+    settings_button.setCheckable(True)
+    settings_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    connection_row.addWidget(connection_label)
+    connection_row.addStretch(1)
+    connection_row.addWidget(settings_button)
+    layout.addLayout(connection_row)
 
-    status = QLabel("Not connected.")
+    status = QLabel("Connect Mapdex to start a task.")
     status.setObjectName("mapdexStatus")
     status.setWordWrap(True)
-    status.setMinimumHeight(48)
+    layout.addWidget(status)
 
-    # --- Account ---
-    account = QGroupBox("Account")
-    account_layout = QVBoxLayout(account)
-    account_layout.setSpacing(8)
-
-    advanced_button = QToolButton()
-    advanced_button.setText("Advanced connection settings")
-    advanced_button.setCheckable(True)
-    advanced_button.setChecked(False)
-    advanced_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextBesideIcon")
-    )
-    advanced_button.setArrowType(enum_member(Qt, "ArrowType", "RightArrow"))
-    account_layout.addWidget(advanced_button)
-
-    advanced = QWidget()
-    advanced.setVisible(False)
-    advanced_layout = QVBoxLayout(advanced)
-    advanced_layout.setContentsMargins(0, 0, 0, 0)
-    advanced_layout.setSpacing(6)
-    settings_form = QFormLayout()
-    settings_form.setLabelAlignment(enum_member(Qt, "AlignmentFlag", "AlignLeft"))
-    settings_form.setSpacing(6)
+    connection_panel = QFrame()
+    connection_panel.setVisible(False)
+    connection_layout = QVBoxLayout(connection_panel)
+    connection_layout.setContentsMargins(0, 0, 0, 0)
+    connection_form = QFormLayout()
     api_url_input = QComboBox()
     api_url_input.setEditable(True)
-    api_url_input.setInsertPolicy(enum_member(QComboBox, "InsertPolicy", "NoInsert"))
-    for suggestion in (
-        "https://api.mapdex.ai",
-        "http://127.0.0.1:8080",
-        "http://localhost:8080",
-    ):
-        api_url_input.addItem(suggestion)
     web_url_input = QComboBox()
     web_url_input.setEditable(True)
-    web_url_input.setInsertPolicy(enum_member(QComboBox, "InsertPolicy", "NoInsert"))
-    for suggestion in (
-        "https://mapdex.ai",
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-    ):
-        web_url_input.addItem(suggestion)
-    settings_form.addRow("API URL", api_url_input)
-    settings_form.addRow("Web URL", web_url_input)
-    advanced_layout.addLayout(settings_form)
-    save_settings_button = QPushButton("Save connection settings")
-    advanced_layout.addWidget(save_settings_button)
-    account_layout.addWidget(advanced)
+    for value in ("https://api.mapdex.ai", "http://127.0.0.1:8080"):
+        api_url_input.addItem(value)
+    for value in ("https://mapdex.ai", "http://127.0.0.1:3000"):
+        web_url_input.addItem(value)
+    connection_form.addRow("API", api_url_input)
+    connection_form.addRow("Web", web_url_input)
+    connection_layout.addLayout(connection_form)
+    save_settings_button = QPushButton("Save settings")
+    connection_layout.addWidget(save_settings_button)
+    settings_button.toggled.connect(connection_panel.setVisible)
+    layout.addWidget(connection_panel)
 
-    def toggle_advanced(checked):
-        advanced.setVisible(checked)
-        advanced_button.setArrowType(
-            enum_member(Qt, "ArrowType", "DownArrow" if checked else "RightArrow")
-        )
+    connect_button = QPushButton("Connect Mapdex")
+    connect_button.setObjectName("mapdexPrimaryButton")
+    disconnect_button = QToolButton()
+    disconnect_button.setText("Disconnect")
+    disconnect_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    layout.addWidget(connect_button)
+    layout.addWidget(disconnect_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
 
-    advanced_button.toggled.connect(toggle_advanced)
-
-    connect_button = QPushButton("Connect in browser")
-    connect_button.setDefault(True)
-    disconnect_button = QPushButton("Disconnect")
-    account_row = QHBoxLayout()
-    account_row.addWidget(connect_button)
-    account_row.addWidget(disconnect_button)
-    account_layout.addLayout(account_row)
-    # --- Workspace (hidden until connected) ---
-    workspace = QGroupBox("Workspace")
+    workspace = QWidget()
     workspace_layout = QVBoxLayout(workspace)
+    workspace_layout.setContentsMargins(0, 4, 0, 0)
     workspace_layout.setSpacing(8)
-
+    workspace_layout.addWidget(_section_label("New task"))
     form = QFormLayout()
-    form.setLabelAlignment(enum_member(Qt, "AlignmentFlag", "AlignLeft"))
-    form.setSpacing(8)
+    form.setFieldGrowthPolicy(enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow"))
+    form.setSpacing(7)
     project_box = QComboBox()
-    project_box.setMinimumHeight(28)
     workflow_box = QComboBox()
-    workflow_box.setMinimumHeight(28)
+    input_box = QComboBox()
     for title, key in workflows:
         workflow_box.addItem(title, key)
-    input_box = QComboBox()
-    input_box.setMinimumHeight(28)
     input_box.addItem("Active vector layer", "active_layer")
     input_box.addItem("Current map extent", "extent")
     input_box.addItem("Choose a file…", "file")
     form.addRow("Project", project_box)
     form.addRow("Workflow", workflow_box)
-    form.addRow("Input", input_box)
+    form.addRow("Source", input_box)
     workspace_layout.addLayout(form)
-
-    run_button = QPushButton("Send to Mapdex")
-    run_button.setMinimumHeight(34)
+    run_button = QPushButton("Start task")
+    run_button.setObjectName("mapdexPrimaryButton")
     workspace_layout.addWidget(run_button)
-
-    # --- Batch (hidden until a batch exists) ---
-    batch = QGroupBox("Batch")
-    batch_layout = QVBoxLayout(batch)
-    batch_layout.setSpacing(8)
-    cancel_button = QPushButton("Cancel batch")
-    retry_button = QPushButton("Retry failed items")
-    import_button = QPushButton("Add results to QGIS")
-    review_button = QPushButton("Open Review in browser")
-    batch_layout.addWidget(cancel_button)
-    batch_layout.addWidget(retry_button)
-    batch_layout.addWidget(import_button)
-    batch_layout.addWidget(review_button)
-
-    layout.addWidget(heading)
-    layout.addWidget(subtitle)
-    layout.addWidget(status)
-    layout.addWidget(account)
     layout.addWidget(workspace)
+
+    batch = QFrame()
+    batch.setObjectName("mapdexResultCard")
+    batch_layout = QVBoxLayout(batch)
+    batch_layout.setContentsMargins(10, 10, 10, 10)
+    batch_layout.setSpacing(7)
+    batch_title = QLabel("Current task")
+    batch_title.setStyleSheet("font-weight: 600;")
+    batch_layout.addWidget(batch_title)
+    retry_button = QPushButton("Retry failed item")
+    retry_button.setObjectName("mapdexPrimaryButton")
+    import_button = QPushButton("Add result to QGIS")
+    import_button.setObjectName("mapdexPrimaryButton")
+    review_button = QPushButton("Review in Mapdex")
+    cancel_button = QToolButton()
+    cancel_button.setText("Cancel task")
+    cancel_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    for widget in (retry_button, import_button, review_button, cancel_button):
+        batch_layout.addWidget(widget)
     layout.addWidget(batch)
     layout.addStretch(1)
 
     scroll.setWidget(body)
     outer.addWidget(scroll)
-
-    refs = {
+    return root, {
         "status": status,
+        "connection_label": connection_label,
         "api_url_input": api_url_input,
         "web_url_input": web_url_input,
         "save_settings_button": save_settings_button,
@@ -213,6 +185,7 @@ def build_companion_panel(workflows):
         "disconnect_button": disconnect_button,
         "workspace": workspace,
         "batch": batch,
+        "batch_title": batch_title,
         "project_box": project_box,
         "workflow_box": workflow_box,
         "input_box": input_box,
@@ -222,4 +195,3 @@ def build_companion_panel(workflows):
         "import_button": import_button,
         "review_button": review_button,
     }
-    return root, refs

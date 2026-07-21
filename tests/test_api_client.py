@@ -12,6 +12,7 @@ from mapdex_qgis.results import (
     batch_is_terminal,
     collect_geojson_artifact_urls,
     collect_vector_layer_imports,
+    first_batch_error,
     review_run_ids,
     succeeded_run_ids,
 )
@@ -145,6 +146,16 @@ def test_succeeded_and_review_run_ids():
     assert batch_is_terminal(detail)
     assert succeeded_run_ids(detail) == ["run_ok"]
     assert review_run_ids(detail) == ["run_rev"]
+
+
+def test_first_batch_error_returns_message_and_reference():
+    detail = {
+        "items": [{
+            "state": "failed",
+            "error": {"message": "The source has no CRS.", "correlation_id": "cor_42"},
+        }]
+    }
+    assert first_batch_error(detail) == "The source has no CRS. (reference cor_42)"
 
 
 def test_collect_vector_layer_imports_skips_raster_and_duplicates():
