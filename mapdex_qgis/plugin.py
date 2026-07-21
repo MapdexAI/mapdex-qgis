@@ -14,6 +14,7 @@ from qgis.core import (
     QgsTask,
     QgsVectorFileWriter,
     QgsVectorLayer,
+    QgsRasterLayer,
 )
 
 from .api_client import MapdexAPI, MapdexAPIError, normalize_api_base
@@ -375,8 +376,7 @@ class MapdexPlugin:
         self.input_box.blockSignals(True)
         self.input_box.clear()
         self.input_box.addItem("Select source…", "")
-        if kind == BatchKind.VALIDATE_DELIVER:
-            self.input_box.addItem("Active vector layer", "active_layer")
+        self.input_box.addItem("Active QGIS layer", "active_layer")
         self.input_box.addItem("Choose a file…", "file")
         self.input_box.addItem("Choose multiple files…", "files")
         target = self.input_box.findData(current)
@@ -384,9 +384,9 @@ class MapdexPlugin:
         self.input_box.blockSignals(False)
         self.selected_paths = []
         if kind == BatchKind.VALIDATE_DELIVER:
-            self._set_status("Choose the active vector layer or a delivery file.")
+            self._set_status("Use the active vector layer, choose one file, or select a batch.")
         else:
-            self._set_status("Choose one file for a task, or multiple files for a batch.")
+            self._set_status("Use the active raster layer, choose one file, or select a batch.")
 
     def connect(self):
         self._apply_connection_settings_from_fields()
@@ -530,18 +530,41 @@ class MapdexPlugin:
                     QMessageBox.information(
                         self.iface.mainWindow(),
                         "Mapdex",
-                        "Select a valid vector layer in the Layers panel first.",
+                        "Select a valid layer in the QGIS Layers panel first.",
                     )
                     return
-                path = os.path.join(temp_dir, "active-layer.gpkg")
-                options = QgsVectorFileWriter.SaveVectorOptions()
-                options.driverName = "GPKG"
-                options.layerName = "active_layer"
-                result = QgsVectorFileWriter.writeAsVectorFormatV3(
-                    layer, path, QgsProject.instance().transformContext(), options
-                )
-                if result[0] != QgsVectorFileWriter.NoError:
-                    raise RuntimeError("Could not export the active layer to GeoPackage.")
+                kind = self.workflow_box.currentData()
+                if isinstance(layer, QgsVectorLayer):
+                    if kind != BatchKind.VALIDATE_DELIVER:
+                        raise RuntimeError(
+                            "This workflow needs a raster image. Select an open raster layer "
+                            "or choose an image file."
+                        )
+                    path = os.path.join(temp_dir, "active-layer.gpkg")
+                    options = QgsVectorFileWriter.SaveVectorOptions()
+                    options.driverName = "GPKG"
+                    options.layerName = "active_layer"
+                    result = QgsVectorFileWriter.writeAsVectorFormatV3(
+                        layer, path, QgsProject.instance().transformContext(), options
+                    )
+                    if result[0] != QgsVectorFileWriter.NoError:
+                        raise RuntimeError("Could not export the active layer to GeoPackage.")
+                elif isinstance(layer, QgsRasterLayer):
+                    if kind == BatchKind.VALIDATE_DELIVER:
+                        raise RuntimeError(
+                            "Validate & deliver needs a vector layer. Select an open vector layer."
+                        )
+                    source = str(layer.source() or "").split("|", 1)[0]
+                    if source.startswith("file:"):
+                        source = QUrl(source).toLocalFile()
+                    path = os.path.normpath(source)
+                    if not os.path.isfile(path):
+                        raise RuntimeError(
+                            "The active raster is remote or has no local source file. "
+                            "Save it locally first, then choose that file."
+                        )
+                else:
+                    raise RuntimeError("The active QGIS layer type is not supported.")
                 paths = [path]
         except Exception as exc:  # noqa: BLE001
             self._show_error("Could not prepare input", exc)
