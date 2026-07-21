@@ -145,6 +145,10 @@ def build_companion_panel(workflows):
     form.addRow("Workflow", workflow_box)
     form.addRow("Source", input_box)
     workspace_layout.addLayout(form)
+    source_summary = QLabel("No source selected")
+    source_summary.setWordWrap(True)
+    source_summary.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    workspace_layout.addWidget(source_summary)
     run_button = QPushButton("Start task")
     run_button.setObjectName("mapdexPrimaryButton")
     workspace_layout.addWidget(run_button)
@@ -171,6 +175,19 @@ def build_companion_panel(workflows):
     for widget in (retry_button, import_button, review_button, cancel_button):
         batch_layout.addWidget(widget)
     layout.addWidget(batch)
+
+    recent = QWidget()
+    recent_layout = QVBoxLayout(recent)
+    recent_layout.setContentsMargins(0, 4, 0, 0)
+    recent_layout.setSpacing(6)
+    recent_layout.addWidget(_section_label("Recent tasks"))
+    recent_row = QHBoxLayout()
+    recent_box = QComboBox()
+    resume_button = QPushButton("Resume")
+    recent_row.addWidget(recent_box, 1)
+    recent_row.addWidget(resume_button)
+    recent_layout.addLayout(recent_row)
+    layout.addWidget(recent)
     layout.addStretch(1)
 
     scroll.setWidget(body)
@@ -189,9 +206,13 @@ def build_companion_panel(workflows):
         "project_box": project_box,
         "workflow_box": workflow_box,
         "input_box": input_box,
+        "source_summary": source_summary,
         "run_button": run_button,
         "cancel_button": cancel_button,
         "retry_button": retry_button,
         "import_button": import_button,
         "review_button": review_button,
+        "recent": recent,
+        "recent_box": recent_box,
+        "resume_button": resume_button,
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import traceback
@@ -31,6 +32,7 @@ from .results import (
     succeeded_run_ids,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
+from .source_info import inspect_paths
 
 
 WORKFLOWS = (
@@ -85,6 +87,8 @@ class MapdexPlugin:
         self.imported_layer_ids = set()  # type: set[str]
         self.selected_paths = []  # type: list[str]
         self._last_batch = None  # type: Optional[dict]
+        self._source_label = ""
+        self._pending_is_batch = False
         self._busy = False
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._poll_token)
@@ -105,11 +109,15 @@ class MapdexPlugin:
         self.project_box = None
         self.workflow_box = None
         self.input_box = None
+        self.source_summary = None
         self.run_button = None
         self.cancel_button = None
         self.retry_button = None
         self.import_button = None
         self.review_button = None
+        self.recent = None
+        self.recent_box = None
+        self.resume_button = None
 
     def initGui(self):
         self.action = QAction(QIcon(), "Mapdex", self.iface.mainWindow())
@@ -164,7 +172,17 @@ class MapdexPlugin:
         self.retry_button.clicked.connect(self.retry_failed)
         self.import_button.clicked.connect(self.import_results)
         self.review_button.clicked.connect(self.open_review)
+        self.resume_button.clicked.connect(self.resume_recent)
         self._workflow_changed(self.workflow_box.currentIndex())
+        self._load_recent_tasks()
+        try:
+            self.iface.currentLayerChanged.connect(
+                lambda _layer: self._summarize_active_layer()
+                if self.input_box.currentData() == "active_layer"
+                else None
+            )
+        except AttributeError:
+            pass
 
         self.dock.setWidget(root)
         self.iface.addDockWidget(
@@ -244,6 +262,12 @@ class MapdexPlugin:
                     "Set API URL to http://127.0.0.1:8080 while the local API is running."
                 )
             detail = "".join(bits)
+            if exc.status == 401:
+                self.api.token = ""
+                if self.token_store is not None:
+                    self.token_store.clear()
+                detail += "\n\nYour Mapdex session expired. Connect again to continue."
+                self._refresh_ui()
         self._set_status(str(exc).split("\n")[0])
         QMessageBox.warning(self.iface.mainWindow(), title, detail)
 
@@ -258,6 +282,8 @@ class MapdexPlugin:
         failed = int(counts.get("failed", 0) or 0)
         succeeded = int(counts.get("succeeded", 0) or 0)
         needs_review = int(counts.get("needs_review", 0) or 0)
+        total = int(counts.get("total", 0) or 0)
+        completed = succeeded + needs_review + failed + int(counts.get("cancelled", 0) or 0)
 
         if self.connection_label is not None:
             self.connection_label.setText("Connected to Mapdex" if connected else "Not connected")
@@ -290,7 +316,10 @@ class MapdexPlugin:
             "Review in Mapdex" if needs_review > 0 else "View details in Mapdex"
         )
         if self.batch_title is not None:
-            self.batch_title.setText("Task in progress" if active else "Latest task")
+            if active and total > 1:
+                self.batch_title.setText("Processing {} of {} files".format(completed, total))
+            else:
+                self.batch_title.setText("Task in progress" if active else "Latest task")
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
@@ -329,6 +358,10 @@ class MapdexPlugin:
         mode = self.input_box.currentData()
         if mode not in ("file", "files"):
             self.selected_paths = []
+            if mode == "active_layer":
+                self._summarize_active_layer()
+            elif self.source_summary is not None:
+                self.source_summary.setText("No source selected")
             return
         # Let the combo popup close before opening the native Windows dialog.
         # Opening it synchronously from currentIndexChanged can leave it behind
@@ -364,11 +397,26 @@ class MapdexPlugin:
             else "{} files selected".format(len(paths))
         )
         self.input_box.setItemText(self.input_box.currentIndex(), label)
+        self._source_label = label
+        report = inspect_paths(self.selected_paths, str(self.workflow_box.currentData() or ""))
+        self.source_summary.setText(
+            report["summary"] if report["valid"] else "{} · {}".format(report["summary"], report["error"])
+        )
         self._set_status(
             "Ready to start a task with {}.".format(label)
             if len(paths) == 1
             else "Ready to start a batch with {} files.".format(len(paths))
         )
+
+    def _summarize_active_layer(self):
+        layer = self.iface.activeLayer()
+        if layer is None or not layer.isValid():
+            self.source_summary.setText("No valid active QGIS layer")
+            return
+        kind = "Raster" if isinstance(layer, QgsRasterLayer) else "Vector" if isinstance(layer, QgsVectorLayer) else "Unsupported"
+        crs = layer.crs().authid() if hasattr(layer, "crs") and layer.crs().isValid() else "No CRS"
+        self._source_label = layer.name()
+        self.source_summary.setText("{} · {} · {}".format(layer.name(), kind, crs))
 
     def _workflow_changed(self, _index):
         kind = self.workflow_box.currentData()
@@ -383,6 +431,8 @@ class MapdexPlugin:
         self.input_box.setCurrentIndex(target if target >= 0 else 0)
         self.input_box.blockSignals(False)
         self.selected_paths = []
+        self._source_label = ""
+        self.source_summary.setText("No source selected")
         if kind == BatchKind.VALIDATE_DELIVER:
             self._set_status("Use the active vector layer, choose one file, or select a batch.")
         else:
@@ -571,7 +621,13 @@ class MapdexPlugin:
             return
 
         kind = self.workflow_box.currentData()
+        report = inspect_paths(paths, str(kind or ""))
+        self.source_summary.setText(report["summary"])
+        if not report["valid"]:
+            QMessageBox.warning(self.iface.mainWindow(), "Source is not compatible", report["error"])
+            return
         self.imported_layer_ids.clear()
+        self._pending_is_batch = len(paths) > 1
         self._set_status("Uploading to Mapdex…")
         self._task(
             "Send layer to Mapdex",
@@ -598,8 +654,18 @@ class MapdexPlugin:
             self._show_error("Send to Mapdex failed", RuntimeError("No batch id returned"))
             return
         self.project_id = self._active_project_id()
+        self._remember_task(
+            self.batch_id,
+            self.project_id,
+            str(self.workflow_box.currentText() or "Task"),
+            self._source_label or "QGIS source",
+        )
         QSettings().setValue("mapdex/project_id", self.project_id)
-        self._set_status("Batch started. Mapdex is working in the background…")
+        self._set_status(
+            "Batch started. Mapdex is processing multiple files…"
+            if self._pending_is_batch
+            else "Task started. Mapdex is working in the background…"
+        )
         self._refresh_ui()
         self.progress_timer.start(3000)
 
@@ -728,6 +794,7 @@ class MapdexPlugin:
             QgsProject.instance().addMapLayer(layer)
             self.imported_layer_ids.add(item["layer_id"])
             added += 1
+            self.iface.mapCanvas().setExtent(layer.extent())
         review_n = len(review_run_ids(detail))
         if added:
             msg = "Added {} Mapdex result layer(s) to the project.".format(added)
@@ -786,6 +853,44 @@ class MapdexPlugin:
         QDesktopServices.openUrl(
             QUrl("{}{}/workspace/review?batch={}".format(self.web_base, prefix, self.batch_id))
         )
+
+    def _recent_tasks(self):
+        raw = str(QSettings().value("mapdex/recent_tasks", "[]") or "[]")
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, list) else []
+        except (TypeError, ValueError):
+            return []
+
+    def _remember_task(self, batch_id, project_id, workflow, source):
+        tasks = [item for item in self._recent_tasks() if item.get("batch_id") != batch_id]
+        tasks.insert(0, {"batch_id": batch_id, "project_id": project_id, "workflow": workflow, "source": source})
+        QSettings().setValue("mapdex/recent_tasks", json.dumps(tasks[:5]))
+        self._load_recent_tasks()
+
+    def _load_recent_tasks(self):
+        if self.recent_box is None:
+            return
+        self.recent_box.clear()
+        for item in self._recent_tasks():
+            label = "{} · {}".format(item.get("workflow") or "Task", item.get("source") or "Source")
+            self.recent_box.addItem(label, item)
+        self.recent.setVisible(self.recent_box.count() > 0)
+
+    def resume_recent(self):
+        item = self.recent_box.currentData()
+        if not isinstance(item, dict):
+            return
+        self.batch_id = str(item.get("batch_id") or "")
+        self.project_id = str(item.get("project_id") or self.project_id)
+        project_index = self.project_box.findData(self.project_id)
+        if project_index >= 0:
+            self.project_box.setCurrentIndex(project_index)
+        self._last_batch = None
+        self._set_status("Refreshing the selected Mapdex task…")
+        self._refresh_ui()
+        self._poll_batch()
+        self.progress_timer.start(3000)
 
 
 # Keep optional debug import available without binding into runtime paths.
