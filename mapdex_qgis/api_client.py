@@ -33,6 +33,16 @@ def normalize_api_base(url: str) -> str:
     return value
 
 
+def device_verification_url(response_url: str, web_base: str, api_base: str) -> str:
+    """Never open a production device flow on the user's localhost."""
+    candidate = str(response_url or "").strip()
+    production_api = not any(host in api_base.lower() for host in ("localhost", "127.0.0.1"))
+    local_candidate = any(host in candidate.lower() for host in ("localhost", "127.0.0.1"))
+    if not candidate or (production_api and local_candidate):
+        return "{}/device".format(web_base.rstrip("/"))
+    return candidate
+
+
 class MapdexAPI:
     def __init__(self, base_url: str, token: str = ""):
         self.base_url = normalize_api_base(base_url)

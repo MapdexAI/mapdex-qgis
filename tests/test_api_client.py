@@ -6,7 +6,7 @@ from urllib import error
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.api_client import MapdexAPI, MapdexAPIError, normalize_api_base
+from mapdex_qgis.api_client import MapdexAPI, MapdexAPIError, device_verification_url, normalize_api_base
 from mapdex_qgis.qt_compat import enum_member
 from mapdex_qgis.results import (
     batch_is_terminal,
@@ -42,6 +42,15 @@ def test_base_url_is_normalized():
     assert MapdexAPI("https://api.mapdex.ai/").base_url == "https://api.mapdex.ai"
     assert MapdexAPI("http://127.0.0.1:8080/v1").base_url == "http://127.0.0.1:8080"
     assert normalize_api_base("http://localhost:8080/v1/") == "http://localhost:8080"
+
+
+def test_production_device_flow_never_opens_localhost():
+    assert device_verification_url(
+        "http://localhost:3000/device", "https://mapdex.ai", "https://api.mapdex.ai"
+    ) == "https://mapdex.ai/device"
+    assert device_verification_url(
+        "http://localhost:3000/device", "http://localhost:3000", "http://localhost:8080"
+    ) == "http://localhost:3000/device"
 
 
 def test_projects_accepts_bare_list_and_envelope():

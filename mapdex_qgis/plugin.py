@@ -18,7 +18,7 @@ from qgis.core import (
     QgsRasterLayer,
 )
 
-from .api_client import MapdexAPI, MapdexAPIError, normalize_api_base
+from .api_client import MapdexAPI, MapdexAPIError, device_verification_url, normalize_api_base
 from .generated_contracts import BatchKind
 from .panel import build_companion_panel
 from .qt_compat import enum_member
@@ -469,7 +469,9 @@ class MapdexPlugin:
             self._show_error("Mapdex connection failed", RuntimeError("Authorization response missing codes"))
             return
         self._set_status(f"Approve code {user_code} in your browser, then return to QGIS.")
-        verify = response.get("verification_uri") or f"{self.web_base}/device"
+        verify = device_verification_url(
+            response.get("verification_uri") or "", self.web_base, self.api.base_url
+        )
         QDesktopServices.openUrl(QUrl(f"{verify}?code={user_code}"))
         interval = max(5, int(response.get("interval") or 5))
         self.poll_timer.start(interval * 1000)
