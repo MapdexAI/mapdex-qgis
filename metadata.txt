@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Send map data to Mapdex and add verified vector results back into QGIS.
-version=0.9.0
+version=0.9.1
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 author=Mapdex

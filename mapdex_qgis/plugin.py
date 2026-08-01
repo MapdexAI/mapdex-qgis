@@ -34,6 +34,7 @@ from .results import (
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
 from .source_info import inspect_paths
+from .workspace import task_workspace_path
 
 
 WORKFLOWS = (
@@ -860,8 +861,15 @@ class MapdexPlugin:
             return
         locale = QLocale.system().name().split("_")[0]
         prefix = "" if locale == "en" else "/{}".format(locale)
+        project_id = self._active_project_id()
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        for task in self._recent_tasks():
+            if task.get("batch_id") == self.batch_id:
+                workflow = str(task.get("workflow") or workflow)
+                break
+        path = task_workspace_path(project_id, workflow, self._last_batch)
         QDesktopServices.openUrl(
-            QUrl("{}{}/workspace/review?batch={}".format(self.web_base, prefix, self.batch_id))
+            QUrl("{}{}{}".format(self.web_base, prefix, path))
         )
 
     def _recent_tasks(self):

@@ -6,7 +6,7 @@ def test_running_task_keeps_qgis_user_oriented():
     assert guidance["phase"] == "Processing in Mapdex"
     assert guidance["busy"] is True
     assert "continue mapping" in guidance["hint"]
-    assert guidance["action"] == "Open live task in Mapdex"
+    assert guidance["action"] == "Continue in workspace"
 
 
 def test_review_task_explains_round_trip():
