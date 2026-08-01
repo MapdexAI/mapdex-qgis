@@ -654,7 +654,7 @@ class MapdexPlugin:
             if not file_id:
                 raise RuntimeError("Upload succeeded but no file id was returned.")
             file_ids.append(file_id)
-        return self.api.start_batch(project_id, file_ids, kind)
+        return {"batch": self.api.start_batch(project_id, file_ids, kind), "file_ids": file_ids}
 
     def _run_started(self, exception, response):
         if exception:
@@ -662,7 +662,10 @@ class MapdexPlugin:
             self._last_batch = None
             self._show_error("Send to Mapdex failed", exception)
             return
-        self.batch_id = (response or {}).get("id") or ""
+        payload = response or {}
+        batch = payload.get("batch") if isinstance(payload.get("batch"), dict) else payload
+        file_ids = payload.get("file_ids") or []
+        self.batch_id = (batch or {}).get("id") or ""
         if not self.batch_id:
             self._show_error("Send to Mapdex failed", RuntimeError("No batch id returned"))
             return
@@ -670,8 +673,9 @@ class MapdexPlugin:
         self._remember_task(
             self.batch_id,
             self.project_id,
-            str(self.workflow_box.currentText() or "Task"),
+            str(self.workflow_box.currentData() or ""),
             self._source_label or "QGIS source",
+            file_ids[0] if file_ids else "",
         )
         QSettings().setValue("mapdex/project_id", self.project_id)
         self._set_status(
@@ -863,11 +867,16 @@ class MapdexPlugin:
         prefix = "" if locale == "en" else "/{}".format(locale)
         project_id = self._active_project_id()
         workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        fallback_file_id = ""
         for task in self._recent_tasks():
             if task.get("batch_id") == self.batch_id:
                 workflow = str(task.get("workflow") or workflow)
+                fallback_file_id = str(task.get("file_id") or "")
                 break
-        path = task_workspace_path(project_id, workflow, self._last_batch)
+        detail = self._last_batch
+        if not detail and fallback_file_id:
+            detail = {"items": [{"file_id": fallback_file_id, "state": "running"}]}
+        path = task_workspace_path(project_id, workflow, detail)
         QDesktopServices.openUrl(
             QUrl("{}{}{}".format(self.web_base, prefix, path))
         )
@@ -880,9 +889,9 @@ class MapdexPlugin:
         except (TypeError, ValueError):
             return []
 
-    def _remember_task(self, batch_id, project_id, workflow, source):
+    def _remember_task(self, batch_id, project_id, workflow, source, file_id=""):
         tasks = [item for item in self._recent_tasks() if item.get("batch_id") != batch_id]
-        tasks.insert(0, {"batch_id": batch_id, "project_id": project_id, "workflow": workflow, "source": source})
+        tasks.insert(0, {"batch_id": batch_id, "project_id": project_id, "workflow": workflow, "source": source, "file_id": file_id})
         QSettings().setValue("mapdex/recent_tasks", json.dumps(tasks[:5]))
         self._load_recent_tasks()
 

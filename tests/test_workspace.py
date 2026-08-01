@@ -17,3 +17,10 @@ def test_review_item_opens_review_in_the_same_project():
 
 def test_missing_file_falls_back_to_project_workspace():
     assert task_workspace_path("proj_123", "georeference", {"items": []}) == "/workspace/proj_123"
+
+
+def test_legacy_display_label_still_opens_georeference_workspace():
+    detail = {"items": [{"file_id": "file_123", "state": "running"}]}
+    assert task_workspace_path("proj_123", "Georeference maps", detail) == (
+        "/workspace/proj_123/georeference/file_123"
+    )

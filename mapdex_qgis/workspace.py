@@ -20,8 +20,9 @@ def task_workspace_path(project_id: str, workflow: str, detail: dict[str, Any] |
         return "/workspace/{}".format(project)
     if state in {"needs_review", "review_required"}:
         return "/workspace/{}/review/{}".format(project, file_id)
-    if str(workflow or "").lower() == "georeference":
+    normalized_workflow = str(workflow or "").strip().lower().replace(" ", "_")
+    if normalized_workflow in {"georeference", "georeference_maps"}:
         return "/workspace/{}/georeference/{}".format(project, file_id)
-    if str(workflow or "").lower() == "digitize_parcels":
+    if normalized_workflow in {"digitize_parcels", "digitize_parcels_maps"}:
         return "/workspace/{}/extract/{}".format(project, file_id)
     return "/workspace/{}".format(project)
