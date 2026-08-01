@@ -251,3 +251,10 @@ class MapdexAPI:
 
     def layer_geojson(self, layer_id: str, project_id: str, limit: int = 5000) -> bytes:
         return self.download_bytes(f"/v1/layers/{layer_id}/geojson?limit={limit}", project_id=project_id)
+
+    def layer(self, layer_id: str, project_id: str = "") -> dict[str, Any]:
+        value = self._request("GET", f"/v1/layers/{layer_id}", project_id=project_id)
+        return value if isinstance(value, dict) else {}
+
+    def file_bytes(self, file_id: str, project_id: str = "") -> bytes:
+        return self.download_bytes(f"/v1/files/{file_id}/download", project_id=project_id)

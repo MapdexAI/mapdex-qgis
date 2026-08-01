@@ -11,6 +11,7 @@ from mapdex_qgis.qt_compat import enum_member
 from mapdex_qgis.results import (
     batch_is_terminal,
     collect_geojson_artifact_urls,
+    collect_raster_layer_imports,
     collect_vector_layer_imports,
     first_batch_error,
     review_run_ids,
@@ -66,6 +67,29 @@ def test_projects_accepts_bare_list_and_envelope():
     assert api.projects() == [{"id": "proj_1", "name": "Alpha"}]
     api._request = as_envelope  # type: ignore[method-assign]
     assert api.projects() == [{"id": "proj_2", "name": "Beta"}]
+
+
+def test_raster_result_uses_layer_metadata_and_file_download(monkeypatch):
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    calls = []
+
+    def fake_request(method, path, payload=None, project_id=""):
+        calls.append((method, path, project_id))
+        return {"id": "layer_r", "geometry_type": "raster", "source_file_id": "file_result"}
+
+    def fake_download(path, project_id=""):
+        calls.append(("DOWNLOAD", path, project_id))
+        return b"geotiff"
+
+    monkeypatch.setattr(api, "_request", fake_request)
+    monkeypatch.setattr(api, "download_bytes", fake_download)
+
+    assert api.layer("layer_r", "proj_1")["source_file_id"] == "file_result"
+    assert api.file_bytes("file_result", "proj_1") == b"geotiff"
+    assert calls == [
+        ("GET", "/v1/layers/layer_r", "proj_1"),
+        ("DOWNLOAD", "/v1/files/file_result/download", "proj_1"),
+    ]
 
 
 def test_workflow_payload_uses_server_batch_contract(monkeypatch):
@@ -299,6 +323,19 @@ def test_collect_vector_layer_imports_skips_raster_and_duplicates():
     }
     assert collect_vector_layer_imports(run) == [
         {"layer_id": "layer_a", "name": "Parcels"}
+    ]
+
+
+def test_collect_raster_layer_imports_selects_georeferenced_result():
+    run = {
+        "result_references": [
+            {"kind": "layer", "id": "layer_r", "summary": "Georeferenced map", "geometry_type": "raster"},
+            {"kind": "layer", "id": "layer_v", "summary": "Parcels", "geometry_type": "Polygon"},
+            {"kind": "layer", "id": "layer_r", "summary": "Duplicate", "geometry_type": "raster"},
+        ]
+    }
+    assert collect_raster_layer_imports(run) == [
+        {"layer_id": "layer_r", "name": "Georeferenced map"}
     ]
 
 

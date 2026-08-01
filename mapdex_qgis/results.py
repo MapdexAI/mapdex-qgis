@@ -101,6 +101,22 @@ def collect_vector_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+def collect_raster_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
+    """Return raster result Layers whose backing GeoTIFF QGIS can download."""
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for ref in _iter_result_refs(run):
+        kind = str(ref.get("kind") or "").lower()
+        layer_id = str(ref.get("id") or "")
+        geometry = str(ref.get("geometry_type") or "").lower()
+        if kind != "layer" or geometry != "raster" or not layer_id or layer_id in seen:
+            continue
+        seen.add(layer_id)
+        name = str(ref.get("summary") or ref.get("label") or layer_id)
+        found.append({"layer_id": layer_id, "name": name})
+    return found
+
+
 def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
     """Return [{url, name}] for downloadable GeoJSON artifacts only."""
     found: list[dict[str, str]] = []

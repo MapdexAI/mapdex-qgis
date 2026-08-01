@@ -27,6 +27,7 @@ from .results import (
     batch_is_terminal,
     batch_state,
     collect_geojson_artifact_urls,
+    collect_raster_layer_imports,
     collect_vector_layer_imports,
     first_batch_error,
     review_run_ids,
@@ -757,6 +758,29 @@ class MapdexPlugin:
         prepared = []
         for run_id in succeeded_run_ids(detail):
             run = self.api.run(run_id, project_id)
+            for layer in collect_raster_layer_imports(run):
+                layer_id = layer["layer_id"]
+                if layer_id in self.imported_layer_ids:
+                    continue
+                metadata = self.api.layer(layer_id, project_id)
+                file_id = str(metadata.get("source_file_id") or "")
+                if not file_id:
+                    continue
+                raw = self.api.file_bytes(file_id, project_id)
+                path = os.path.join(
+                    tempfile.mkdtemp(prefix="mapdex-qgis-result-"),
+                    "{}.tif".format(layer_id),
+                )
+                with open(path, "wb") as handle:
+                    handle.write(raw)
+                prepared.append(
+                    {
+                        "path": path,
+                        "name": "Mapdex · {}".format(layer["name"]),
+                        "layer_id": layer_id,
+                        "kind": "raster",
+                    }
+                )
             for layer in collect_vector_layer_imports(run):
                 layer_id = layer["layer_id"]
                 if layer_id in self.imported_layer_ids:
@@ -773,6 +797,7 @@ class MapdexPlugin:
                         "path": path,
                         "name": "Mapdex · {}".format(layer["name"]),
                         "layer_id": layer_id,
+                        "kind": "vector",
                     }
                 )
             for artifact in collect_geojson_artifact_urls(run):
@@ -791,6 +816,7 @@ class MapdexPlugin:
                         "path": path,
                         "name": "Mapdex · {}".format(artifact["name"]),
                         "layer_id": key,
+                        "kind": "vector",
                     }
                 )
         return {"files": prepared, "batch": detail}
@@ -803,7 +829,10 @@ class MapdexPlugin:
         detail = (payload or {}).get("batch") or self._last_batch or {}
         added = 0
         for item in files:
-            layer = QgsVectorLayer(item["path"], item["name"], "ogr")
+            if item.get("kind") == "raster":
+                layer = QgsRasterLayer(item["path"], item["name"])
+            else:
+                layer = QgsVectorLayer(item["path"], item["name"], "ogr")
             if not layer.isValid():
                 continue
             QgsProject.instance().addMapLayer(layer)
@@ -820,7 +849,7 @@ class MapdexPlugin:
         elif review_n:
             self._set_status("Open Review — no approved vector layers are ready to import yet.")
         else:
-            self._set_status("Task finished, but no vector GeoJSON layers were available to add.")
+            self._set_status("Task finished, but no importable result layers were available to add.")
 
     def cancel_batch(self):
         if not self.batch_id:
