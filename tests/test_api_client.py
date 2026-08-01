@@ -12,6 +12,7 @@ from mapdex_qgis.results import (
     batch_is_terminal,
     collect_geojson_artifact_urls,
     collect_raster_layer_imports,
+    collect_layer_imports,
     collect_vector_layer_imports,
     first_batch_error,
     review_run_ids,
@@ -336,6 +337,22 @@ def test_collect_raster_layer_imports_selects_georeferenced_result():
     }
     assert collect_raster_layer_imports(run) == [
         {"layer_id": "layer_r", "name": "Georeferenced map"}
+    ]
+
+
+def test_collect_layer_imports_keeps_layer_when_run_omits_geometry_type():
+    run = {
+        "result_references": [
+            {"kind": "layer", "id": "layer_raster", "summary": "Georeferenced map"}
+        ]
+    }
+
+    assert collect_layer_imports(run) == [
+        {
+            "layer_id": "layer_raster",
+            "name": "Georeferenced map",
+            "geometry_type": "",
+        }
     ]
 
 

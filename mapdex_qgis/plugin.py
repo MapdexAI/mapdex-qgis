@@ -27,8 +27,7 @@ from .results import (
     batch_is_terminal,
     batch_state,
     collect_geojson_artifact_urls,
-    collect_raster_layer_imports,
-    collect_vector_layer_imports,
+    collect_layer_imports,
     first_batch_error,
     review_run_ids,
     succeeded_run_ids,
@@ -758,19 +757,28 @@ class MapdexPlugin:
         prepared = []
         for run_id in succeeded_run_ids(detail):
             run = self.api.run(run_id, project_id)
-            for layer in collect_raster_layer_imports(run):
+            for layer in collect_layer_imports(run):
                 layer_id = layer["layer_id"]
                 if layer_id in self.imported_layer_ids:
                     continue
                 metadata = self.api.layer(layer_id, project_id)
-                file_id = str(metadata.get("source_file_id") or "")
-                if not file_id:
-                    continue
-                raw = self.api.file_bytes(file_id, project_id)
-                path = os.path.join(
-                    tempfile.mkdtemp(prefix="mapdex-qgis-result-"),
-                    "{}.tif".format(layer_id),
-                )
+                geometry_type = str(
+                    metadata.get("geometry_type") or layer.get("geometry_type") or ""
+                ).lower()
+                result_dir = tempfile.mkdtemp(prefix="mapdex-qgis-result-")
+                if geometry_type == "raster":
+                    file_id = str(metadata.get("source_file_id") or "")
+                    if not file_id:
+                        raise RuntimeError(
+                            "Raster result {} has no downloadable source file.".format(layer_id)
+                        )
+                    raw = self.api.file_bytes(file_id, project_id)
+                    path = os.path.join(result_dir, "{}.tif".format(layer_id))
+                    kind = "raster"
+                else:
+                    raw = self.api.layer_geojson(layer_id, project_id)
+                    path = os.path.join(result_dir, "{}.geojson".format(layer_id))
+                    kind = "vector"
                 with open(path, "wb") as handle:
                     handle.write(raw)
                 prepared.append(
@@ -778,26 +786,7 @@ class MapdexPlugin:
                         "path": path,
                         "name": "Mapdex · {}".format(layer["name"]),
                         "layer_id": layer_id,
-                        "kind": "raster",
-                    }
-                )
-            for layer in collect_vector_layer_imports(run):
-                layer_id = layer["layer_id"]
-                if layer_id in self.imported_layer_ids:
-                    continue
-                geojson = self.api.layer_geojson(layer_id, project_id)
-                path = os.path.join(
-                    tempfile.mkdtemp(prefix="mapdex-qgis-result-"),
-                    f"{layer_id}.geojson",
-                )
-                with open(path, "wb") as handle:
-                    handle.write(geojson)
-                prepared.append(
-                    {
-                        "path": path,
-                        "name": "Mapdex · {}".format(layer["name"]),
-                        "layer_id": layer_id,
-                        "kind": "vector",
+                        "kind": kind,
                     }
                 )
             for artifact in collect_geojson_artifact_urls(run):

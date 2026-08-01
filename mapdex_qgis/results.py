@@ -101,6 +101,27 @@ def collect_vector_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+def collect_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
+    """Return all result Layers; authoritative type comes from layer metadata."""
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for ref in _iter_result_refs(run):
+        kind = str(ref.get("kind") or "").lower()
+        layer_id = str(ref.get("id") or "")
+        if kind != "layer" or not layer_id or layer_id in seen:
+            continue
+        seen.add(layer_id)
+        name = str(ref.get("summary") or ref.get("label") or layer_id)
+        found.append(
+            {
+                "layer_id": layer_id,
+                "name": name,
+                "geometry_type": str(ref.get("geometry_type") or "").lower(),
+            }
+        )
+    return found
+
+
 def collect_raster_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
     """Return raster result Layers whose backing GeoTIFF QGIS can download."""
     found: list[dict[str, str]] = []
