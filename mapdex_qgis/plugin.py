@@ -20,6 +20,7 @@ from qgis.core import (
 
 from .api_client import MapdexAPI, MapdexAPIError, device_verification_url, normalize_api_base
 from .generated_contracts import BatchKind
+from .guidance import ACTIVE_STATES, task_guidance
 from .panel import build_companion_panel
 from .qt_compat import enum_member
 from .results import (
@@ -106,6 +107,9 @@ class MapdexPlugin:
         self.workspace = None
         self.batch_group = None
         self.batch_title = None
+        self.phase_label = None
+        self.progress_bar = None
+        self.guidance_label = None
         self.project_box = None
         self.workflow_box = None
         self.input_box = None
@@ -278,7 +282,7 @@ class MapdexPlugin:
         has_batch = bool(self.batch_id)
         state = batch_state(self._last_batch or {}) if has_batch else ""
         counts = (self._last_batch or {}).get("counts") or {}
-        active = state in ("created", "queued", "running", "pending", "cancelling")
+        active = state in ACTIVE_STATES
         failed = int(counts.get("failed", 0) or 0)
         succeeded = int(counts.get("succeeded", 0) or 0)
         needs_review = int(counts.get("needs_review", 0) or 0)
@@ -310,11 +314,18 @@ class MapdexPlugin:
         self.import_button.setText(
             "Add result to QGIS" if succeeded == 1 else "Add {} results to QGIS".format(succeeded)
         )
-        self.review_button.setVisible(has_batch and (needs_review > 0 or failed > 0))
+        self.review_button.setVisible(has_batch)
         self.review_button.setEnabled(not self._busy)
-        self.review_button.setText(
-            "Review in Mapdex" if needs_review > 0 else "View details in Mapdex"
-        )
+        if has_batch:
+            guidance = task_guidance(state, counts)
+            self.review_button.setText(guidance["action"])
+            self.phase_label.setText(guidance["phase"])
+            self.guidance_label.setText(guidance["hint"])
+            if guidance["busy"]:
+                self.progress_bar.setRange(0, 0)
+            else:
+                self.progress_bar.setRange(0, 100)
+                self.progress_bar.setValue(guidance["progress"])
         if self.batch_title is not None:
             if active and total > 1:
                 self.batch_title.setText("Processing {} of {} files".format(completed, total))
@@ -625,6 +636,9 @@ class MapdexPlugin:
         self.imported_layer_ids.clear()
         self._pending_is_batch = len(paths) > 1
         self._set_status("Uploading to Mapdex…")
+        self.batch_id = "uploading"
+        self._last_batch = {"status": "created", "counts": {"total": 1}}
+        self._refresh_ui()
         self._task(
             "Send layer to Mapdex",
             lambda: self._upload_and_run(paths, project_id, kind),
@@ -643,6 +657,8 @@ class MapdexPlugin:
 
     def _run_started(self, exception, response):
         if exception:
+            self.batch_id = ""
+            self._last_batch = None
             self._show_error("Send to Mapdex failed", exception)
             return
         self.batch_id = (response or {}).get("id") or ""

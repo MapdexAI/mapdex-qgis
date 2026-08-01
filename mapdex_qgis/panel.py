@@ -9,6 +9,7 @@ from qgis.PyQt.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -161,6 +162,17 @@ def build_companion_panel(workflows):
     batch_title = QLabel("Current task")
     batch_title.setStyleSheet("font-weight: 600;")
     batch_layout.addWidget(batch_title)
+    phase_label = QLabel("Preparing task")
+    phase_label.setStyleSheet("font-weight: 600;")
+    batch_layout.addWidget(phase_label)
+    progress_bar = QProgressBar()
+    progress_bar.setRange(0, 100)
+    progress_bar.setValue(0)
+    batch_layout.addWidget(progress_bar)
+    guidance_label = QLabel("Mapdex will show the next action here.")
+    guidance_label.setWordWrap(True)
+    guidance_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    batch_layout.addWidget(guidance_label)
     retry_button = QPushButton("Retry failed item")
     retry_button.setObjectName("mapdexPrimaryButton")
     import_button = QPushButton("Add result to QGIS")
@@ -202,6 +214,9 @@ def build_companion_panel(workflows):
         "workspace": workspace,
         "batch": batch,
         "batch_title": batch_title,
+        "phase_label": phase_label,
+        "progress_bar": progress_bar,
+        "guidance_label": guidance_label,
         "project_box": project_box,
         "workflow_box": workflow_box,
         "input_box": input_box,
