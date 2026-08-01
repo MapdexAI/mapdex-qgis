@@ -1,14 +1,14 @@
 [general]
 name=Mapdex for QGIS
 description=Send map data to Mapdex and add verified vector results back into QGIS.
-version=0.7.0
+version=0.8.0
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 author=Mapdex
 email=support@mapdex.ai
-about=Mapdex for QGIS (Beta): securely connect through your browser, run georeference / parcel / validation / batch workflows, open browser Review, and import completed vector layers. Qt5/Qt6 compatible.
+about=Mapdex for QGIS: securely connect through your browser, run a georeference, parcel, validation, or full-pipeline task, open browser Review, and import completed vector layers. Qt5/Qt6 compatible.
 category=Vector
-experimental=True
+experimental=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/oriancelabs/mapdex/issues
 repository=https://github.com/oriancelabs/mapdex

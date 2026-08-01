@@ -356,7 +356,7 @@ class MapdexPlugin:
 
     def _source_changed(self, _index):
         mode = self.input_box.currentData()
-        if mode not in ("file", "files"):
+        if mode != "file":
             self.selected_paths = []
             if mode == "active_layer":
                 self._summarize_active_layer()
@@ -375,15 +375,10 @@ class MapdexPlugin:
             "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;"
             "All files (*.*)"
         )
-        if mode == "files":
-            paths, _ = QFileDialog.getOpenFileNames(
-                self.iface.mainWindow(), "Choose files for a Mapdex batch", "", file_filter
-            )
-        else:
-            path, _ = QFileDialog.getOpenFileName(
-                self.iface.mainWindow(), "Choose a spatial file", "", file_filter
-            )
-            paths = [path] if path else []
+        path, _ = QFileDialog.getOpenFileName(
+            self.iface.mainWindow(), "Choose a spatial file", "", file_filter
+        )
+        paths = [path] if path else []
         if not paths:
             self.input_box.blockSignals(True)
             self.input_box.setCurrentIndex(0)
@@ -426,7 +421,6 @@ class MapdexPlugin:
         self.input_box.addItem("Select source…", "")
         self.input_box.addItem("Active QGIS layer", "active_layer")
         self.input_box.addItem("Choose a file…", "file")
-        self.input_box.addItem("Choose multiple files…", "files")
         target = self.input_box.findData(current)
         self.input_box.setCurrentIndex(target if target >= 0 else 0)
         self.input_box.blockSignals(False)
@@ -434,9 +428,9 @@ class MapdexPlugin:
         self._source_label = ""
         self.source_summary.setText("No source selected")
         if kind == BatchKind.VALIDATE_DELIVER:
-            self._set_status("Use the active vector layer, choose one file, or select a batch.")
+            self._set_status("Use the active vector layer or choose one file.")
         else:
-            self._set_status("Use the active raster layer, choose one file, or select a batch.")
+            self._set_status("Use the active raster layer or choose one file.")
 
     def connect(self):
         self._apply_connection_settings_from_fields()
@@ -568,7 +562,7 @@ class MapdexPlugin:
         temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
         paths = []
         try:
-            if mode in ("file", "files"):
+            if mode == "file":
                 if not self.selected_paths:
                     self._choose_source(mode)
                 if not self.selected_paths:
@@ -662,9 +656,7 @@ class MapdexPlugin:
         )
         QSettings().setValue("mapdex/project_id", self.project_id)
         self._set_status(
-            "Batch started. Mapdex is processing multiple files…"
-            if self._pending_is_batch
-            else "Task started. Mapdex is working in the background…"
+            "Task started. Mapdex is working in the background…"
         )
         self._refresh_ui()
         self.progress_timer.start(3000)
@@ -687,7 +679,7 @@ class MapdexPlugin:
             if isinstance(exception, MapdexAPIError) and exception.status == 429:
                 delay = max(3, exception.retry_after or 15)
                 self.progress_timer.setInterval(delay * 1000)
-                self._set_status("Rate limit reached. Retrying batch status in {} seconds…".format(delay))
+                self._set_status("Rate limit reached. Retrying task status in {} seconds…".format(delay))
                 return
             self._show_error("Batch status failed", exception)
             return
@@ -721,7 +713,7 @@ class MapdexPlugin:
                 )
             elif review_run_ids(response or {}):
                 self._set_status(
-                    "Batch needs review in the browser before vector results can be imported."
+                    "This task needs review in the browser before vector results can be imported."
                 )
 
     def import_results(self):
@@ -805,7 +797,7 @@ class MapdexPlugin:
         elif review_n:
             self._set_status("Open Review — no approved vector layers are ready to import yet.")
         else:
-            self._set_status("Batch finished, but no vector GeoJSON layers were available to add.")
+            self._set_status("Task finished, but no vector GeoJSON layers were available to add.")
 
     def cancel_batch(self):
         if not self.batch_id:

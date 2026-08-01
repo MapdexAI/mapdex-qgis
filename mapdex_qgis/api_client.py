@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-import uuid
 from typing import Any, Optional
 from urllib import error, request
 
@@ -142,7 +141,32 @@ class MapdexAPI:
                 return [item for item in nested if isinstance(item, dict)]
         return []
 
-    def upload_file(self, path: str, project_id: str):
+    def _put_upload(self, path: str, upload: dict[str, Any]) -> None:
+        url = str(upload.get("url") or "")
+        if not url:
+            raise MapdexAPIError("Mapdex did not return an object-storage upload URL.")
+        method = str(upload.get("method") or "PUT").upper()
+        headers = {str(key): str(value) for key, value in (upload.get("headers") or {}).items()}
+        headers["Content-Length"] = str(os.path.getsize(path))
+        try:
+            with open(path, "rb") as handle:
+                req = request.Request(url, data=handle, method=method, headers=headers)
+                with request.urlopen(req, timeout=1800) as response:
+                    response.read()
+        except error.HTTPError as exc:
+            self._raise_http(method, url, exc)
+        except (error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise MapdexAPIError(
+                "Could not upload the file to Mapdex storage: {reason}".format(reason=reason),
+                url=url,
+                method=method,
+            ) from exc
+
+    def _upload_file_multipart(self, path: str, project_id: str):
+        """Compatibility path for tests/small self-hosted deployments only."""
+        import uuid
+
         boundary = "----mapdex-" + uuid.uuid4().hex
         filename = os.path.basename(path)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -165,6 +189,33 @@ class MapdexAPI:
                 return json.loads(response.read())
         except error.HTTPError as exc:
             self._raise_http("POST", url, exc)
+
+    def upload_file(self, path: str, project_id: str):
+        """Register, stream directly to object storage, then finalize the file."""
+        filename = os.path.basename(path)
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        registration = self._request(
+            "POST",
+            "/v1/files",
+            {
+                "filename": filename,
+                "content_type": content_type,
+                "byte_size": os.path.getsize(path),
+            },
+            project_id,
+        )
+        if not isinstance(registration, dict):
+            raise MapdexAPIError("Mapdex returned an invalid upload registration.")
+        file_meta = registration.get("file")
+        upload = registration.get("upload")
+        if not isinstance(file_meta, dict) or not isinstance(upload, dict):
+            # Older self-hosted APIs may only support multipart uploads.
+            return self._upload_file_multipart(path, project_id)
+        file_id = str(file_meta.get("id") or "")
+        if not file_id:
+            raise MapdexAPIError("Mapdex did not return a file id for the upload.")
+        self._put_upload(path, upload)
+        return self._request("POST", f"/v1/files/{file_id}/complete", {}, project_id)
 
     def start_batch(self, project_id: str, file_ids, kind: str):
         if isinstance(file_ids, str):

@@ -140,7 +140,6 @@ def build_companion_panel(workflows):
         workflow_box.addItem(title, key)
     input_box.addItem("Select source…", "")
     input_box.addItem("Choose a file…", "file")
-    input_box.addItem("Choose multiple files…", "files")
     form.addRow("Project", project_box)
     form.addRow("Workflow", workflow_box)
     form.addRow("Source", input_box)

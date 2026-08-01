@@ -77,6 +77,93 @@ def test_workflow_payload_uses_server_batch_contract(monkeypatch):
     }
 
 
+def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_path):
+    source = tmp_path / "map.tif"
+    source.write_bytes(b"geotiff-bytes")
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    calls = []
+    streamed = []
+
+    def fake_request(method, path, payload=None, project_id=""):
+        calls.append((method, path, payload, project_id))
+        if path == "/v1/files":
+            return {
+                "file": {"id": "file_1", "status": "pending"},
+                "upload": {
+                    "url": "https://objects.example.test/file_1",
+                    "method": "PUT",
+                    "headers": {"Content-Type": "image/tiff"},
+                },
+            }
+        return {"id": "file_1", "status": "uploaded"}
+
+    def fake_put(path, upload):
+        streamed.append((path, upload))
+
+    monkeypatch.setattr(api, "_request", fake_request)
+    monkeypatch.setattr(api, "_put_upload", fake_put)
+
+    result = api.upload_file(str(source), "proj_1")
+
+    assert result == {"id": "file_1", "status": "uploaded"}
+    assert calls == [
+        (
+            "POST",
+            "/v1/files",
+            {
+                "filename": "map.tif",
+                "content_type": "image/tiff",
+                "byte_size": 13,
+            },
+            "proj_1",
+        ),
+        ("POST", "/v1/files/file_1/complete", {}, "proj_1"),
+    ]
+    assert streamed == [
+        (
+            str(source),
+            {
+                "url": "https://objects.example.test/file_1",
+                "method": "PUT",
+                "headers": {"Content-Type": "image/tiff"},
+            },
+        )
+    ]
+
+
+def test_signed_upload_does_not_send_mapdex_authorization(monkeypatch, tmp_path):
+    source = tmp_path / "parcels.geojson"
+    source.write_bytes(b"{}")
+    api = MapdexAPI("https://api.mapdex.ai", "secret-token")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b""
+
+    def fake_urlopen(req, timeout=0):
+        captured.update(headers=dict(req.header_items()), timeout=timeout, data=req.data)
+        return FakeResponse()
+
+    monkeypatch.setattr("mapdex_qgis.api_client.request.urlopen", fake_urlopen)
+    api._put_upload(
+        str(source),
+        {"url": "https://objects.example.test/file", "headers": {"X-Signed": "yes"}},
+    )
+
+    lowered = {key.lower(): value for key, value in captured["headers"].items()}
+    assert lowered["content-length"] == "2"
+    assert lowered["x-signed"] == "yes"
+    assert "authorization" not in lowered
+    assert hasattr(captured["data"], "read")
+
+
 def test_multiple_files_create_one_real_batch(monkeypatch):
     api = MapdexAPI("https://api.mapdex.ai", "token")
     captured = {}
