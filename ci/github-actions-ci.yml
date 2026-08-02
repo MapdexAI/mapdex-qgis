@@ -1,0 +1,26 @@
+# Placed at .github/workflows/ci.yml in the public plugin repository by
+# scripts/sync_public_repo.sh. The public repo is a mirror, so its CI proves
+# the published tree is the tree that builds the uploaded zip.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests (no QGIS install required)
+        run: python -m pytest tests -q
+      - name: Build the plugin package
+        run: python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapdex-qgis
+          path: dist/mapdex-qgis.zip

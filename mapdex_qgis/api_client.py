@@ -3,8 +3,69 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 from typing import Any, Optional
-from urllib import error, request
+from urllib import error, parse, request
+
+
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+# Server-supplied ids end up in temp file names; keep them to an id alphabet so
+# a hostile or buggy response cannot walk out of the download directory.
+SAFE_ID = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_filename_part(value: str, fallback: str = "result") -> str:
+    """Reduce an untrusted id to a path-safe file-name component."""
+    cleaned = SAFE_ID.sub("_", str(value or "")).strip("._")
+    return cleaned[:120] or fallback
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parsed = parse.urlsplit(str(url or ""))
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port or (443 if scheme == "https" else 80 if scheme == "http" else 0)
+    return scheme, host, port
+
+
+def is_local_host(url: str) -> bool:
+    return _origin(url)[1] in LOCAL_HOSTS
+
+
+def same_origin(first: str, second: str) -> bool:
+    """True when both URLs share scheme, host and port."""
+    left, right = _origin(first), _origin(second)
+    return bool(left[1]) and left == right
+
+
+def is_transport_secure(url: str) -> bool:
+    """The bearer token may only travel over TLS, or to the local machine."""
+    scheme, host, _ = _origin(url)
+    if scheme == "https":
+        return True
+    return scheme == "http" and host in LOCAL_HOSTS
+
+
+class _AuthStrippingRedirectHandler(request.HTTPRedirectHandler):
+    """Drop the Authorization header when a redirect leaves the API origin.
+
+    urllib replays request headers on redirects, so without this an API that
+    answers 302 to another host would hand that host the user's Mapdex token.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_request is not None and not same_origin(newurl, req.full_url):
+            new_request.remove_header("Authorization")
+        return new_request
+
+
+_OPENER = request.build_opener(_AuthStrippingRedirectHandler())
+
+
+def _urlopen(req, timeout):
+    return _OPENER.open(req, timeout=timeout)
 
 
 class MapdexAPIError(RuntimeError):
@@ -34,12 +95,23 @@ def normalize_api_base(url: str) -> str:
 
 
 def device_verification_url(response_url: str, web_base: str, api_base: str) -> str:
-    """Never open a production device flow on the user's localhost."""
+    """Pick the URL to open for device approval, distrusting the response.
+
+    The value arrives from the API, and it is handed to the desktop URL
+    handler — so anything that is not a plain http(s) address (``javascript:``,
+    ``file:``, an OS handler scheme) falls back to the configured web app, as
+    does a localhost address returned by a production API.
+    """
     candidate = str(response_url or "").strip()
-    production_api = not any(host in api_base.lower() for host in ("localhost", "127.0.0.1"))
-    local_candidate = any(host in candidate.lower() for host in ("localhost", "127.0.0.1"))
-    if not candidate or (production_api and local_candidate):
-        return "{}/device".format(web_base.rstrip("/"))
+    fallback = "{}/device".format(str(web_base or "").rstrip("/"))
+    scheme, host, _ = _origin(candidate)
+    if scheme not in {"http", "https"} or not host:
+        return fallback
+    if not is_transport_secure(candidate):
+        return fallback
+    production_api = not is_local_host(api_base)
+    if production_api and host in LOCAL_HOSTS:
+        return fallback
     return candidate
 
 
@@ -48,11 +120,23 @@ class MapdexAPI:
         self.base_url = normalize_api_base(base_url)
         self.token = token
 
-    def _headers(self, project_id: str = "", content_type: Optional[str] = "application/json") -> dict[str, str]:
+    def _headers(
+        self,
+        project_id: str = "",
+        content_type: Optional[str] = "application/json",
+        url: str = "",
+    ) -> dict[str, str]:
+        """Headers for one request. Credentials are bound to the API origin.
+
+        Result payloads carry absolute artifact URLs, and object storage uses
+        pre-signed links that need no Mapdex credential — so the token is only
+        attached when the target really is the configured API.
+        """
         headers = {"Accept": "application/json"}
         if content_type:
             headers["Content-Type"] = content_type
-        if self.token:
+        target = url or self.base_url
+        if self.token and same_origin(target, self.base_url):
             headers["Authorization"] = f"Bearer {self.token}"
         if project_id:
             headers["X-Project-ID"] = project_id
@@ -101,7 +185,7 @@ class MapdexAPI:
         url = self.base_url + path
         req = request.Request(url, data=data, method=method, headers=headers)
         try:
-            with request.urlopen(req, timeout=45) as response:
+            with _urlopen(req, timeout=45) as response:
                 body = response.read()
                 return json.loads(body) if body else None
         except error.HTTPError as exc:
@@ -115,14 +199,24 @@ class MapdexAPI:
 
     def download_bytes(self, path: str, project_id: str = "") -> bytes:
         """GET a relative `/v1/...` path or absolute URL and return raw bytes."""
-        url = path if path.startswith("http://") or path.startswith("https://") else self.base_url + path
-        headers = self._headers(project_id=project_id, content_type=None)
+        absolute = path.startswith("http://") or path.startswith("https://")
+        url = path if absolute else self.base_url + path
+        if absolute and not is_transport_secure(url):
+            raise MapdexAPIError(
+                "Refusing to download over an insecure connection: {url}".format(url=url),
+                url=url,
+                method="GET",
+            )
+        headers = self._headers(project_id=project_id, content_type=None, url=url)
         headers.pop("Content-Type", None)
+        if not same_origin(url, self.base_url):
+            # A third-party artifact host has no business seeing our tenant.
+            headers.pop("X-Project-ID", None)
         if "/geojson" in path or path.endswith(".geojson"):
             headers["Accept"] = "application/geo+json, application/json;q=0.9, */*;q=0.1"
         req = request.Request(url, method="GET", headers=headers)
         try:
-            with request.urlopen(req, timeout=180) as response:
+            with _urlopen(req, timeout=180) as response:
                 return response.read()
         except error.HTTPError as exc:
             self._raise_http("GET", url, exc)
@@ -156,12 +250,22 @@ class MapdexAPI:
         if not url:
             raise MapdexAPIError("Mapdex did not return an object-storage upload URL.")
         method = str(upload.get("method") or "PUT").upper()
+        if not is_transport_secure(url):
+            raise MapdexAPIError(
+                "Refusing to upload over an insecure connection: {url}".format(url=url),
+                url=url,
+                method=method,
+            )
+        # Only the storage provider's own signed headers travel here: a
+        # pre-signed URL needs no Mapdex credential, and the storage host is a
+        # different origin from the API.
         headers = {str(key): str(value) for key, value in (upload.get("headers") or {}).items()}
+        headers.pop("Authorization", None)
         headers["Content-Length"] = str(os.path.getsize(path))
         try:
             with open(path, "rb") as handle:
                 req = request.Request(url, data=handle, method=method, headers=headers)
-                with request.urlopen(req, timeout=1800) as response:
+                with _urlopen(req, timeout=1800) as response:
                     response.read()
         except error.HTTPError as exc:
             self._raise_http(method, url, exc)
@@ -195,7 +299,7 @@ class MapdexAPI:
         }
         req = request.Request(url, data=body, method="POST", headers=headers)
         try:
-            with request.urlopen(req, timeout=180) as response:
+            with _urlopen(req, timeout=180) as response:
                 return json.loads(response.read())
         except error.HTTPError as exc:
             self._raise_http("POST", url, exc)
@@ -230,10 +334,15 @@ class MapdexAPI:
     def start_batch(self, project_id: str, file_ids, kind: str):
         if isinstance(file_ids, str):
             file_ids = [file_ids]
+        clean_kind = kind.replace("_", " ").title()
         return self._request(
             "POST",
             "/v1/batches",
-            {"kind": kind, "sources": [{"file_id": file_id} for file_id in file_ids]},
+            {
+                "kind": kind,
+                "name": f"[QGIS] {clean_kind}",
+                "sources": [{"file_id": file_id} for file_id in file_ids],
+            },
             project_id,
         )
 

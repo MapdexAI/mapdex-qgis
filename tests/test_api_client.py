@@ -185,7 +185,7 @@ def test_signed_upload_does_not_send_mapdex_authorization(monkeypatch, tmp_path)
         captured.update(headers=dict(req.header_items()), timeout=timeout, data=req.data)
         return FakeResponse()
 
-    monkeypatch.setattr("mapdex_qgis.api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("mapdex_qgis.api_client._urlopen", fake_urlopen)
     api._put_upload(
         str(source),
         {"url": "https://objects.example.test/file", "headers": {"X-Signed": "yes"}},
@@ -262,7 +262,7 @@ def test_api_error_parses_nested_envelope(monkeypatch):
     def boom(*_args, **_kwargs):
         raise FakeHTTPError()
 
-    monkeypatch.setattr("mapdex_qgis.api_client.request.urlopen", boom)
+    monkeypatch.setattr("mapdex_qgis.api_client._urlopen", boom)
     try:
         api.batch("proj_1", "batch_missing")
         raise AssertionError("expected MapdexAPIError")

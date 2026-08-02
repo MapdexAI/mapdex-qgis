@@ -18,9 +18,18 @@ from qgis.core import (
     QgsRasterLayer,
 )
 
-from .api_client import MapdexAPI, MapdexAPIError, device_verification_url, normalize_api_base
+from .api_client import (
+    MapdexAPI,
+    MapdexAPIError,
+    device_verification_url,
+    is_transport_secure,
+    normalize_api_base,
+    safe_filename_part,
+    same_origin,
+)
 from .generated_contracts import BatchKind
 from .guidance import ACTIVE_STATES, task_guidance
+from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .panel import build_companion_panel
 from .qt_compat import enum_member
 from .results import (
@@ -46,6 +55,12 @@ WORKFLOWS = (
 
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://mapdex.ai"
+
+
+def plugin_icon() -> QIcon:
+    """The Mapdex mark, drawn from the packaged icon next to this module."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+    return QIcon(path) if os.path.isfile(path) else QIcon()
 
 
 class _WorkTask(QgsTask):
@@ -125,10 +140,10 @@ class MapdexPlugin:
         self.resume_button = None
 
     def initGui(self):
-        self.action = QAction(QIcon(), "Mapdex", self.iface.mainWindow())
+        self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
         self.action.setToolTip("Open Mapdex for QGIS")
         self.action.triggered.connect(self.show)
-        self.iface.addPluginToMenu("&Mapdex", self.action)
+        self.iface.addPluginToWebMenu("&Mapdex", self.action)
         self.iface.addToolBarIcon(self.action)
         # Register the dock immediately so QGIS places it in the right rail,
         # not as a floating overlay over the menu bar.
@@ -143,7 +158,7 @@ class MapdexPlugin:
             self.dock.deleteLater()
             self.dock = None
         if self.action:
-            self.iface.removePluginMenu("&Mapdex", self.action)
+            self.iface.removePluginWebMenu("&Mapdex", self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
 
@@ -155,7 +170,7 @@ class MapdexPlugin:
         left = enum_member(Qt, "DockWidgetArea", "LeftDockWidgetArea")
         right = enum_member(Qt, "DockWidgetArea", "RightDockWidgetArea")
         self.dock.setAllowedAreas(left | right)
-        self.dock.setMinimumWidth(320)
+        self.dock.setMinimumWidth(MINIMUM_WIDTH)
         self.dock.setFeatures(
             enum_member(QDockWidget, "DockWidgetFeature", "DockWidgetMovable")
             | enum_member(QDockWidget, "DockWidgetFeature", "DockWidgetFloatable")
@@ -177,6 +192,8 @@ class MapdexPlugin:
         self.retry_button.clicked.connect(self.retry_failed)
         self.import_button.clicked.connect(self.import_results)
         self.review_button.clicked.connect(self.open_review)
+        if hasattr(self, "open_project_button") and self.open_project_button:
+            self.open_project_button.clicked.connect(self.open_project)
         self.resume_button.clicked.connect(self.resume_recent)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
@@ -194,6 +211,7 @@ class MapdexPlugin:
             enum_member(Qt, "DockWidgetArea", "RightDockWidgetArea"),
             self.dock,
         )
+        self._apply_preferred_dock_width()
         if self.api.token:
             self._set_status("Connected. Loading projects…")
             self._refresh_ui()
@@ -201,6 +219,25 @@ class MapdexPlugin:
         else:
             self._set_status("Not connected. Click Connect in browser to link this QGIS session.")
             self._refresh_ui()
+
+    def _apply_preferred_dock_width(self):
+        """Open the dock wide enough to use without a manual resize.
+
+        QGIS restores a remembered width when the user has already sized the
+        dock, so this only widens a dock that is still at its default.
+        """
+        if self.dock is None or self.dock.width() >= PREFERRED_WIDTH:
+            return
+        window = self.iface.mainWindow()
+        try:
+            window.resizeDocks(
+                [self.dock],
+                [PREFERRED_WIDTH],
+                enum_member(Qt, "Orientation", "Horizontal"),
+            )
+        except (AttributeError, TypeError):
+            # Older Qt without resizeDocks: the widget size hint still applies.
+            self.dock.resize(PREFERRED_WIDTH, self.dock.height())
 
     def show(self):
         self._ensure_dock()
@@ -229,29 +266,63 @@ class MapdexPlugin:
         self.api_url_input.setEditText(self.api.base_url or DEFAULT_API)
         self.web_url_input.setEditText(self.web_base or DEFAULT_WEB)
 
+    def _reject_insecure_endpoint(self, url: str) -> bool:
+        """Block a plaintext endpoint that is not this machine."""
+        if is_transport_secure(url):
+            return False
+        QMessageBox.warning(
+            self.iface.mainWindow(),
+            "Mapdex",
+            "Use an https:// address. Mapdex sends your access token with every "
+            "request, so plain http is only allowed for a local install on this "
+            "computer.",
+        )
+        return True
+
+    def _point_at_endpoint(self, api_url: str) -> None:
+        """Switch endpoints, dropping the session issued by the previous one.
+
+        A token belongs to the deployment that issued it. Carrying it to a new
+        address would hand a Mapdex session to whoever runs that address.
+        """
+        if same_origin(api_url, self.api.base_url):
+            self.api.base_url = api_url
+            QSettings().setValue("mapdex/base_url", api_url)
+            return
+        had_token = bool(self.api.token)
+        self.api.base_url = api_url
+        QSettings().setValue("mapdex/base_url", api_url)
+        if had_token:
+            self.disconnect()
+            self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
+
     def save_connection_settings(self):
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")
         if not api_url:
             QMessageBox.warning(self.iface.mainWindow(), "Mapdex", "API URL is required.")
             return
-        self.api.base_url = api_url
+        if self._reject_insecure_endpoint(api_url) or self._reject_insecure_endpoint(web_url):
+            return
+        self._point_at_endpoint(api_url)
         self.web_base = web_url
-        settings = QSettings()
-        settings.setValue("mapdex/base_url", api_url)
-        settings.setValue("mapdex/web_base", web_url)
+        QSettings().setValue("mapdex/web_base", web_url)
         self._set_status("Saved. API = {api} · Web = {web}".format(api=api_url, web=web_url))
 
-    def _apply_connection_settings_from_fields(self):
+    def _apply_connection_settings_from_fields(self) -> bool:
         """Read current URL fields before connect (even if Save was not clicked)."""
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")
+        if api_url and self._reject_insecure_endpoint(api_url):
+            return False
+        if web_url and self._reject_insecure_endpoint(web_url):
+            return False
         if api_url:
-            self.api.base_url = api_url
-            QSettings().setValue("mapdex/base_url", api_url)
+            self._point_at_endpoint(api_url)
         if web_url:
             self.web_base = web_url
             QSettings().setValue("mapdex/web_base", web_url)
+        return True
 
     def _show_error(self, title: str, exc: BaseException):
         detail = str(exc)
@@ -445,7 +516,8 @@ class MapdexPlugin:
             self._set_status("Use the active raster layer or choose one file.")
 
     def connect(self):
-        self._apply_connection_settings_from_fields()
+        if not self._apply_connection_settings_from_fields():
+            return
         self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
         self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
 
@@ -766,6 +838,8 @@ class MapdexPlugin:
                     metadata.get("geometry_type") or layer.get("geometry_type") or ""
                 ).lower()
                 result_dir = tempfile.mkdtemp(prefix="mapdex-qgis-result-")
+                # The id comes from the server and is used as a file name.
+                safe_id = safe_filename_part(layer_id, "layer")
                 if geometry_type == "raster":
                     file_id = str(metadata.get("source_file_id") or "")
                     if not file_id:
@@ -773,11 +847,11 @@ class MapdexPlugin:
                             "Raster result {} has no downloadable source file.".format(layer_id)
                         )
                     raw = self.api.file_bytes(file_id, project_id)
-                    path = os.path.join(result_dir, "{}.tif".format(layer_id))
+                    path = os.path.join(result_dir, "{}.tif".format(safe_id))
                     kind = "raster"
                 else:
                     raw = self.api.layer_geojson(layer_id, project_id)
-                    path = os.path.join(result_dir, "{}.geojson".format(layer_id))
+                    path = os.path.join(result_dir, "{}.geojson".format(safe_id))
                     kind = "vector"
                 with open(path, "wb") as handle:
                     handle.write(raw)
@@ -895,6 +969,15 @@ class MapdexPlugin:
         if not detail and fallback_file_id:
             detail = {"items": [{"file_id": fallback_file_id, "state": "running"}]}
         path = task_workspace_path(project_id, workflow, detail)
+        QDesktopServices.openUrl(
+            QUrl("{}{}{}".format(self.web_base, prefix, path))
+        )
+
+    def open_project(self):
+        project_id = self._active_project_id()
+        locale = QLocale.system().name().split("_")[0]
+        prefix = "" if locale == "en" else "/{}".format(locale)
+        path = "/workspace/{}".format(project_id) if project_id else "/workspace"
         QDesktopServices.openUrl(
             QUrl("{}{}{}".format(self.web_base, prefix, path))
         )

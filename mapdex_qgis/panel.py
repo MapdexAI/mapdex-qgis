@@ -1,12 +1,12 @@
 """Compact, QGIS-native Mapdex task panel (layout only)."""
 from __future__ import annotations
 
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import QSize, Qt
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QPushButton,
     QProgressBar,
@@ -17,6 +17,12 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
+from .layout_rules import (
+    MINIMUM_WIDTH,
+    PREFERRED_HEIGHT,
+    PREFERRED_WIDTH,
+    panel_layout_mode,
+)
 from .qt_compat import enum_member
 
 
@@ -26,10 +32,93 @@ def _section_label(text):
     return label
 
 
+def _elastic(combo):
+    """Let a combo shrink with the dock instead of demanding its widest item.
+
+    A long project or file name otherwise pins a minimum width on the whole
+    panel, which is what clipped every field until the dock was dragged wide.
+    """
+    combo.setSizeAdjustPolicy(
+        enum_member(QComboBox, "SizeAdjustPolicy", "AdjustToMinimumContentsLengthWithIcon")
+    )
+    combo.setMinimumContentsLength(8)
+    combo.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+        enum_member(QSizePolicy, "Policy", "Fixed"),
+    )
+    return combo
+
+
+class _CompanionPanel(QWidget):
+    """Panel root that re-lays itself out for the current dock width.
+
+    QGIS docks are user-resizable and are often left narrow. Two-column
+    forms and side-by-side control pairs clip their fields there, so below
+    the compact breakpoint labels stack above their field and paired rows
+    become one control per row.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._forms = []
+        self._pairs = []
+        self._mode = ""
+
+    def register_form(self, form):
+        self._forms.append(form)
+        return form
+
+    def register_pair(self, grid, first, second):
+        """A two-widget row that stacks when the dock is narrow."""
+        self._pairs.append((grid, first, second))
+        return grid
+
+    def sizeHint(self):
+        return QSize(PREFERRED_WIDTH, PREFERRED_HEIGHT)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.apply_layout_mode(panel_layout_mode(self.width()))
+
+    def apply_layout_mode(self, mode):
+        if mode == self._mode:
+            return
+        self._mode = mode
+        compact = mode == "compact"
+        wrap = enum_member(
+            QFormLayout,
+            "RowWrapPolicy",
+            "WrapAllRows" if compact else "DontWrapRows",
+        )
+        for form in self._forms:
+            form.setRowWrapPolicy(wrap)
+        left = enum_member(Qt, "AlignmentFlag", "AlignLeft") | enum_member(
+            Qt, "AlignmentFlag", "AlignVCenter"
+        )
+        right = enum_member(Qt, "AlignmentFlag", "AlignRight") | enum_member(
+            Qt, "AlignmentFlag", "AlignVCenter"
+        )
+        for grid, first, second in self._pairs:
+            grid.removeWidget(first)
+            grid.removeWidget(second)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
+            if compact:
+                # Stacked: the trailing control starts at the left edge rather
+                # than floating in the middle of an empty cell.
+                grid.addWidget(first, 0, 0)
+                grid.addWidget(second, 1, 0, left)
+            else:
+                grid.addWidget(first, 0, 0)
+                grid.addWidget(second, 0, 1, right)
+            first.setVisible(True)
+            second.setVisible(True)
+
+
 def build_companion_panel(workflows):
-    root = QWidget()
+    root = _CompanionPanel()
     root.setObjectName("mapdexPluginRoot")
-    root.setMinimumWidth(300)
+    root.setMinimumWidth(MINIMUM_WIDTH)
     root.setSizePolicy(
         enum_member(QSizePolicy, "Policy", "Preferred"),
         enum_member(QSizePolicy, "Policy", "Expanding"),
@@ -75,19 +164,23 @@ def build_companion_panel(workflows):
     layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(10)
 
-    connection_row = QHBoxLayout()
+    connection_row = QGridLayout()
+    connection_row.setContentsMargins(0, 0, 0, 0)
+    connection_row.setHorizontalSpacing(8)
     connection_label = QLabel("Not connected")
+    connection_label.setWordWrap(True)
     connection_label.setStyleSheet("font-weight: 600;")
     settings_button = QToolButton()
     settings_button.setObjectName("mapdexSettingsButton")
-    settings_button.setText("Connection settings")
+    # Short label: paired with the connection state on one row, the long form
+    # squeezed the state text into two lines at the dock's normal width.
+    settings_button.setText("Settings")
+    settings_button.setToolTip("Connection settings (API and web addresses)")
     settings_button.setCheckable(True)
     settings_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
     )
-    connection_row.addWidget(connection_label)
-    connection_row.addStretch(1)
-    connection_row.addWidget(settings_button)
+    root.register_pair(connection_row, connection_label, settings_button)
     layout.addLayout(connection_row)
 
     status = QLabel("Connect Mapdex to start a task.")
@@ -99,10 +192,13 @@ def build_companion_panel(workflows):
     connection_panel.setVisible(False)
     connection_layout = QVBoxLayout(connection_panel)
     connection_layout.setContentsMargins(0, 0, 0, 0)
-    connection_form = QFormLayout()
-    api_url_input = QComboBox()
+    connection_form = root.register_form(QFormLayout())
+    connection_form.setFieldGrowthPolicy(
+        enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
+    )
+    api_url_input = _elastic(QComboBox())
     api_url_input.setEditable(True)
-    web_url_input = QComboBox()
+    web_url_input = _elastic(QComboBox())
     web_url_input.setEditable(True)
     for value in ("https://api.mapdex.ai", "http://127.0.0.1:8080"):
         api_url_input.addItem(value)
@@ -130,13 +226,20 @@ def build_companion_panel(workflows):
     workspace_layout = QVBoxLayout(workspace)
     workspace_layout.setContentsMargins(0, 4, 0, 0)
     workspace_layout.setSpacing(8)
-    workspace_layout.addWidget(_section_label("New task"))
-    form = QFormLayout()
+    header_row = QGridLayout()
+    header_row.setContentsMargins(0, 0, 0, 0)
+    header_row.setHorizontalSpacing(8)
+    new_task_label = _section_label("New task")
+    open_project_button = QPushButton("Open project")
+    open_project_button.setToolTip("Open this project in Mapdex web workspace")
+    root.register_pair(header_row, new_task_label, open_project_button)
+    workspace_layout.addLayout(header_row)
+    form = root.register_form(QFormLayout())
     form.setFieldGrowthPolicy(enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow"))
     form.setSpacing(7)
-    project_box = QComboBox()
-    workflow_box = QComboBox()
-    input_box = QComboBox()
+    project_box = _elastic(QComboBox())
+    workflow_box = _elastic(QComboBox())
+    input_box = _elastic(QComboBox())
     for title, key in workflows:
         workflow_box.addItem(title, key)
     input_box.addItem("Select source…", "")
@@ -192,17 +295,20 @@ def build_companion_panel(workflows):
     recent_layout.setContentsMargins(0, 4, 0, 0)
     recent_layout.setSpacing(6)
     recent_layout.addWidget(_section_label("Recent tasks"))
-    recent_row = QHBoxLayout()
-    recent_box = QComboBox()
+    recent_row = QGridLayout()
+    recent_row.setContentsMargins(0, 0, 0, 0)
+    recent_row.setHorizontalSpacing(8)
+    recent_box = _elastic(QComboBox())
     resume_button = QPushButton("Resume")
-    recent_row.addWidget(recent_box, 1)
-    recent_row.addWidget(resume_button)
+    root.register_pair(recent_row, recent_box, resume_button)
     recent_layout.addLayout(recent_row)
     layout.addWidget(recent)
     layout.addStretch(1)
 
     scroll.setWidget(body)
     outer.addWidget(scroll)
+    # Lay out for the width the dock opens at; resizeEvent takes over after.
+    root.apply_layout_mode(panel_layout_mode(PREFERRED_WIDTH))
     return root, {
         "status": status,
         "connection_label": connection_label,
@@ -218,6 +324,7 @@ def build_companion_panel(workflows):
         "progress_bar": progress_bar,
         "guidance_label": guidance_label,
         "project_box": project_box,
+        "open_project_button": open_project_button,
         "workflow_box": workflow_box,
         "input_box": input_box,
         "source_summary": source_summary,
