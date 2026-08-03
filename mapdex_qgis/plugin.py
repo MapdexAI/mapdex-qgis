@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import traceback
 from typing import Callable, Optional
 
@@ -11,11 +12,14 @@ from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QMessageBox
 from qgis.core import (
     QgsApplication,
+    QgsCoordinateTransform,
+    QgsCsException,
     QgsProject,
+    QgsRasterLayer,
+    QgsRectangle,
     QgsTask,
     QgsVectorFileWriter,
     QgsVectorLayer,
-    QgsRasterLayer,
 )
 
 from .api_client import (
@@ -28,7 +32,7 @@ from .api_client import (
     same_origin,
 )
 from .generated_contracts import BatchKind
-from .guidance import ACTIVE_STATES, task_guidance
+from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .panel import build_companion_panel
 from .qt_compat import enum_member
@@ -39,6 +43,7 @@ from .results import (
     collect_layer_imports,
     first_batch_error,
     review_run_ids,
+    split_review_buckets,
     succeeded_run_ids,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
@@ -55,6 +60,22 @@ WORKFLOWS = (
 
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://mapdex.ai"
+
+# While a task waits for browser review the panel keeps a slow watch, so an
+# approved result still lands in QGIS without the user pressing Resume.
+REVIEW_POLL_MS = 15000
+
+
+# Widget handles filled from build_companion_panel and cleared on unload, so a
+# callback that outlives the panel meets None instead of a destroyed object.
+PANEL_WIDGET_REFS = (
+    "status", "connection_label", "api_url_input", "web_url_input",
+    "save_settings_button", "connect_button", "disconnect_button", "workspace",
+    "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
+    "project_box", "workflow_box", "input_box", "source_summary", "run_button",
+    "cancel_button", "retry_button", "import_button", "review_button",
+    "open_project_button", "recent", "recent_box", "resume_button",
+)
 
 
 def plugin_icon() -> QIcon:
@@ -107,11 +128,22 @@ class MapdexPlugin:
         self._source_label = ""
         self._pending_is_batch = False
         self._busy = False
+        self._panel_root = None
+        # Background tasks in flight; QGIS crashes if Python collects one early.
+        self._tasks = []
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._poll_token)
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._poll_batch)
         self.progress_pending = False
+        # Whether the server has actually started the child run, and since when
+        # it has been waiting. None means "not reported"; the panel then keeps
+        # its neutral wording instead of guessing.
+        self._backend_started = None  # type: Optional[bool]
+        self._waiting_since = 0.0
+        self._start_probe_countdown = 0
+        # Which terminal beat has already been announced in the QGIS message bar.
+        self._announced_state = ""
         # Widget refs filled in _ensure_dock
         self.status = None
         self.connection_label = None
@@ -150,9 +182,37 @@ class MapdexPlugin:
         self._ensure_dock()
         self.dock.hide()
 
+    def _on_current_layer_changed(self, _layer=None):
+        """React to the QGIS active layer only while this instance is alive.
+
+        QGIS keeps interface-level connections across a plugin reload, so this
+        can still fire for an unloaded instance whose panel is destroyed.
+        Touching those widgets raises RuntimeError, which QGIS shows as a
+        Python error on every layer click.
+        """
+        if self.dock is None or self.input_box is None:
+            return
+        try:
+            if self.input_box.currentData() == "active_layer":
+                self._summarize_active_layer()
+        except RuntimeError:
+            # The panel this instance owned is gone; stay quiet.
+            return
+
     def unload(self):
         self.poll_timer.stop()
         self.progress_timer.stop()
+        for task in list(self._tasks):
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
+        self._tasks.clear()
+        try:
+            self.iface.currentLayerChanged.disconnect(self._on_current_layer_changed)
+        except (AttributeError, TypeError, RuntimeError):
+            # Never connected, already gone, or an interface without the signal.
+            pass
         if self.dock is not None:
             self.iface.removeDockWidget(self.dock)
             self.dock.deleteLater()
@@ -161,6 +221,11 @@ class MapdexPlugin:
             self.iface.removePluginWebMenu("&Mapdex", self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
+        # Drop every widget handle: the C++ objects go away with the dock, and
+        # a leftover callback must find None rather than a dead wrapper.
+        self._panel_root = None
+        for name in PANEL_WIDGET_REFS:
+            setattr(self, name, None)
 
     def _ensure_dock(self):
         if self.dock is not None:
@@ -178,6 +243,11 @@ class MapdexPlugin:
         )
 
         root, refs = build_companion_panel(WORKFLOWS)
+        # Hand the whole tree to the dock before touching any of it: with the
+        # dock as the C++ owner, no widget can be collected while the panel is
+        # still being wired up.
+        self._panel_root = root
+        self.dock.setWidget(root)
         for key, value in refs.items():
             setattr(self, key if key != "batch" else "batch_group", value)
 
@@ -197,16 +267,15 @@ class MapdexPlugin:
         self.resume_button.clicked.connect(self.resume_recent)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
+        # A bound method, never a lambda: unload() has to be able to take this
+        # connection back off the QGIS interface. A lambda cannot be
+        # disconnected reliably, so every reload used to leave one more
+        # connection pointing at a destroyed panel.
         try:
-            self.iface.currentLayerChanged.connect(
-                lambda _layer: self._summarize_active_layer()
-                if self.input_box.currentData() == "active_layer"
-                else None
-            )
+            self.iface.currentLayerChanged.connect(self._on_current_layer_changed)
         except AttributeError:
             pass
 
-        self.dock.setWidget(root)
         self.iface.addDockWidget(
             enum_member(Qt, "DockWidgetArea", "RightDockWidgetArea"),
             self.dock,
@@ -255,10 +324,19 @@ class MapdexPlugin:
         if self.status is not None:
             self.status.setText(text)
         if toast:
-            try:
-                self.iface.messageBar().pushMessage("Mapdex", text, level=0, duration=4)
-            except Exception:
-                pass
+            self._announce(text)
+
+    def _announce(self, text: str, level: int = 0, duration: int = 6) -> None:
+        """Say it in the QGIS message bar, not only inside our dock.
+
+        A finished task is invisible when the panel is closed or behind the
+        map, so every terminal beat is announced where QGIS users already look.
+        Levels follow Qgis.MessageLevel: 0 info, 1 warning, 3 success.
+        """
+        try:
+            self.iface.messageBar().pushMessage("Mapdex", text, level=level, duration=duration)
+        except Exception:  # noqa: BLE001 — never let a notice break the task
+            pass
 
     def _load_connection_fields(self):
         if self.api_url_input is None:
@@ -348,7 +426,9 @@ class MapdexPlugin:
         QMessageBox.warning(self.iface.mainWindow(), title, detail)
 
     def _refresh_ui(self):
-        if self.connect_button is None:
+        # Nothing to refresh once the panel is gone; a late callback must not
+        # walk destroyed widgets.
+        if self.dock is None or self.connect_button is None:
             return
         connected = bool(self.api.token)
         has_batch = bool(self.batch_id)
@@ -381,16 +461,33 @@ class MapdexPlugin:
         self.retry_button.setText(
             "Retry failed item" if failed == 1 else "Retry {} failed items".format(failed)
         )
-        self.import_button.setVisible(has_batch and succeeded > 0 and not active)
+        # Pulling the result is always the user's move, including while review
+        # is still open: the button then offers the draft instead of hiding.
+        self.import_button.setVisible(has_batch and (succeeded > 0 or needs_review > 0) and not active)
         self.import_button.setEnabled(not self._busy)
-        self.import_button.setText(
-            "Add result to QGIS" if succeeded == 1 else "Add {} results to QGIS".format(succeeded)
-        )
-        self.review_button.setVisible(has_batch)
-        self.review_button.setEnabled(not self._busy)
+        if succeeded > 0:
+            self.import_button.setText(
+                "Get result from Mapdex"
+                if succeeded == 1
+                else "Get {} results from Mapdex".format(succeeded)
+            )
+            self.import_button.setToolTip("Add the approved Mapdex result to this project.")
+        else:
+            self.import_button.setText("Get result from Mapdex")
+            self.import_button.setToolTip(
+                "Review is still open in Mapdex. Mapdex asks before handing you the "
+                "draft, split into review layers."
+            )
         if has_batch:
-            guidance = task_guidance(state, counts)
+            guidance = task_guidance(
+                state,
+                counts,
+                backend_started=self._backend_started,
+                waiting_seconds=self._waiting_seconds(),
+            )
             self.review_button.setText(guidance["action"])
+            self.review_button.setVisible(bool(guidance["action"]))
+            self.review_button.setEnabled(not self._busy)
             self.phase_label.setText(guidance["phase"])
             self.guidance_label.setText(guidance["hint"])
             if guidance["busy"]:
@@ -412,6 +509,10 @@ class MapdexPlugin:
             self._busy = True
             self._refresh_ui()
         task = _WorkTask(description, work)
+        # Hold a strong reference until QGIS is finished with the task. The
+        # task manager owns it on the C++ side, but a task collected by Python
+        # while it is still queued takes QGIS down with an access violation.
+        self._tasks.append(task)
         finished_once = {"done": False}
 
         def finished():
@@ -420,14 +521,26 @@ class MapdexPlugin:
             finished_once["done"] = True
             if busy:
                 self._busy = False
+            if task in self._tasks:
+                self._tasks.remove(task)
+            # The panel can be gone (plugin unloaded or reloaded) by the time a
+            # background task reports back. Touching destroyed widgets from
+            # this callback is what crashed QGIS, so stop here instead.
+            if self.dock is None:
+                return
             try:
                 if task.error is not None:
                     done(task.error, None)
                 else:
                     done(None, task.result)
+            except RuntimeError:
+                return
             finally:
-                if busy:
-                    self._refresh_ui()
+                if busy and self.dock is not None:
+                    try:
+                        self._refresh_ui()
+                    except RuntimeError:
+                        pass
 
         task.taskCompleted.connect(finished)
         task.taskTerminated.connect(finished)
@@ -677,7 +790,7 @@ class MapdexPlugin:
                     result = QgsVectorFileWriter.writeAsVectorFormatV3(
                         layer, path, QgsProject.instance().transformContext(), options
                     )
-                    if result[0] != QgsVectorFileWriter.NoError:
+                    if result[0] != enum_member(QgsVectorFileWriter, "WriterError", "NoError"):
                         raise RuntimeError("Could not export the active layer to GeoPackage.")
                 elif isinstance(layer, QgsRasterLayer):
                     if kind == BatchKind.VALIDATE_DELIVER:
@@ -707,6 +820,7 @@ class MapdexPlugin:
             QMessageBox.warning(self.iface.mainWindow(), "Source is not compatible", report["error"])
             return
         self.imported_layer_ids.clear()
+        self._announced_state = ""
         self._pending_is_batch = len(paths) > 1
         self._set_status("Uploading to Mapdex…")
         self.batch_id = "uploading"
@@ -761,14 +875,59 @@ class MapdexPlugin:
             return
         self.progress_pending = True
         project_id = self._active_project_id()
-        self._task(
-            "Refresh Mapdex batch",
-            lambda: self.api.batch(project_id, self.batch_id),
-            self._batch_updated,
-            busy=False,
-        )
+        probe_run = ""
+        # Occasionally ask whether the run really started. Every poll would be
+        # a second request every few seconds for a fact that changes once.
+        if self._start_probe_countdown <= 0 and self._backend_started is not True:
+            probe_run = self._active_run_id()
+            self._start_probe_countdown = 5
+        else:
+            self._start_probe_countdown -= 1
 
-    def _batch_updated(self, exception, response):
+        def work():
+            detail = self.api.batch(project_id, self.batch_id)
+            started = None
+            if probe_run:
+                try:
+                    started = run_has_started(self.api.run(probe_run, project_id))
+                except MapdexAPIError:
+                    started = None
+            return {"detail": detail, "started": started, "probed": bool(probe_run)}
+
+        self._task("Refresh Mapdex batch", work, self._batch_updated, busy=False)
+
+    def _note_backend_start(self, started) -> None:
+        """Record whether the server has begun executing the active run."""
+        if started is None:
+            self._backend_started = None
+            return
+        if started:
+            self._backend_started = True
+            self._waiting_since = 0.0
+            return
+        if self._backend_started is not False:
+            self._waiting_since = time.monotonic()
+        self._backend_started = False
+
+    def _waiting_seconds(self) -> int:
+        if self._backend_started is not False or not self._waiting_since:
+            return 0
+        return int(max(0.0, time.monotonic() - self._waiting_since))
+
+    def _active_run_id(self) -> str:
+        """The run id of the first item that has not reached a terminal state."""
+        for item in (self._last_batch or {}).get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("state") or "").lower()
+            if state in {"succeeded", "needs_review", "failed", "cancelled"}:
+                continue
+            run_id = str(item.get("run_id") or "")
+            if run_id:
+                return run_id
+        return ""
+
+    def _batch_updated(self, exception, payload):
         self.progress_pending = False
         if exception:
             if isinstance(exception, MapdexAPIError) and exception.status == 429:
@@ -778,6 +937,11 @@ class MapdexPlugin:
                 return
             self._show_error("Batch status failed", exception)
             return
+        response = payload
+        if isinstance(payload, dict) and "detail" in payload and "started" in payload:
+            response = payload.get("detail")
+            if payload.get("probed"):
+                self._note_backend_start(payload.get("started"))
         self._last_batch = response
         state = batch_state(response)
         counts = (response or {}).get("counts") or {}
@@ -799,35 +963,119 @@ class MapdexPlugin:
         self._set_status(message)
         self._refresh_ui()
         if batch_is_terminal(response or {}):
-            self.progress_timer.stop()
             if succeeded_run_ids(response or {}):
+                self.progress_timer.stop()
                 self._task(
                     "Import Mapdex results into QGIS",
                     lambda: self._fetch_result_files(response),
                     self._results_imported,
                 )
             elif review_run_ids(response or {}):
+                # Review is a browser round trip, but the user should not have
+                # to come back and press Resume to find out it finished: keep a
+                # slow watch so the approved layer lands in QGIS on its own.
+                self.progress_timer.start(REVIEW_POLL_MS)
+                if self._announced_state != "review":
+                    self._announced_state = "review"
+                    self._announce(
+                        "Mapdex needs your review in the browser. QGIS adds the layer "
+                        "automatically once you approve it.",
+                        level=1,
+                    )
                 self._set_status(
-                    "This task needs review in the browser before vector results can be imported."
+                    "Waiting for your review in the browser. Approve the result there and "
+                    "it lands in QGIS by itself."
                 )
+            else:
+                self.progress_timer.stop()
 
     def import_results(self):
+        """Pull the result into QGIS, saying plainly when it is still a draft."""
         if not self.batch_id:
             return
         project_id = self._active_project_id()
+        detail = self._last_batch or {}
+        approved = bool(succeeded_run_ids(detail))
+        pending_review = bool(review_run_ids(detail))
+        include_review = False
+
+        if not approved and pending_review:
+            yes = enum_member(QMessageBox, "StandardButton", "Yes")
+            no = enum_member(QMessageBox, "StandardButton", "No")
+            answer = QMessageBox.question(
+                self.iface.mainWindow(),
+                "Mapdex",
+                "Review is not finished in Mapdex yet.\n\n"
+                "Bring the draft into QGIS anyway? It arrives split into review "
+                "layers (invalid geometry, needs review, clean) so you can work "
+                "through it here. Nothing is approved by importing it.",
+                yes | no,
+                no,
+            )
+            if answer != yes:
+                self._set_status(
+                    "Left in Mapdex for review. Open Review, approve it there, and the "
+                    "approved layer arrives here on its own."
+                )
+                return
+            include_review = True
 
         def work():
-            detail = self._last_batch or self.api.batch(project_id, self.batch_id)
-            self._last_batch = detail
-            return self._fetch_result_files(detail)
+            fresh = self._last_batch or self.api.batch(project_id, self.batch_id)
+            self._last_batch = fresh
+            return self._fetch_result_files(fresh, include_review=include_review)
 
-        self._set_status("Fetching Mapdex results…")
+        self._set_status("Fetching the draft from Mapdex…" if include_review else "Fetching Mapdex results…")
         self._task("Import Mapdex results into QGIS", work, self._results_imported)
 
-    def _fetch_result_files(self, detail: dict):
+    def _draft_review_layers(self, raw: bytes, layer: dict, result_dir: str, safe_id: str):
+        """Write one GeoJSON per validator verdict so review can happen in QGIS.
+
+        The extractor reports `quality_status: uncalibrated`, so there is no
+        calibrated confidence to grade features by. The split therefore uses
+        what the validators did report: invalid geometry, review required, and
+        the rest. A draft is never recorded as imported, so the approved layer
+        can still arrive later.
+        """
+        try:
+            geojson = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            geojson = {}
+        buckets = split_review_buckets(geojson)
+        if not buckets:
+            return []
+        prepared = []
+        for bucket in buckets:
+            path = os.path.join(result_dir, "{}-{}.geojson".format(safe_id, bucket["key"]))
+            payload = {"type": "FeatureCollection", "features": bucket["features"]}
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            prepared.append(
+                {
+                    "path": path,
+                    "name": "Mapdex · {} · {} ({}) · draft".format(
+                        layer["name"], bucket["label"], len(bucket["features"])
+                    ),
+                    # Drafts are not the approved result: keep them out of the
+                    # imported set so approval still delivers the real layer.
+                    "layer_id": "",
+                    "kind": "vector",
+                }
+            )
+        return prepared
+
+    def _fetch_result_files(self, detail: dict, include_review: bool = False):
         project_id = self._active_project_id()
         prepared = []
-        for run_id in succeeded_run_ids(detail):
+        run_ids = list(succeeded_run_ids(detail))
+        draft_runs = set()
+        if include_review:
+            for run_id in review_run_ids(detail):
+                if run_id not in run_ids:
+                    run_ids.append(run_id)
+                    draft_runs.add(run_id)
+        for run_id in run_ids:
+            draft = run_id in draft_runs
             run = self.api.run(run_id, project_id)
             for layer in collect_layer_imports(run):
                 layer_id = layer["layer_id"]
@@ -851,6 +1099,14 @@ class MapdexPlugin:
                     kind = "raster"
                 else:
                     raw = self.api.layer_geojson(layer_id, project_id)
+                    if draft:
+                        # An unreviewed draft is worth reviewing IN QGIS, so it
+                        # arrives as one layer per validator verdict instead of
+                        # a single blob the user has to filter by hand.
+                        prepared.extend(
+                            self._draft_review_layers(raw, layer, result_dir, safe_id)
+                        )
+                        continue
                     path = os.path.join(result_dir, "{}.geojson".format(safe_id))
                     kind = "vector"
                 with open(path, "wb") as handle:
@@ -891,6 +1147,7 @@ class MapdexPlugin:
         files = (payload or {}).get("files") or []
         detail = (payload or {}).get("batch") or self._last_batch or {}
         added = 0
+        imported = []
         for item in files:
             if item.get("kind") == "raster":
                 layer = QgsRasterLayer(item["path"], item["name"])
@@ -899,9 +1156,11 @@ class MapdexPlugin:
             if not layer.isValid():
                 continue
             QgsProject.instance().addMapLayer(layer)
-            self.imported_layer_ids.add(item["layer_id"])
+            if item.get("layer_id"):
+                self.imported_layer_ids.add(item["layer_id"])
             added += 1
-            self.iface.mapCanvas().setExtent(layer.extent())
+            imported.append(layer)
+        self._zoom_to_layers(imported)
         review_n = len(review_run_ids(detail))
         if added:
             msg = "Added {} Mapdex result layer(s) to the project.".format(added)
@@ -909,10 +1168,51 @@ class MapdexPlugin:
                 msg += " {} item(s) still need browser Review.".format(review_n)
             self._set_status(msg)
             self.iface.mapCanvas().refresh()
+            # The layer is in the tree and the canvas moved to it, but say so
+            # in the message bar too: the task finishes long after the user
+            # stopped watching this panel.
+            self._announced_state = "imported"
+            self._announce(msg, level=3)
         elif review_n:
             self._set_status("Open Review — no approved vector layers are ready to import yet.")
         else:
             self._set_status("Task finished, but no importable result layers were available to add.")
+            self._announce("Mapdex task finished with no importable layer.", level=1)
+
+    def _zoom_to_layers(self, layers) -> None:
+        """Frame the imported layers, in the canvas CRS.
+
+        `QgsMapCanvas.setExtent` expects the canvas projection, while
+        `layer.extent()` is in the layer's own. Mapdex results arrive as
+        EPSG:4326 GeoJSON, so handing that rectangle straight to a Web
+        Mercator canvas dropped the view near 0°/0° instead of the data.
+        """
+        canvas = self.iface.mapCanvas()
+        target_crs = canvas.mapSettings().destinationCrs()
+        combined = QgsRectangle()
+        combined.setMinimal()
+        for layer in layers:
+            extent = layer.extent()
+            if extent is None or extent.isEmpty():
+                continue
+            source_crs = layer.crs()
+            if source_crs.isValid() and target_crs.isValid() and source_crs != target_crs:
+                transform = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance())
+                try:
+                    extent = transform.transformBoundingBox(extent)
+                except QgsCsException:
+                    # An unprojectable result is better left where the user is
+                    # than thrown at a wrong place on the map.
+                    continue
+            combined.combineExtentWith(extent)
+        if combined.isEmpty():
+            return
+        try:
+            combined.scale(1.05)  # a little air around the result
+        except (AttributeError, TypeError):
+            pass
+        canvas.setExtent(combined)
+        canvas.refresh()
 
     def cancel_batch(self):
         if not self.batch_id:
@@ -944,6 +1244,7 @@ class MapdexPlugin:
             retried = (response or {}).get("retried", 0)
             self._set_status("Retried {} failed item(s). Watching progress…".format(retried))
             self.imported_layer_ids.clear()
+            self._announced_state = ""
             self.progress_timer.start(3000)
 
         self._task(
@@ -1015,6 +1316,7 @@ class MapdexPlugin:
         if project_index >= 0:
             self.project_box.setCurrentIndex(project_index)
         self._last_batch = None
+        self._announced_state = ""
         self._set_status("Refreshing the selected Mapdex task…")
         self._refresh_ui()
         self._poll_batch()

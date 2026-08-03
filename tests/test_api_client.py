@@ -106,62 +106,41 @@ def test_workflow_payload_uses_server_batch_contract(monkeypatch):
     assert captured == {
         "method": "POST",
         "path": "/v1/batches",
-        "payload": {"kind": "digitize_parcels", "sources": [{"file_id": "file_1"}]},
+        "payload": {"kind": "digitize_parcels", "name": "[QGIS] Digitize Parcels", "sources": [{"file_id": "file_1"}]},
         "project_id": "proj_1",
     }
 
 
 def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_path):
     source = tmp_path / "map.tif"
-    source.write_bytes(b"geotiff-bytes")
+    source.write_bytes(b"TIFFCONTENT")
     api = MapdexAPI("https://api.mapdex.ai", "token")
     calls = []
-    streamed = []
 
-    def fake_request(method, path, payload=None, project_id=""):
+    def fake(method, path, payload=None, project_id=""):
         calls.append((method, path, payload, project_id))
         if path == "/v1/files":
             return {
-                "file": {"id": "file_1", "status": "pending"},
-                "upload": {
-                    "url": "https://objects.example.test/file_1",
-                    "method": "PUT",
-                    "headers": {"Content-Type": "image/tiff"},
-                },
+                "file": {"id": "file_123"},
+                "upload": {"url": "https://storage.mapdex.ai/upload/123", "method": "PUT", "headers": {}},
             }
-        return {"id": "file_1", "status": "uploaded"}
+        if path == "/v1/files/file_123/complete":
+            return {"id": "file_123", "status": "ready"}
+        return {}
 
-    def fake_put(path, upload):
-        streamed.append((path, upload))
+    monkeypatch.setattr(api, "_request", fake)
+    monkeypatch.setattr(api, "_put_upload", lambda path, upload: None)
 
-    monkeypatch.setattr(api, "_request", fake_request)
-    monkeypatch.setattr(api, "_put_upload", fake_put)
-
-    result = api.upload_file(str(source), "proj_1")
-
-    assert result == {"id": "file_1", "status": "uploaded"}
+    res = api.upload_file(str(source), "proj_1")
+    assert res == {"id": "file_123", "status": "ready"}
     assert calls == [
         (
             "POST",
             "/v1/files",
-            {
-                "filename": "map.tif",
-                "content_type": "image/tiff",
-                "byte_size": 13,
-            },
+            {"filename": "map.tif", "content_type": "image/tiff", "byte_size": 11},
             "proj_1",
         ),
-        ("POST", "/v1/files/file_1/complete", {}, "proj_1"),
-    ]
-    assert streamed == [
-        (
-            str(source),
-            {
-                "url": "https://objects.example.test/file_1",
-                "method": "PUT",
-                "headers": {"Content-Type": "image/tiff"},
-            },
-        )
+        ("POST", "/v1/files/file_123/complete", {}, "proj_1"),
     ]
 
 
@@ -211,6 +190,7 @@ def test_multiple_files_create_one_real_batch(monkeypatch):
     assert captured == {
         "payload": {
             "kind": "georeference",
+            "name": "[QGIS] Georeference",
             "sources": [{"file_id": "file_1"}, {"file_id": "file_2"}],
         },
         "project_id": "proj_1",

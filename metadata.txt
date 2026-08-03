@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Send map data to Mapdex and add completed raster or vector results back into QGIS.
-version=0.9.5
+version=0.9.10
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,18 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.9.5
+changelog=0.9.10
+    - Zoom to an imported result in the canvas CRS instead of jumping across the world.
+    0.9.9
+    - Fix a QGIS crash caused by background tasks reporting back after unload.
+    0.9.8
+    - Stop leaking a QGIS layer-change callback on every plugin reload.
+    0.9.7
+    - Fix a QGIS 4 start-up crash in the responsive panel layout.
+    0.9.6
+    - Get result from Mapdex: import the approved layer, or the draft split into review layers.
+    - QGIS 4 (Qt6) fix for the review confirmation dialog.
+    0.9.5
     - Panel opens wide enough to use and adapts to a narrow dock.
     - Plugin icon and Qt6 support declared for QGIS 4.
     0.9.4

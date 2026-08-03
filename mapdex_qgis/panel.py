@@ -6,7 +6,7 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
+    QBoxLayout,
     QLabel,
     QPushButton,
     QProgressBar,
@@ -68,10 +68,22 @@ class _CompanionPanel(QWidget):
         self._forms.append(form)
         return form
 
-    def register_pair(self, grid, first, second):
-        """A two-widget row that stacks when the dock is narrow."""
-        self._pairs.append((grid, first, second))
-        return grid
+    def register_pair(self, first, second):
+        """Build a two-widget row that stacks when the dock is narrow.
+
+        The row is a QBoxLayout whose direction is flipped on resize. Moving
+        widgets between layout cells at runtime (removeWidget/addWidget) hands
+        ownership back and forth between C++ and Python, and under PyQt6 that
+        cost us a deleted QComboBox during plugin start-up. Adding each widget
+        exactly once removes that whole class of problem.
+        """
+        row = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(first, 1)
+        row.addWidget(second, 0)
+        self._pairs.append((row, first, second))
+        return row
 
     def sizeHint(self):
         return QSize(PREFERRED_WIDTH, PREFERRED_HEIGHT)
@@ -92,27 +104,19 @@ class _CompanionPanel(QWidget):
         )
         for form in self._forms:
             form.setRowWrapPolicy(wrap)
-        left = enum_member(Qt, "AlignmentFlag", "AlignLeft") | enum_member(
-            Qt, "AlignmentFlag", "AlignVCenter"
+        direction = enum_member(
+            QBoxLayout, "Direction", "TopToBottom" if compact else "LeftToRight"
         )
+        left = enum_member(Qt, "AlignmentFlag", "AlignLeft")
         right = enum_member(Qt, "AlignmentFlag", "AlignRight") | enum_member(
             Qt, "AlignmentFlag", "AlignVCenter"
         )
-        for grid, first, second in self._pairs:
-            grid.removeWidget(first)
-            grid.removeWidget(second)
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 0)
-            if compact:
-                # Stacked: the trailing control starts at the left edge rather
-                # than floating in the middle of an empty cell.
-                grid.addWidget(first, 0, 0)
-                grid.addWidget(second, 1, 0, left)
-            else:
-                grid.addWidget(first, 0, 0)
-                grid.addWidget(second, 0, 1, right)
-            first.setVisible(True)
-            second.setVisible(True)
+        for row, first, second in self._pairs:
+            row.setDirection(direction)
+            # Stacked, the trailing control starts at the left edge instead of
+            # floating in the middle of the row.
+            row.setAlignment(second, left if compact else right)
+            row.setAlignment(first, left if compact else enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
 
 
 def build_companion_panel(workflows):
@@ -164,9 +168,6 @@ def build_companion_panel(workflows):
     layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(10)
 
-    connection_row = QGridLayout()
-    connection_row.setContentsMargins(0, 0, 0, 0)
-    connection_row.setHorizontalSpacing(8)
     connection_label = QLabel("Not connected")
     connection_label.setWordWrap(True)
     connection_label.setStyleSheet("font-weight: 600;")
@@ -180,8 +181,7 @@ def build_companion_panel(workflows):
     settings_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
     )
-    root.register_pair(connection_row, connection_label, settings_button)
-    layout.addLayout(connection_row)
+    layout.addLayout(root.register_pair(connection_label, settings_button))
 
     status = QLabel("Connect Mapdex to start a task.")
     status.setObjectName("mapdexStatus")
@@ -226,14 +226,10 @@ def build_companion_panel(workflows):
     workspace_layout = QVBoxLayout(workspace)
     workspace_layout.setContentsMargins(0, 4, 0, 0)
     workspace_layout.setSpacing(8)
-    header_row = QGridLayout()
-    header_row.setContentsMargins(0, 0, 0, 0)
-    header_row.setHorizontalSpacing(8)
     new_task_label = _section_label("New task")
     open_project_button = QPushButton("Open project")
     open_project_button.setToolTip("Open this project in Mapdex web workspace")
-    root.register_pair(header_row, new_task_label, open_project_button)
-    workspace_layout.addLayout(header_row)
+    workspace_layout.addLayout(root.register_pair(new_task_label, open_project_button))
     form = root.register_form(QFormLayout())
     form.setFieldGrowthPolicy(enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow"))
     form.setSpacing(7)
@@ -295,13 +291,9 @@ def build_companion_panel(workflows):
     recent_layout.setContentsMargins(0, 4, 0, 0)
     recent_layout.setSpacing(6)
     recent_layout.addWidget(_section_label("Recent tasks"))
-    recent_row = QGridLayout()
-    recent_row.setContentsMargins(0, 0, 0, 0)
-    recent_row.setHorizontalSpacing(8)
     recent_box = _elastic(QComboBox())
     resume_button = QPushButton("Resume")
-    root.register_pair(recent_row, recent_box, resume_button)
-    recent_layout.addLayout(recent_row)
+    recent_layout.addLayout(root.register_pair(recent_box, resume_button))
     layout.addWidget(recent)
     layout.addStretch(1)
 

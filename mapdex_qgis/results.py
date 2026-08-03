@@ -138,6 +138,51 @@ def collect_raster_layer_imports(run: dict[str, Any]) -> list[dict[str, str]]:
     return found
 
 
+# Reviewing inside QGIS means separating what the validators actually flagged.
+# The extractor reports `quality_status: uncalibrated` for parcels, so there is
+# no calibrated confidence to grade features by; splitting on an invented score
+# would claim an accuracy the pipeline explicitly refuses to claim. These
+# buckets use only reported facts, in decreasing order of urgency.
+REVIEW_BUCKETS = (
+    ("invalid", "Invalid geometry"),
+    ("needs_review", "Needs review"),
+    ("clean", "Clean"),
+)
+
+
+def _bucket_for(properties: dict[str, Any]) -> str:
+    validation = str(properties.get("validation_status") or "").strip().lower()
+    if validation and validation not in {"valid", "ok", "passed"}:
+        return "invalid"
+    if properties.get("review_required") is True:
+        return "needs_review"
+    review_state = str(properties.get("review_status") or "").strip().lower()
+    if review_state in {"needs_review", "review_required", "pending"}:
+        return "needs_review"
+    return "clean"
+
+
+def split_review_buckets(geojson: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split a result layer into the review layers a QGIS user can work through.
+
+    Returns ``[{key, label, features}]`` for the non-empty buckets only, in
+    urgency order, so an unreviewed draft arrives as separate QGIS layers
+    instead of one undifferentiated blob.
+    """
+    features = geojson.get("features") if isinstance(geojson, dict) else None
+    if not isinstance(features, list):
+        return []
+    grouped: dict[str, list[Any]] = {key: [] for key, _ in REVIEW_BUCKETS}
+    for feature in features:
+        properties = feature.get("properties") if isinstance(feature, dict) else None
+        grouped[_bucket_for(properties if isinstance(properties, dict) else {})].append(feature)
+    return [
+        {"key": key, "label": label, "features": grouped[key]}
+        for key, label in REVIEW_BUCKETS
+        if grouped[key]
+    ]
+
+
 def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
     """Return [{url, name}] for downloadable GeoJSON artifacts only."""
     found: list[dict[str, str]] = []
