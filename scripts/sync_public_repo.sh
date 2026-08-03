@@ -33,8 +33,9 @@ rsync -a --delete \
   "$ROOT/tests/" "$TARGET/tests/"
 
 mkdir -p "$TARGET/scripts" "$TARGET/.github/workflows"
-cp "$ROOT/scripts/package.py" "$TARGET/scripts/package.py"
+cp "$ROOT/scripts/package.py" "$ROOT/scripts/publish.py" "$ROOT/scripts/release_checks.py" "$TARGET/scripts/"
 cp "$ROOT/ci/github-actions-ci.yml" "$TARGET/.github/workflows/ci.yml"
+cp "$ROOT/ci/github-actions-release.yml" "$TARGET/.github/workflows/release.yml"
 cp "$ROOT/metadata.txt" "$ROOT/README.md" "$ROOT/LICENSE" "$TARGET/"
 
 # generated_contracts.py is produced by `make gen` in the monorepo. The public
