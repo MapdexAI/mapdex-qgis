@@ -20,7 +20,7 @@ jobs:
         run: python -m pytest tests -q
       - name: Build the plugin package
         run: python scripts/package.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapdex-qgis
           path: dist/mapdex-qgis.zip
