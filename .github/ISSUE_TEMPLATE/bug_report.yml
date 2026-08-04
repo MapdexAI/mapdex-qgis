@@ -1,0 +1,63 @@
+# Placed at .github/ISSUE_TEMPLATE/bug_report.yml in the public repository by
+# scripts/sync_public_repo.sh. The fields are the ones that actually decide a
+# QGIS plugin bug: which QGIS, which Qt, and the Python log.
+name: Bug report
+description: Something in Mapdex for QGIS does not work
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything that looks like a security problem, please follow
+        [SECURITY.md](../blob/main/SECURITY.md) instead of filing here.
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Plugins → Manage and Install Plugins → Installed → Mapdex for QGIS
+      placeholder: "0.9.11"
+    validations:
+      required: true
+
+  - type: input
+    id: qgis-version
+    attributes:
+      label: QGIS version
+      description: Help → About (include the Qt version shown there)
+      placeholder: "4.0.2, Qt 6.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Python log
+      description: >
+        View → Panels → Log Messages → Python Error tab. Paste the whole
+        traceback, including the lines above the error.
+      render: text
+
+  - type: checkboxes
+    id: restarted
+    attributes:
+      label: Before reporting
+      options:
+        - label: I restarted QGIS after installing or updating the plugin
+          required: true

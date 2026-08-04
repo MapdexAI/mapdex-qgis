@@ -1,0 +1,11 @@
+# Placed at .github/dependabot.yml in the public repository by
+# scripts/sync_public_repo.sh. The plugin has no Python dependencies beyond
+# the QGIS runtime, so the only moving parts are the pinned GitHub Actions.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
