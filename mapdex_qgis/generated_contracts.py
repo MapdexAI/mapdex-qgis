@@ -103,6 +103,7 @@ class ConnectionSummary:
     id: str
     org_id: str
     project_id: str
+    project_ids: List[str]
     name: str
     type: str
     locator: str

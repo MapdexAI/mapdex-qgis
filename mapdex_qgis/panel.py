@@ -119,7 +119,13 @@ class _CompanionPanel(QWidget):
             row.setAlignment(first, left if compact else enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
 
 
-def build_companion_panel(workflows):
+def build_companion_panel(workflows, endpoint_settings=True):
+    """Build the panel.
+
+    endpoint_settings=False is a released build talking to the hosted
+    Mapdex: the API/web address controls are not shown at all, so nobody can
+    point a production install somewhere else by accident.
+    """
     root = _CompanionPanel()
     root.setObjectName("mapdexPluginRoot")
     root.setMinimumWidth(MINIMUM_WIDTH)
@@ -211,6 +217,10 @@ def build_companion_panel(workflows):
     connection_layout.addWidget(save_settings_button)
     settings_button.toggled.connect(connection_panel.setVisible)
     layout.addWidget(connection_panel)
+    if not endpoint_settings:
+        settings_button.setVisible(False)
+        settings_button.setChecked(False)
+        connection_panel.setVisible(False)
 
     connect_button = QPushButton("Connect Mapdex")
     connect_button.setObjectName("mapdexPrimaryButton")

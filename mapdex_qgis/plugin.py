@@ -22,6 +22,11 @@ from qgis.core import (
     QgsVectorLayer,
 )
 
+from .build_profile import (
+    ALLOW_CUSTOM_ENDPOINT_SETTING,
+    endpoints_unlocked,
+    resolve_endpoints,
+)
 from .api_client import (
     MapdexAPI,
     MapdexAPIError,
@@ -114,11 +119,25 @@ class MapdexPlugin:
         # Never continue using the historical plaintext setting. Existing users
         # reconnect once and receive encrypted QGIS Authentication DB storage.
         settings.remove(LEGACY_TOKEN_SETTING)
-        self.api = MapdexAPI(
-            settings.value("mapdex/base_url", DEFAULT_API),
-            persisted_token,
+        # A released build is pinned to the hosted service; only a development
+        # build (or an explicitly unlocked install) may point somewhere else.
+        self._endpoints_unlocked = endpoints_unlocked(
+            settings.value(ALLOW_CUSTOM_ENDPOINT_SETTING, "")
         )
-        self.web_base = str(settings.value("mapdex/web_base", DEFAULT_WEB)).rstrip("/")
+        api_base, web_base, stale_endpoint = resolve_endpoints(
+            str(settings.value("mapdex/base_url", "") or ""),
+            str(settings.value("mapdex/web_base", "") or ""),
+            self._endpoints_unlocked,
+        )
+        if stale_endpoint:
+            # The stored session belongs to another deployment.
+            persisted_token = ""
+            if self.token_store is not None:
+                self.token_store.clear()
+            settings.setValue("mapdex/base_url", api_base)
+            settings.setValue("mapdex/web_base", web_base)
+        self.api = MapdexAPI(api_base, persisted_token)
+        self.web_base = web_base.rstrip("/")
         self.device_code = ""
         self.batch_id = ""
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
@@ -242,7 +261,9 @@ class MapdexPlugin:
             | enum_member(QDockWidget, "DockWidgetFeature", "DockWidgetClosable")
         )
 
-        root, refs = build_companion_panel(WORKFLOWS)
+        root, refs = build_companion_panel(
+            WORKFLOWS, endpoint_settings=self._endpoints_unlocked
+        )
         # Hand the whole tree to the dock before touching any of it: with the
         # dock as the C++ owner, no widget can be collected while the panel is
         # still being wired up.
@@ -375,6 +396,8 @@ class MapdexPlugin:
             self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
 
     def save_connection_settings(self):
+        if not self._endpoints_unlocked:
+            return
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")
         if not api_url:
@@ -389,6 +412,8 @@ class MapdexPlugin:
 
     def _apply_connection_settings_from_fields(self) -> bool:
         """Read current URL fields before connect (even if Save was not clicked)."""
+        if not self._endpoints_unlocked:
+            return True  # pinned to the hosted service; the fields are not shown
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")
         if api_url and self._reject_insecure_endpoint(api_url):
