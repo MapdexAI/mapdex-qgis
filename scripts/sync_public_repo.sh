@@ -32,11 +32,14 @@ rsync -a --delete \
   --exclude '.pytest_cache' \
   "$ROOT/tests/" "$TARGET/tests/"
 
-mkdir -p "$TARGET/scripts" "$TARGET/.github/workflows"
+mkdir -p "$TARGET/scripts" "$TARGET/.github/workflows" "$TARGET/.github/ISSUE_TEMPLATE"
 cp "$ROOT/scripts/package.py" "$ROOT/scripts/publish.py" "$ROOT/scripts/release_checks.py" "$TARGET/scripts/"
 cp "$ROOT/ci/github-actions-ci.yml" "$TARGET/.github/workflows/ci.yml"
 cp "$ROOT/ci/github-actions-release.yml" "$TARGET/.github/workflows/release.yml"
-cp "$ROOT/metadata.txt" "$ROOT/README.md" "$ROOT/LICENSE" "$TARGET/"
+cp "$ROOT/ci/issue-template-bug.yml" "$TARGET/.github/ISSUE_TEMPLATE/bug_report.yml"
+cp "$ROOT/ci/dependabot.yml" "$TARGET/.github/dependabot.yml"
+cp "$ROOT/metadata.txt" "$ROOT/README.md" "$ROOT/LICENSE" \
+  "$ROOT/CONTRIBUTING.md" "$ROOT/SECURITY.md" "$TARGET/"
 
 # generated_contracts.py is produced by `make gen` in the monorepo. The public
 # repo carries the vendored copy so its own CI can build the same zip.

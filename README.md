@@ -1,5 +1,10 @@
 # Mapdex for QGIS
 
+> Published from the Mapdex monorepo. `main` only accepts the mirror, so a
+> commit pushed here directly is overwritten on the next sync. Issues are read
+> and pull requests are applied upstream with authorship preserved — see
+> [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Send a scanned map, PDF or vector layer from QGIS to [Mapdex](https://mapdex.ai),
 run a georeference / parcel digitization / validation task there, and add the
 finished raster or vector result back into your QGIS project.
