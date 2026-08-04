@@ -1,0 +1,56 @@
+# Placed at .github/workflows/release.yml in the public plugin repository by
+# scripts/sync_public_repo.sh.
+#
+# Tag the repo and the release ships itself:
+#   git tag v0.9.11 && git push origin v0.9.11
+#
+# Requires two repository secrets holding the OSGeo account that owns the
+# plugin on plugins.qgis.org: OSGEO_USERNAME and OSGEO_PASSWORD.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run every check but do not upload"
+        type: boolean
+        default: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -m pytest tests -q
+
+      # A published package is pinned to the hosted Mapdex: no endpoint fields.
+      - name: Build the release package
+        run: python scripts/package.py --channel production
+
+      # Refuses a tag that does not match metadata.txt, a missing LICENSE or
+      # README, a stale icon reference, and build leftovers.
+      - name: Verify the package
+        run: python scripts/publish.py dist/mapdex-qgis.zip "${{ github.ref }}" --dry-run
+
+      - name: Publish to plugins.qgis.org
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          OSGEO_USERNAME: ${{ secrets.OSGEO_USERNAME }}
+          OSGEO_PASSWORD: ${{ secrets.OSGEO_PASSWORD }}
+        run: python scripts/publish.py dist/mapdex-qgis.zip "${{ github.ref }}"
+
+      - name: Attach the package to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/mapdex-qgis.zip
+          generate_release_notes: true

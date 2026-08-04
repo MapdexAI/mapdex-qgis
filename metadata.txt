@@ -1,0 +1,36 @@
+[general]
+name=Mapdex for QGIS
+description=Send map data to Mapdex and add completed raster or vector results back into QGIS.
+version=0.9.11
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+supportsQt6=True
+author=Mapdex
+email=support@mapdex.ai
+about=Mapdex for QGIS sends a raster, PDF or vector layer to the Mapdex service, runs a georeference, parcel digitization, validation or full-pipeline task there, and adds the completed raster or vector result back as a QGIS layer. Review of flagged features happens in the browser. Requires a Mapdex account: the plugin opens your browser once to authorize this QGIS installation, and the token is stored in the QGIS Authentication Manager. Needs network access to your Mapdex endpoint (mapdex.ai by default, configurable for self-hosted installs). No external Python packages are required beyond the QGIS standard runtime; works on Windows, Linux and macOS, with Qt5 (QGIS 3.34+) and Qt6 (QGIS 4).
+icon=icon.png
+tags=georeferencing,digitizing,raster,vector,web service,cadastre,vectorization,ai
+category=Web
+experimental=False
+deprecated=False
+homepage=https://mapdex.ai/qgis
+tracker=https://github.com/MapdexAI/mapdex-qgis/issues
+repository=https://github.com/MapdexAI/mapdex-qgis
+changelog=0.9.11
+    - Released builds are pinned to mapdex.ai; endpoint fields are development only.
+    0.9.10
+    - Zoom to an imported result in the canvas CRS instead of jumping across the world.
+    0.9.9
+    - Fix a QGIS crash caused by background tasks reporting back after unload.
+    0.9.8
+    - Stop leaking a QGIS layer-change callback on every plugin reload.
+    0.9.7
+    - Fix a QGIS 4 start-up crash in the responsive panel layout.
+    0.9.6
+    - Get result from Mapdex: import the approved layer, or the draft split into review layers.
+    - QGIS 4 (Qt6) fix for the review confirmation dialog.
+    0.9.5
+    - Panel opens wide enough to use and adapts to a narrow dock.
+    - Plugin icon and Qt6 support declared for QGIS 4.
+    0.9.4
+    - Batch tasks resume after QGIS is restarted.
