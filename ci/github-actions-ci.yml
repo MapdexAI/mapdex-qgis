@@ -16,6 +16,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Test dependency
+        run: pip install -r requirements-dev.txt
+
       - name: Unit tests (no QGIS install required)
         run: python -m pytest tests -q
       - name: Build the plugin package

@@ -39,7 +39,7 @@ cp "$ROOT/ci/github-actions-release.yml" "$TARGET/.github/workflows/release.yml"
 cp "$ROOT/ci/issue-template-bug.yml" "$TARGET/.github/ISSUE_TEMPLATE/bug_report.yml"
 cp "$ROOT/ci/dependabot.yml" "$TARGET/.github/dependabot.yml"
 cp "$ROOT/metadata.txt" "$ROOT/README.md" "$ROOT/LICENSE" \
-  "$ROOT/CONTRIBUTING.md" "$ROOT/SECURITY.md" "$TARGET/"
+  "$ROOT/CONTRIBUTING.md" "$ROOT/SECURITY.md" "$ROOT/requirements-dev.txt" "$TARGET/"
 
 # generated_contracts.py is produced by `make gen` in the monorepo. The public
 # repo carries the vendored copy so its own CI can build the same zip.
