@@ -77,6 +77,27 @@ python3 -m pytest tests -q      # unit tests (no QGIS install required)
 python3 scripts/package.py      # build dist/mapdex-qgis.zip
 ```
 
+## Release
+
+Releases are driven by a tag. Bump `version=` in `metadata.txt`, add a
+`changelog=` entry, commit, then:
+
+```bash
+git tag v0.9.11 && git push origin v0.9.11
+```
+
+`.github/workflows/release.yml` runs the tests, builds the package, verifies it
+(tag matches `metadata.txt`, LICENSE and README present, icon packaged, no build
+leftovers, public repository URL), uploads it to plugins.qgis.org and attaches
+the zip to the GitHub release. It needs two repository secrets from the OSGeo
+account that owns the plugin: `OSGEO_USERNAME` and `OSGEO_PASSWORD`.
+
+To check a package without publishing anything:
+
+```bash
+python3 scripts/publish.py dist/mapdex-qgis.zip v0.9.11 --dry-run
+```
+
 `mapdex_qgis/generated_contracts.py` is generated from the Mapdex contracts
 package; do not edit it by hand.
 

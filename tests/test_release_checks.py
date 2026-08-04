@@ -112,3 +112,19 @@ def test_the_real_package_is_releasable():
         pytest.skip("run scripts/package.py first")
     metadata = read_metadata(built)
     check_package(metadata, tag="v{}".format(metadata["version"]))
+
+
+def test_publish_returns_a_failing_exit_code_so_ci_stops(tmp_path):
+    """CI only blocks a bad release if the script exits non-zero."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import publish
+
+    built = ROOT / "dist" / "mapdex-qgis.zip"
+    if not built.is_file():
+        pytest.skip("run scripts/package.py first")
+    version = read_metadata(built)["version"]
+
+    assert publish.main([str(built), "v{}".format(version), "--dry-run"]) == 0
+    assert publish.main([str(built), "v9.9.9", "--dry-run"]) == 1
+    assert publish.main([str(tmp_path / "absent.zip")]) == 1
+    assert publish.main([]) == 2

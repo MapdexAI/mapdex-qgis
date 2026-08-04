@@ -32,8 +32,9 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests -q
 
-      - name: Build the plugin package
-        run: python scripts/package.py
+      # A published package is pinned to the hosted Mapdex: no endpoint fields.
+      - name: Build the release package
+        run: python scripts/package.py --channel production
 
       # Refuses a tag that does not match metadata.txt, a missing LICENSE or
       # README, a stale icon reference, and build leftovers.
