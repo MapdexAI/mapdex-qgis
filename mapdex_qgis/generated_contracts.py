@@ -1152,6 +1152,7 @@ class StepRequest:
 class StepResult:
     artifacts: List[ArtifactInfo] = dataclasses.field(default_factory=list)
     result_json: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    analysis: Dict[str, Any] = dataclasses.field(default_factory=dict)
     validation: List[str] = dataclasses.field(default_factory=list)
     warnings: List[str] = dataclasses.field(default_factory=list)
     usage: JobUsage = dataclasses.field(default_factory=JobUsage)
@@ -1878,6 +1879,12 @@ ERROR_REGISTRY = [
         "template": "Importing is not supported for this connection type."
     },
     {
+        "code": "CONNECTION_IMPORT_FAILED",
+        "type": "validation",
+        "http": 422,
+        "template": "Could not import from the connection: {message}"
+    },
+    {
         "code": "CONNECTION_IMPORT_EMPTY",
         "type": "validation",
         "http": 422,
@@ -1954,7 +1961,7 @@ TOOLS = [
         "category": "analyze",
         "summary": "Analyze a file to detect its format, CRS, geometry, page count, and recommend a workflow.",
         "executor": "worker:analyze@2",
-        "credits": 1,
+        "credits": 0,
         "capability": {
             "visibility": "public_seo_entry",
             "backend": "piri-extension-host",

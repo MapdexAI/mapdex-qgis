@@ -14,6 +14,7 @@ from qgis.core import (
     QgsApplication,
     QgsCoordinateTransform,
     QgsCsException,
+    QgsMessageLog,
     QgsProject,
     QgsRasterLayer,
     QgsRectangle,
@@ -97,7 +98,7 @@ class _WorkTask(QgsTask):
         super().__init__(description, flags)
         self._work = work
         self.result = None
-        self.error = None  # type: Optional[BaseException]
+        self.error: Optional[BaseException] = None
 
     def run(self):
         try:
@@ -131,7 +132,7 @@ class MapdexPlugin:
         )
         if stale_endpoint:
             # The stored session belongs to another deployment.
-            persisted_token = ""
+            persisted_token = ""  # nosec B105 - clears the stored session
             if self.token_store is not None:
                 self.token_store.clear()
             settings.setValue("mapdex/base_url", api_base)
@@ -143,7 +144,7 @@ class MapdexPlugin:
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
         self.imported_layer_ids = set()  # type: set[str]
         self.selected_paths = []  # type: list[str]
-        self._last_batch = None  # type: Optional[dict]
+        self._last_batch: Optional[dict] = None
         self._source_label = ""
         self._pending_is_batch = False
         self._busy = False
@@ -158,7 +159,7 @@ class MapdexPlugin:
         # Whether the server has actually started the child run, and since when
         # it has been waiting. None means "not reported"; the panel then keeps
         # its neutral wording instead of guessing.
-        self._backend_started = None  # type: Optional[bool]
+        self._backend_started: Optional[bool] = None
         self._waiting_since = 0.0
         self._start_probe_countdown = 0
         # Which terminal beat has already been announced in the QGIS message bar.
@@ -356,8 +357,12 @@ class MapdexPlugin:
         """
         try:
             self.iface.messageBar().pushMessage("Mapdex", text, level=level, duration=duration)
-        except Exception:  # noqa: BLE001 — never let a notice break the task
-            pass
+        except (AttributeError, RuntimeError, TypeError) as error:
+            # No message bar (unloaded plugin, headless run). A notice must
+            # never break the task, but it should not vanish either.
+            QgsMessageLog.logMessage(
+                "{} [message bar unavailable: {}]".format(text, error), "Mapdex"
+            )
 
     def _load_connection_fields(self):
         if self.api_url_input is None:
@@ -442,7 +447,7 @@ class MapdexPlugin:
                 )
             detail = "".join(bits)
             if exc.status == 401:
-                self.api.token = ""
+                self.api.token = ""  # nosec B105 - clears the rejected session
                 if self.token_store is not None:
                     self.token_store.clear()
                 detail += "\n\nYour Mapdex session expired. Connect again to continue."
@@ -629,7 +634,12 @@ class MapdexPlugin:
         if layer is None or not layer.isValid():
             self.source_summary.setText("No valid active QGIS layer")
             return
-        kind = "Raster" if isinstance(layer, QgsRasterLayer) else "Vector" if isinstance(layer, QgsVectorLayer) else "Unsupported"
+        if isinstance(layer, QgsRasterLayer):
+            kind = "Raster"
+        elif isinstance(layer, QgsVectorLayer):
+            kind = "Vector"
+        else:
+            kind = "Unsupported"
         crs = layer.crs().authid() if hasattr(layer, "crs") and layer.crs().isValid() else "No CRS"
         self._source_label = layer.name()
         self.source_summary.setText("{} · {} · {}".format(layer.name(), kind, crs))
@@ -662,7 +672,7 @@ class MapdexPlugin:
     def disconnect(self):
         self.poll_timer.stop()
         self.progress_timer.stop()
-        self.api.token = ""
+        self.api.token = ""  # nosec B105 - disconnect clears the session
         self.device_code = ""
         self.batch_id = ""
         self.project_id = ""
@@ -1318,7 +1328,16 @@ class MapdexPlugin:
 
     def _remember_task(self, batch_id, project_id, workflow, source, file_id=""):
         tasks = [item for item in self._recent_tasks() if item.get("batch_id") != batch_id]
-        tasks.insert(0, {"batch_id": batch_id, "project_id": project_id, "workflow": workflow, "source": source, "file_id": file_id})
+        tasks.insert(
+            0,
+            {
+                "batch_id": batch_id,
+                "project_id": project_id,
+                "workflow": workflow,
+                "source": source,
+                "file_id": file_id,
+            },
+        )
         QSettings().setValue("mapdex/recent_tasks", json.dumps(tasks[:5]))
         self._load_recent_tasks()
 

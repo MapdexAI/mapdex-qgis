@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Send map data to Mapdex and add completed raster or vector results back into QGIS.
-version=0.9.11
+version=0.9.12
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,9 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.9.11
+changelog=0.9.12
+    - Clean the plugin repository scan: lint policy, narrowed exception handling, no silent notice drops.
+    0.9.11
     - Released builds are pinned to mapdex.ai; endpoint fields are development only.
     0.9.10
     - Zoom to an imported result in the canvas CRS instead of jumping across the world.

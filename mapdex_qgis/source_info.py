@@ -31,7 +31,10 @@ def inspect_paths(paths: list[str], workflow: str) -> dict:
         total += os.path.getsize(path)
     wants_vector = workflow == "validate_deliver"
     incompatible = any(kind != ("vector" if wants_vector else "raster") for kind in kinds)
-    label = "{} · {}".format(kinds[0].title(), human_size(total)) if len(paths) == 1 else "{} files · {}".format(len(paths), human_size(total))
+    if len(paths) == 1:
+        label = "{} · {}".format(kinds[0].title(), human_size(total))
+    else:
+        label = "{} files · {}".format(len(paths), human_size(total))
     if incompatible:
         expected = "vector" if wants_vector else "raster/PDF"
         return {"valid": False, "summary": label, "error": "This workflow requires a {} source.".format(expected)}

@@ -12,7 +12,7 @@ from typing import Optional
 
 
 AUTH_CONFIG_SETTING = "mapdex/auth_config_id"
-LEGACY_TOKEN_SETTING = "mapdex/token"
+LEGACY_TOKEN_SETTING = "mapdex/token"  # nosec B105 - settings key, removed on sight
 
 
 class SecureTokenStore:

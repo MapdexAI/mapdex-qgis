@@ -1,3 +1,5 @@
-# Test-only dependency. The plugin itself needs nothing beyond the QGIS
+# Test-only dependencies. The plugin itself needs nothing beyond the QGIS
 # Python runtime, which is why this is not a requirements.txt.
 pytest>=8
+flake8>=7
+bandit>=1.8

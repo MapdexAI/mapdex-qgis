@@ -32,6 +32,13 @@ jobs:
       - name: Test dependency
         run: pip install -r requirements-dev.txt
 
+      # The QGIS plugin repository runs flake8 and bandit on upload;
+      # keep the tree clean here instead of reading it in a review.
+      - name: Lint
+        run: |
+          python -m flake8 mapdex_qgis scripts tests
+          python -m bandit -q -r mapdex_qgis --exclude mapdex_qgis/generated_contracts.py
+
       - name: Unit tests
         run: python -m pytest tests -q
 
