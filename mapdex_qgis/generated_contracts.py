@@ -1603,6 +1603,30 @@ FORMATS = [
 
 ERROR_REGISTRY = [
     {
+        "code": "CONTENT_POLICY_ATTESTATION_REQUIRED",
+        "type": "bad_request",
+        "http": 422,
+        "template": "An explicit content-policy acknowledgement is required for every upload or import session."
+    },
+    {
+        "code": "CONTENT_POLICY_BLOCKED",
+        "type": "validation",
+        "http": 422,
+        "template": "This content cannot be processed under the Mapdex Acceptable Use Policy."
+    },
+    {
+        "code": "CONTENT_POLICY_UNAVAILABLE",
+        "type": "system",
+        "http": 503,
+        "template": "Content policy authorization is temporarily unavailable; processing remains disabled."
+    },
+    {
+        "code": "ACCOUNT_RESTRICTED_PENDING_REVIEW",
+        "type": "auth",
+        "http": 403,
+        "template": "This account is restricted pending content policy review."
+    },
+    {
         "code": "BAD_REQUEST",
         "type": "bad_request",
         "http": 400,
