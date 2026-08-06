@@ -183,6 +183,33 @@ def split_review_buckets(geojson: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def geojson_truncation_notice(geojson: dict[str, Any], layer_name: str) -> str:
+    """Return a warning string if a `/v1/layers/{id}/geojson` response was
+    truncated (FN-003), or "" when it wasn't or the server didn't report it.
+
+    The endpoint's default page size is 5000 features; a layer larger than
+    that returned exactly 5000 features with nothing distinguishing it from a
+    genuinely small layer, so a QGIS import could silently miss most of a
+    dataset. The server now stamps `properties.truncated`/`returned_count`/
+    `total_count` on the FeatureCollection (RFC 7946 §7 foreign members) when
+    it knows the layer's true size; older servers that don't send these
+    fields simply produce no notice here.
+    """
+    if not isinstance(geojson, dict):
+        return ""
+    properties = geojson.get("properties")
+    if not isinstance(properties, dict) or not properties.get("truncated"):
+        return ""
+    returned = properties.get("returned_count")
+    total = properties.get("total_count")
+    if isinstance(returned, int) and isinstance(total, int) and total > 0:
+        return (
+            "{}: only {} of {} features were imported. Re-run with a higher limit "
+            "or use the GeoJSON export instead of the QGIS import to get the rest."
+        ).format(layer_name, returned, total)
+    return "{}: this layer was truncated on import.".format(layer_name)
+
+
 def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
     """Return [{url, name}] for downloadable GeoJSON artifacts only."""
     found: list[dict[str, str]] = []

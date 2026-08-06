@@ -48,6 +48,7 @@ from .results import (
     collect_geojson_artifact_urls,
     collect_layer_imports,
     first_batch_error,
+    geojson_truncation_notice,
     review_run_ids,
     split_review_buckets,
     succeeded_run_ids,
@@ -1134,6 +1135,12 @@ class MapdexPlugin:
                     kind = "raster"
                 else:
                     raw = self.api.layer_geojson(layer_id, project_id)
+                    try:
+                        notice = geojson_truncation_notice(json.loads(raw), layer["name"])
+                    except (ValueError, TypeError):
+                        notice = ""
+                    if notice:
+                        self._announce(notice, level=1, duration=10)
                     if draft:
                         # An unreviewed draft is worth reviewing IN QGIS, so it
                         # arrives as one layer per validator verdict instead of
