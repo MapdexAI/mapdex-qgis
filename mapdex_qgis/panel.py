@@ -14,6 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -234,6 +235,13 @@ def build_companion_panel(workflows, endpoint_settings=True):
     layout.addWidget(connect_button)
     layout.addWidget(disconnect_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
 
+    # Task execution, assistant conversation and job monitoring are separate
+    # modes. Keeping them in tabs gives Nivo a useful reading/composition area
+    # instead of burying it in the middle of the task form.
+    tabs = QTabWidget()
+    tabs.setObjectName("mapdexMainTabs")
+    layout.addWidget(tabs, 1)
+
     workspace = QWidget()
     workspace_layout = QVBoxLayout(workspace)
     workspace_layout.setContentsMargins(0, 4, 0, 0)
@@ -263,7 +271,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     run_button = QPushButton("Start task")
     run_button.setObjectName("mapdexPrimaryButton")
     workspace_layout.addWidget(run_button)
-    layout.addWidget(workspace)
+    tabs.addTab(workspace, "Task")
 
     # Nivo is a separate, map-aware companion surface. It calls the same
     # server compose path as Studio; it is not a local chatbot or Python console.
@@ -287,7 +295,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_send_button.setObjectName("mapdexPrimaryButton")
     for widget in (nivo_title, nivo_context, nivo_reply, nivo_input, nivo_send_button):
         nivo_layout.addWidget(widget)
-    layout.addWidget(nivo)
+    tabs.addTab(nivo, "Nivo")
+
+    jobs = QWidget()
+    jobs_layout = QVBoxLayout(jobs)
+    jobs_layout.setContentsMargins(0, 4, 0, 0)
+    jobs_layout.setSpacing(10)
 
     batch = QFrame()
     batch.setObjectName("mapdexResultCard")
@@ -320,7 +333,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     )
     for widget in (retry_button, import_button, review_button, cancel_button):
         batch_layout.addWidget(widget)
-    layout.addWidget(batch)
+    jobs_layout.addWidget(batch)
 
     recent = QWidget()
     recent_layout = QVBoxLayout(recent)
@@ -330,8 +343,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     recent_box = _elastic(QComboBox())
     resume_button = QPushButton("Resume")
     recent_layout.addLayout(root.register_pair(recent_box, resume_button))
-    layout.addWidget(recent)
-    layout.addStretch(1)
+    jobs_layout.addWidget(recent)
+    jobs_layout.addStretch(1)
+    tabs.addTab(jobs, "Jobs")
 
     scroll.setWidget(body)
     outer.addWidget(scroll)
@@ -346,6 +360,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "connect_button": connect_button,
         "disconnect_button": disconnect_button,
         "workspace": workspace,
+        "tabs": tabs,
         "batch": batch,
         "batch_title": batch_title,
         "phase_label": phase_label,

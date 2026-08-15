@@ -83,6 +83,7 @@ PANEL_WIDGET_REFS = (
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_project_button", "recent", "recent_box", "resume_button",
+    "tabs",
     "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
 )
 
@@ -193,6 +194,7 @@ class MapdexPlugin:
         self.recent = None
         self.recent_box = None
         self.resume_button = None
+        self.tabs = None
         self.nivo_context = None
         self.nivo_reply = None
         self.nivo_input = None

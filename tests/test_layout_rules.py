@@ -27,3 +27,11 @@ def test_breakpoint_is_inclusive_upwards():
 
 def test_panel_can_be_dragged_narrower_than_it_opens():
     assert MINIMUM_WIDTH < COMPACT_WIDTH < PREFERRED_WIDTH
+
+
+def test_nivo_is_a_primary_tab_not_an_inline_task_card():
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    assert "QTabWidget" in panel
+    assert 'tabs.addTab(workspace, "Task")' in panel
+    assert 'tabs.addTab(nivo, "Nivo")' in panel
+    assert 'tabs.addTab(jobs, "Jobs")' in panel
