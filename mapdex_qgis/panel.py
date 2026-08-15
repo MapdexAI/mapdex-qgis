@@ -10,6 +10,8 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QPushButton,
     QProgressBar,
+    QLineEdit,
+    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -263,6 +265,30 @@ def build_companion_panel(workflows, endpoint_settings=True):
     workspace_layout.addWidget(run_button)
     layout.addWidget(workspace)
 
+    # Nivo is a separate, map-aware companion surface. It calls the same
+    # server compose path as Studio; it is not a local chatbot or Python console.
+    nivo = QFrame()
+    nivo.setObjectName("mapdexResultCard")
+    nivo_layout = QVBoxLayout(nivo)
+    nivo_layout.setContentsMargins(10, 10, 10, 10)
+    nivo_layout.setSpacing(7)
+    nivo_title = QLabel("Nivo")
+    nivo_title.setStyleSheet("font-weight: 600;")
+    nivo_context = QLabel("No active QGIS layer")
+    nivo_context.setWordWrap(True)
+    nivo_context.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    nivo_reply = QPlainTextEdit()
+    nivo_reply.setReadOnly(True)
+    nivo_reply.setMaximumHeight(112)
+    nivo_reply.setPlaceholderText("Nivo replies and confirmed plans appear here.")
+    nivo_input = QLineEdit()
+    nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
+    nivo_send_button = QPushButton("Ask Nivo")
+    nivo_send_button.setObjectName("mapdexPrimaryButton")
+    for widget in (nivo_title, nivo_context, nivo_reply, nivo_input, nivo_send_button):
+        nivo_layout.addWidget(widget)
+    layout.addWidget(nivo)
+
     batch = QFrame()
     batch.setObjectName("mapdexResultCard")
     batch_layout = QVBoxLayout(batch)
@@ -331,6 +357,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "input_box": input_box,
         "source_summary": source_summary,
         "run_button": run_button,
+        "nivo_context": nivo_context,
+        "nivo_reply": nivo_reply,
+        "nivo_input": nivo_input,
+        "nivo_send_button": nivo_send_button,
         "cancel_button": cancel_button,
         "retry_button": retry_button,
         "import_button": import_button,

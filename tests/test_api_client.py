@@ -111,6 +111,17 @@ def test_workflow_payload_uses_server_batch_contract(monkeypatch):
     }
 
 
+def test_nivo_compose_uses_canonical_endpoint_and_companion_context(monkeypatch):
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    captured = {}
+    def fake(method, path, payload=None, project_id=""):
+        captured.update(method=method, path=path, payload=payload, project_id=project_id)
+        return {"kind": "message"}
+    monkeypatch.setattr(api, "_request", fake)
+    api.compose("proj_1", "inspect selection", {"version": "companion.qgis.v1", "client": "qgis"})
+    assert captured == {"method": "POST", "path": "/v1/compose", "project_id": "proj_1", "payload": {"input": "inspect selection", "companion_context": {"version": "companion.qgis.v1", "client": "qgis"}}}
+
+
 def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_path):
     source = tmp_path / "map.tif"
     source.write_bytes(b"TIFFCONTENT")

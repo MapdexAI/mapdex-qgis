@@ -568,6 +568,31 @@ class SpatialContext:
     active_mode: Optional[str] = None
 
 @dataclass
+class CompanionLayer:
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    crs: Optional[str] = None
+    feature_count: Optional[int] = None
+    geometry_type: Optional[str] = None
+    fields: List[str] = dataclasses.field(default_factory=list)
+
+@dataclass
+class CompanionConnection:
+    id: str
+    name: Optional[str] = None
+
+@dataclass
+class CompanionContext:
+    version: str
+    client: str
+    viewport: Optional[Viewport] = None
+    crs: Optional[str] = None
+    active_layer: Optional[CompanionLayer] = None
+    visible_layer_count: Optional[int] = None
+    selection_count: Optional[int] = None
+    connections: List[CompanionConnection] = dataclasses.field(default_factory=list)
+
+@dataclass
 class ContextCitation:
     reference: Reference
     label: str
@@ -904,6 +929,7 @@ class ComposeRequest:
     preferences: Optional[AssistantPreferences] = None
     snapshot: Optional[ComposeSnapshot] = None
     observation: Optional[GeoObservationPacket] = None
+    companion_context: Optional[CompanionContext] = None
 
 @dataclass
 class ComposePlanStep:

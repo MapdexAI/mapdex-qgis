@@ -346,6 +346,19 @@ class MapdexAPI:
             project_id,
         )
 
+    def compose(self, project_id: str, message: str, companion_context: dict[str, Any]):
+        """Call the canonical compose endpoint with bounded QGIS context.
+
+        The server independently validates this as untrusted companion data;
+        this client method exists so no hidden local automation path emerges.
+        """
+        return self._request(
+            "POST",
+            "/v1/compose",
+            {"input": str(message or "").strip(), "companion_context": companion_context},
+            project_id,
+        )
+
     def batch(self, project_id: str, batch_id: str):
         return self._request("GET", f"/v1/batches/{batch_id}", project_id=project_id)
 

@@ -40,6 +40,7 @@ from .api_client import (
 from .generated_contracts import BatchKind
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
+from .nivo import allowed_actions, companion_context
 from .panel import build_companion_panel
 from .qt_compat import enum_member
 from .results import (
@@ -82,6 +83,7 @@ PANEL_WIDGET_REFS = (
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_project_button", "recent", "recent_box", "resume_button",
+    "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
 )
 
 
@@ -191,6 +193,10 @@ class MapdexPlugin:
         self.recent = None
         self.recent_box = None
         self.resume_button = None
+        self.nivo_context = None
+        self.nivo_reply = None
+        self.nivo_input = None
+        self.nivo_send_button = None
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -288,6 +294,8 @@ class MapdexPlugin:
         if hasattr(self, "open_project_button") and self.open_project_button:
             self.open_project_button.clicked.connect(self.open_project)
         self.resume_button.clicked.connect(self.resume_recent)
+        self.nivo_send_button.clicked.connect(self.ask_nivo)
+        self.nivo_input.returnPressed.connect(self.ask_nivo)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
         # A bound method, never a lambda: unload() has to be able to take this
@@ -649,6 +657,98 @@ class MapdexPlugin:
         crs = layer.crs().authid() if hasattr(layer, "crs") and layer.crs().isValid() else "No CRS"
         self._source_label = layer.name()
         self.source_summary.setText("{} · {} · {}".format(layer.name(), kind, crs))
+        self._refresh_nivo_context()
+
+    def _nivo_snapshot(self):
+        """Return only measured QGIS metadata for the untrusted context envelope."""
+        layer = self.iface.activeLayer()
+        active = {}
+        if layer is not None and layer.isValid():
+            active = {
+                "name": layer.name(),
+                "kind": "raster" if isinstance(layer, QgsRasterLayer) else "vector" if isinstance(layer, QgsVectorLayer) else "other",
+                "crs": layer.crs().authid() if layer.crs().isValid() else "",
+                "feature_count": layer.featureCount() if isinstance(layer, QgsVectorLayer) else 0,
+                "geometry_type": layer.wkbType() if isinstance(layer, QgsVectorLayer) else "raster",
+                "fields": [field.name() for field in layer.fields()] if isinstance(layer, QgsVectorLayer) else [],
+            }
+        canvas = self.iface.mapCanvas()
+        extent = canvas.extent()
+        project = QgsProject.instance()
+        return {
+            "bbox": [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
+            "crs": canvas.mapSettings().destinationCrs().authid(),
+            "active_layer": active,
+            "selection_count": layer.selectedFeatureCount() if isinstance(layer, QgsVectorLayer) else 0,
+            "visible_layer_count": len([item for item in project.layerTreeRoot().findLayers() if item.isVisible()]),
+            # Saved connection discovery is intentionally deferred: connection
+            # secrets and DSNs must never enter a compose payload.
+            "connections": [],
+        }
+
+    def _refresh_nivo_context(self):
+        if self.nivo_context is None:
+            return
+        context = companion_context(self._nivo_snapshot())
+        layer = context.get("active_layer") or {}
+        label = layer.get("name") or "No active QGIS layer"
+        self.nivo_context.setText("{} · {} selected · {}".format(label, context.get("selection_count", 0), context.get("crs", "No CRS")))
+
+    def ask_nivo(self):
+        if not self.api.token or not self.project_id:
+            self._set_status("Connect Mapdex and choose a project before asking Nivo.")
+            return
+        message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
+        if not message:
+            return
+        self.nivo_send_button.setEnabled(False)
+        self._refresh_nivo_context()
+        self._task("Nivo compose", lambda: self.api.compose(self.project_id, message, companion_context(self._nivo_snapshot())), self._nivo_composed)
+
+    def _nivo_composed(self, exception, response):
+        if self.nivo_send_button is not None:
+            self.nivo_send_button.setEnabled(True)
+        if exception:
+            self._show_error("Nivo could not compose a response", exception)
+            return
+        if not isinstance(response, dict):
+            self._show_error("Nivo could not compose a response", RuntimeError("Invalid compose response"))
+            return
+        if self.nivo_reply is not None:
+            self.nivo_reply.setPlainText(str(response.get("text") or response.get("message") or "Nivo returned no message."))
+        for action in allowed_actions(response):
+            self._apply_nivo_action(action)
+
+    def _apply_nivo_action(self, action):
+        """Apply only the fixed QGIS presentation action allowlist."""
+        tool = action["tool"]
+        layer = self.iface.activeLayer()
+        canvas = self.iface.mapCanvas()
+        if tool == "qgis:zoom_to_layer@1" and layer is not None:
+            self._zoom_to_layers([layer])
+            canvas.refresh()
+        elif tool == "qgis:zoom_to_selection@1" and isinstance(layer, QgsVectorLayer) and layer.selectedFeatureCount():
+            extent = layer.boundingBoxOfSelected()
+            source_crs = layer.crs()
+            target_crs = canvas.mapSettings().destinationCrs()
+            if source_crs.isValid() and target_crs.isValid() and source_crs != target_crs:
+                try:
+                    extent = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance()).transformBoundingBox(extent)
+                except QgsCsException:
+                    return
+            canvas.setExtent(extent); canvas.refresh()
+        elif tool == "qgis:zoom_to_extent@1":
+            bbox = action["params"].get("bbox")
+            if isinstance(bbox, list) and len(bbox) == 4:
+                canvas.setExtent(QgsRectangle(*[float(value) for value in bbox])); canvas.refresh()
+        elif tool == "qgis:open_attribute_table@1" and layer is not None:
+            self.iface.showAttributeTable(layer)
+        elif tool == "qgis:open_processing@1":
+            self.iface.showProcessingAlgorithmDialog("", {})
+        else:
+            # Filter/style/visibility/review/result commands require an explicit
+            # confirmed plan; never turn free-form model params into QGIS calls.
+            self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
 
     def _workflow_changed(self, _index):
         kind = self.workflow_box.currentData()
