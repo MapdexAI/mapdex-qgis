@@ -43,6 +43,7 @@ from .api_client import (
     same_origin,
 )
 from .build_version import PLUGIN_VERSION
+from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
@@ -847,9 +848,10 @@ class MapdexPlugin:
             "active_layer": active,
             "selection_count": layer.selectedFeatureCount() if isinstance(layer, QgsVectorLayer) else 0,
             "visible_layer_count": len([item for item in project.layerTreeRoot().findLayers() if item.isVisible()]),
-            # Saved connection discovery is intentionally deferred: connection
-            # secrets and DSNs must never enter a compose payload.
-            "connections": [],
+            # Name-only references. The projection in connections.py has no
+            # field for a host, database, user, password or authcfg id, so a
+            # DSN cannot reach a compose payload even by accident.
+            "connections": discover_connections(qgis_connection_names),
             "qgis_version": qgis_version(QgsApplication, Qgis),
             "plugin_version": PLUGIN_VERSION,
         }
