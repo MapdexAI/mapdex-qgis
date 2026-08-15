@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .processing import safe_processing_params
+
 COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64
 MAX_TEXT = 256
@@ -52,6 +54,7 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:clear_selection@1",
     "qgis:invert_selection@1",
     "qgis:set_layer_opacity@1",
+    "qgis:processing_operation@1",
 })
 
 TARGETED_ACTIONS = frozenset({
@@ -60,12 +63,15 @@ TARGETED_ACTIONS = frozenset({
     "qgis:open_attribute_table@1", "qgis:inspect_layer@1",
     "qgis:select_all@1", "qgis:clear_selection@1", "qgis:invert_selection@1",
     "qgis:set_layer_opacity@1",
+    "qgis:processing_operation@1",
 })
 
 SAFE_PARAM_KEYS = {
     "qgis:zoom_to_extent@1": frozenset({"bbox", "crs"}),
     "qgis:set_layer_visibility@1": frozenset({"visible"}),
     "qgis:set_layer_opacity@1": frozenset({"opacity"}),
+    "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),
+    "qgis:processing_operation@1": frozenset({"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}),
 }
 
 
@@ -124,6 +130,12 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
         allowed = SAFE_PARAM_KEYS.get(action["kind"])
         if allowed is not None and any(key not in allowed for key in params):
             continue
+        if action["kind"] == "qgis:semantic_style@1":
+            renderer = params.get("renderer")
+            if renderer not in {"single", "categorized", "graduated", "labels"}:
+                continue
+            if renderer in {"categorized", "graduated", "labels"} and not _text(params.get("field") or params.get("label_field"), 128):
+                continue
         target = _text(action.get("target"), 128)
         if action["kind"] in TARGETED_ACTIONS and not target:
             continue
@@ -133,4 +145,46 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
         if not action_id:
             continue
         result.append({"id": action_id, "tool": action["kind"], "params": params, "summary": _text(action.get("summary")), "undo": bool(action.get("undo")), "undo_token": _text(action.get("undo_token"), 128), "target": target, "correlation_id": _text(action.get("correlation_id"), 128)})
+    return result
+
+
+def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return confirmation-required actions that are safe to present and apply."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for action in raw:
+        if not isinstance(action, dict) or action.get("kind") != "qgis:processing_operation@1":
+            continue
+        if action.get("requires_confirmation") is not True:
+            continue
+        target = _text(action.get("target"), 128)
+        if not target:
+            continue
+        params = action.get("params")
+        if not isinstance(params, dict):
+            continue
+        if any(key not in SAFE_PARAM_KEYS["qgis:processing_operation@1"] for key in params):
+            continue
+        safe_params = safe_processing_params(params)
+        if not safe_params:
+            continue
+        action_id = _text(action.get("action_id"), 128)
+        confirmation_id = _text(action.get("confirmation_id"), 128)
+        idempotency_key = _text(action.get("idempotency_key"), 128)
+        if not action_id or not confirmation_id or not idempotency_key:
+            continue
+        result.append({
+            "id": action_id,
+            "confirmation_id": confirmation_id,
+            "idempotency_key": idempotency_key,
+            "tool": action["kind"],
+            "target": target,
+            "params": safe_params,
+            "summary": _text(action.get("summary")),
+            "correlation_id": _text(action.get("correlation_id"), 128),
+            "undo": bool(action.get("undo")),
+            "undo_token": _text(action.get("undo_token"), 128),
+        })
     return result

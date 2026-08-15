@@ -15,6 +15,9 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsCsException,
     QgsMessageLog,
+    QgsProcessingAlgRunnerTask,
+    QgsProcessingContext,
+    QgsProcessingFeedback,
     QgsProject,
     QgsRasterLayer,
     QgsRectangle,
@@ -40,8 +43,9 @@ from .api_client import (
 from .generated_contracts import BatchKind
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
-from .nivo import allowed_actions, companion_context, transition
+from .nivo import allowed_actions, companion_context, confirmation_actions, transition
 from .panel import build_companion_panel
+from .processing import build_algorithm_parameters, resolve_processing_algorithm
 from .qt_compat import enum_member
 from .results import (
     batch_is_terminal,
@@ -752,6 +756,9 @@ class MapdexPlugin:
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
+        for action in confirmation_actions(response):
+            self._nivo_state = transition(self._nivo_state, "confirm")
+            self._confirm_nivo_action(action)
 
     def _render_nivo_turns(self):
         """Render sender-distinct native widget bubbles; no model HTML."""
@@ -869,6 +876,79 @@ class MapdexPlugin:
             self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
             return
         self._nivo_state = transition(self._nivo_state, "done")
+
+    def _confirm_nivo_action(self, action):
+        action_id = action.get("id")
+        if not action_id or action_id in self._executed_nivo_actions:
+            self._set_status("Nivo ignored a duplicate or malformed confirmation.")
+            return
+        operation = action.get("params", {}).get("operation")
+        message = "{}\n\nTarget layer: {}\nOperation: {}".format(
+            action.get("summary") or "Nivo prepared a QGIS Processing operation.",
+            action.get("target") or "active layer",
+            operation or "unknown",
+        )
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Confirm Nivo action",
+            message,
+            enum_member(QMessageBox, "StandardButton", "Yes") | enum_member(QMessageBox, "StandardButton", "No"),
+            enum_member(QMessageBox, "StandardButton", "No"),
+        )
+        if answer != enum_member(QMessageBox, "StandardButton", "Yes"):
+            self._set_status("Nivo action cancelled.")
+            self._nivo_state = transition(self._nivo_state, "done")
+            return
+        self._executed_nivo_actions.add(action_id)
+        self._nivo_state = transition(self._nivo_state, "apply")
+        self._run_processing_operation(action)
+
+    def _run_processing_operation(self, action):
+        target = action.get("target")
+        layer = QgsProject.instance().mapLayer(target) if target else self.iface.activeLayer()
+        if layer is None or not layer.isValid():
+            self._set_status("Nivo did not run Processing because the target layer is no longer available.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        operation = action.get("params", {}).get("operation")
+        algorithm_id, algorithm = resolve_processing_algorithm(QgsApplication.processingRegistry(), operation)
+        if algorithm is None:
+            self._set_status("This QGIS installation does not have the required Processing algorithm.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        try:
+            parameters = build_algorithm_parameters(algorithm, operation, layer, action.get("params", {}))
+        except Exception as exc:
+            self._show_error("Nivo Processing validation failed", exc)
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        feedback = QgsProcessingFeedback()
+        task = QgsProcessingAlgRunnerTask(algorithm, parameters, context, feedback)
+        self._tasks.append(task)
+
+        def completed(successful, results):
+            if task in self._tasks:
+                self._tasks.remove(task)
+            if not successful:
+                self._set_status("Nivo Processing task failed or was cancelled.")
+                self._nivo_state = transition(self._nivo_state, "error")
+                return
+            for value in (results or {}).values():
+                if hasattr(value, "isValid") and value.isValid():
+                    QgsProject.instance().addMapLayer(value)
+                    self.iface.setActiveLayer(value)
+                    break
+            self._nivo_turns.append(("assistant", "Completed {} with {}.".format(operation, algorithm_id)))
+            self._render_nivo_turns()
+            self.iface.mapCanvas().refresh()
+            self._nivo_state = transition(self._nivo_state, "done")
+            self._set_status("Nivo Processing completed.")
+
+        task.executed.connect(completed)
+        QgsApplication.taskManager().addTask(task)
+        self._set_status("Nivo Processing is running {}.".format(operation))
 
     def _workflow_changed(self, _index):
         kind = self.workflow_box.currentData()
