@@ -68,7 +68,7 @@ TARGETED_ACTIONS = frozenset({
 })
 
 SAFE_PARAM_KEYS = {
-    "qgis:zoom_to_extent@1": frozenset({"bbox", "crs"}),
+    "qgis:zoom_to_extent@1": frozenset({"bbox", "crs", "center", "zoom"}),
     "qgis:set_layer_visibility@1": frozenset({"visible"}),
     "qgis:set_layer_opacity@1": frozenset({"opacity"}),
     "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),

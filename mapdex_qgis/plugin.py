@@ -12,6 +12,7 @@ from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
 from qgis.core import (
     QgsApplication,
+    QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsCsException,
     Qgis,
@@ -51,6 +52,7 @@ from .nivo import allowed_actions, companion_context, confirmation_actions, tran
 from .panel import build_companion_panel
 from .processing import build_algorithm_parameters, resolve_processing_algorithm
 from .qt_compat import enum_member, qgis_version
+from .viewport import resolve_extent
 from .results import (
     batch_is_terminal,
     batch_state,
@@ -1072,14 +1074,8 @@ class MapdexPlugin:
                     return
             canvas.setExtent(extent); canvas.refresh()
         elif tool == "qgis:zoom_to_extent@1":
-            bbox = action["params"].get("bbox")
-            if isinstance(bbox, list) and len(bbox) == 4:
-                try:
-                    canvas.setExtent(QgsRectangle(*[float(value) for value in bbox]))
-                except (TypeError, ValueError):
-                    self._set_status("Nivo rejected an invalid map extent.")
-                    return
-                canvas.refresh()
+            if not self._zoom_to_server_extent(action.get("params") or {}):
+                return
         elif tool == "qgis:open_attribute_table@1" and layer is not None:
             self.iface.showAttributeTable(layer)
         elif tool == "qgis:inspect_layer@1" and layer is not None:
@@ -1141,6 +1137,39 @@ class MapdexPlugin:
             self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
             return
         self._nivo_state = transition(self._nivo_state, "done")
+
+    def _zoom_to_server_extent(self, params):
+        """Move the canvas to a server-supplied extent, converting its CRS.
+
+        The server geocodes in WGS84; this canvas is usually EPSG:3857 or a
+        national grid. Setting those degrees directly is what put "zoom to
+        Istanbul" a few metres from null island instead of on Istanbul.
+        """
+        resolved = resolve_extent(params)
+        if resolved is None:
+            self._set_status("Nivo rejected an invalid map extent.")
+            return False
+        canvas = self.iface.mapCanvas()
+        target = canvas.mapSettings().destinationCrs()
+        source = QgsCoordinateReferenceSystem(resolved["crs"])
+        if not source.isValid():
+            self._set_status("Nivo rejected an extent with an unknown CRS.")
+            return False
+        rectangle = QgsRectangle(*resolved["bbox"])
+        if target.isValid() and source != target:
+            try:
+                rectangle = QgsCoordinateTransform(
+                    source, target, QgsProject.instance()
+                ).transformBoundingBox(rectangle)
+            except QgsCsException:
+                self._set_status("Nivo could not place that location in the current map CRS.")
+                return False
+        if rectangle.isEmpty():
+            self._set_status("Nivo received an empty map extent.")
+            return False
+        canvas.setExtent(rectangle)
+        canvas.refresh()
+        return True
 
     def _confirm_nivo_action(self, action):
         action_id = action.get("id")
