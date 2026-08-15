@@ -58,6 +58,33 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:add_xyz_basemap@1",
 })
 
+# What this build can actually carry out. ALLOWED_ACTIONS above is the protocol
+# allowlist - the shapes we are willing to parse - which is deliberately wider
+# during development. Capability negotiation must advertise only what the
+# dispatcher really implements: telling the server we support an action and then
+# doing nothing produces "Nivo prepared a QGIS action" followed by a map that
+# never changes, which reads as a broken assistant rather than a missing feature.
+# test_action_parity.py fails if this drifts from the dispatcher.
+IMPLEMENTED_ACTIONS = frozenset({
+    "qgis:zoom_to_layer@1",
+    "qgis:zoom_to_selection@1",
+    "qgis:zoom_to_extent@1",
+    "qgis:set_layer_visibility@1",
+    "qgis:set_layer_opacity@1",
+    "qgis:open_attribute_table@1",
+    "qgis:open_processing@1",
+    "qgis:inspect_layer@1",
+    "qgis:refresh_canvas@1",
+    "qgis:previous_extent@1",
+    "qgis:next_extent@1",
+    "qgis:select_all@1",
+    "qgis:clear_selection@1",
+    "qgis:invert_selection@1",
+    "qgis:add_xyz_basemap@1",
+    # Runs through the confirmation path rather than the direct dispatcher.
+    "qgis:processing_operation@1",
+})
+
 TARGETED_ACTIONS = frozenset({
     "qgis:zoom_to_layer@1", "qgis:set_layer_visibility@1",
     "qgis:preview_filter@1", "qgis:semantic_style@1",
@@ -107,7 +134,9 @@ def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
                         for item in (snapshot.get("connections") or [])[:16]
                         if isinstance(item, dict) and _text(item.get("id"), 128)],
     }
-    context["supported_action_kinds"] = sorted(ALLOWED_ACTIONS)
+    # Advertise only what this build can carry out, so the server never chooses
+    # an action that would silently do nothing on this desktop.
+    context["supported_action_kinds"] = sorted(IMPLEMENTED_ACTIONS)
     context["qgis_version"] = _text(snapshot.get("qgis_version"), 64)
     context["plugin_version"] = _text(snapshot.get("plugin_version"), 64)
     if viewport:
