@@ -40,7 +40,7 @@ from .api_client import (
 from .generated_contracts import BatchKind
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
-from .nivo import allowed_actions, companion_context
+from .nivo import allowed_actions, companion_context, transition
 from .panel import build_companion_panel
 from .qt_compat import enum_member
 from .results import (
@@ -202,6 +202,8 @@ class MapdexPlugin:
         self.nivo_input = None
         self.nivo_send_button = None
         self._nivo_turns = []
+        self._nivo_state = "idle"
+        self._executed_nivo_actions = set()
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -710,6 +712,7 @@ class MapdexPlugin:
         if not message:
             return
         self.nivo_send_button.setEnabled(False)
+        self._nivo_state = transition(self._nivo_state, "send")
         self.nivo_input.setEnabled(False)
         self._nivo_turns.append(("user", message))
         self._nivo_turns.append(("assistant", "Thinking…"))
@@ -725,6 +728,7 @@ class MapdexPlugin:
         if self.nivo_input is not None:
             self.nivo_input.setEnabled(True)
         if exception:
+            self._nivo_state = transition(self._nivo_state, "error")
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
                 self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.")
             self._render_nivo_turns()
@@ -733,6 +737,7 @@ class MapdexPlugin:
             self._show_error("Nivo could not compose a response", exception)
             return
         if not isinstance(response, dict):
+            self._nivo_state = transition(self._nivo_state, "error")
             self._show_error("Nivo could not compose a response", RuntimeError("Invalid compose response"))
             return
         if self.nivo_reply is not None:
@@ -745,6 +750,7 @@ class MapdexPlugin:
         if self.nivo_status is not None:
             self.nivo_status.setText("Ready")
         for action in allowed_actions(response):
+            self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
 
     def _render_nivo_turns(self):
@@ -781,6 +787,12 @@ class MapdexPlugin:
 
     def _apply_nivo_action(self, action):
         """Apply only the fixed QGIS presentation action allowlist."""
+        action_id = action.get("id")
+        if not action_id or action_id in self._executed_nivo_actions:
+            self._set_status("Nivo ignored a duplicate or malformed action.")
+            return
+        self._executed_nivo_actions.add(action_id)
+        self._nivo_state = transition(self._nivo_state, "execute")
         tool = action["tool"]
         target = action.get("target")
         layer = QgsProject.instance().mapLayer(target) if target else self.iface.activeLayer()
@@ -855,6 +867,8 @@ class MapdexPlugin:
             # Filter/style/visibility/review/result commands require an explicit
             # confirmed plan; never turn free-form model params into QGIS calls.
             self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
+            return
+        self._nivo_state = transition(self._nivo_state, "done")
 
     def _workflow_changed(self, _index):
         kind = self.workflow_box.currentData()

@@ -12,6 +12,25 @@ COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64
 MAX_TEXT = 256
 
+TURN_STATES = frozenset({
+    "idle", "composing", "clarification_required", "action_ready",
+    "confirmation_required", "executing", "cancelling", "completed", "failed",
+})
+
+
+def transition(state: str, event: str) -> str:
+    """Closed Nivo turn state machine; stale/unknown events fail closed."""
+    table = {
+        ("idle", "send"): "composing", ("composing", "clarify"): "clarification_required",
+        ("composing", "action"): "action_ready", ("composing", "confirm"): "confirmation_required",
+        ("composing", "error"): "failed", ("action_ready", "execute"): "executing",
+        ("confirmation_required", "apply"): "executing", ("executing", "cancel"): "cancelling",
+        ("executing", "done"): "completed", ("executing", "error"): "failed",
+        ("cancelling", "done"): "completed", ("clarification_required", "send"): "composing",
+        ("completed", "send"): "composing", ("failed", "send"): "composing",
+    }
+    return table.get((state, event), state if state in TURN_STATES else "idle")
+
 # These names are product contracts, not model suggestions.  The plugin maps
 # them to a small set of native QGIS UI operations after compose returns.
 ALLOWED_ACTIONS = frozenset({
@@ -110,5 +129,8 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         # These fields are opaque server-issued identifiers. Never accept a model
         # supplied SQL, Python, path or confirmation executable payload.
-        result.append({"tool": action["kind"], "params": params, "summary": _text(action.get("summary")), "undo": bool(action.get("undo")), "undo_token": _text(action.get("undo_token"), 128), "target": target, "correlation_id": _text(action.get("correlation_id"), 128)})
+        action_id = _text(action.get("action_id"), 128)
+        if not action_id:
+            continue
+        result.append({"id": action_id, "tool": action["kind"], "params": params, "summary": _text(action.get("summary")), "undo": bool(action.get("undo")), "undo_token": _text(action.get("undo_token"), 128), "target": target, "correlation_id": _text(action.get("correlation_id"), 128)})
     return result
