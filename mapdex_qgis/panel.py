@@ -254,7 +254,22 @@ def build_companion_panel(workflows, endpoint_settings=True):
     settings_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
     )
-    layout.addLayout(root.register_pair(connection_label, settings_button))
+    # Disconnect belongs with the connection state it acts on, immediately left
+    # of Settings, rather than stranded at the bottom of the panel under
+    # unrelated controls. The two sit in one widget so the responsive pair
+    # keeps working: on a narrow dock the label stacks above both actions.
+    disconnect_button = QToolButton()
+    disconnect_button.setText("Disconnect")
+    disconnect_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    header_actions = QWidget()
+    header_actions_row = QHBoxLayout(header_actions)
+    header_actions_row.setContentsMargins(0, 0, 0, 0)
+    header_actions_row.setSpacing(6)
+    header_actions_row.addWidget(disconnect_button)
+    header_actions_row.addWidget(settings_button)
+    layout.addLayout(root.register_pair(connection_label, header_actions))
 
     status = QLabel("Connect Mapdex to start a task.")
     status.setObjectName("mapdexStatus")
@@ -318,18 +333,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
     assistant_form.addRow("Provider", provider_box)
     assistant_form.addRow("Model", model_input)
     assistant_form.addRow("Endpoint", base_url_input)
-    assistant_form.addRow("API key", api_key_input)
+    # The clear action belongs on the field it clears, not as a loose button
+    # further down the panel where it reads as a general "remove" of something.
+    clear_key_button = QToolButton()
+    clear_key_button.setText("Remove")
+    clear_key_button.setToolTip("Remove the stored provider key and go back to your Mapdex plan")
+    clear_key_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    assistant_form.addRow("API key", root.register_pair(api_key_input, clear_key_button))
     connection_layout.addLayout(assistant_form)
     assistant_privacy = QLabel("Mapdex-hosted assistant: bounded map context is sent to Mapdex.")
     assistant_privacy.setWordWrap(True)
     assistant_privacy.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
     connection_layout.addWidget(assistant_privacy)
-    clear_key_button = QToolButton()
-    clear_key_button.setText("Remove stored key")
-    clear_key_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
-    connection_layout.addWidget(clear_key_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
 
     save_settings_button = QPushButton("Save settings")
     connection_layout.addWidget(save_settings_button)
@@ -341,15 +358,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
         endpoint_frame.setVisible(False)
         settings_button.setToolTip("Nivo assistant settings")
 
+    # Connect stays a full-width primary action: it is the one thing to do when
+    # nothing is connected yet. Disconnect now lives in the header row above.
     connect_button = QPushButton("Connect Mapdex")
     connect_button.setObjectName("mapdexPrimaryButton")
-    disconnect_button = QToolButton()
-    disconnect_button.setText("Disconnect")
-    disconnect_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
     layout.addWidget(connect_button)
-    layout.addWidget(disconnect_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
 
     # Deliberately avoid QTabWidget: QGIS' themed tab pane allowed sibling
     # page widgets to bleed into the active page on narrow docks. This compact
