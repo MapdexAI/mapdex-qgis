@@ -310,14 +310,37 @@ class MapdexPlugin:
             )
         except Exception:
             pass
+        # Reporting must not depend on our own panel. When the panel is what
+        # failed, telling the user through it silently reports nothing - which
+        # is how "the menu does nothing when I click it" happened: the boundary
+        # caught the real error and then had nowhere to put it. Each channel is
+        # tried in turn, independently, and the last one needs no plugin state.
+        summary = "Mapdex could not finish '{}': {}".format(action, describe_exception(exc))
+        delivered = False
         try:
-            self._set_status("Nivo hit an unexpected problem and stopped safely. See the Mapdex log for details.")
-            self._announce(
-                "Nivo could not finish that action ({}). QGIS is unaffected.".format(describe_exception(exc)),
-                level=2,
-            )
+            self._set_status("Mapdex hit a problem and stopped safely. See the Mapdex log for details.")
+            self._announce(summary, level=2)
+            delivered = True
         except Exception:
-            pass
+            delivered = False
+        if not delivered:
+            # QGIS' own message bar: alive even when our dock never built.
+            try:
+                self.iface.messageBar().pushMessage("Mapdex", summary, level=2, duration=10)
+                delivered = True
+            except Exception:
+                delivered = False
+        if not delivered:
+            # Last resort. A modal is intrusive, but silence during a failed
+            # start-up leaves the user clicking a menu entry that does nothing.
+            try:
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Mapdex",
+                    summary + "\n\nQGIS is unaffected. The full details are in the Mapdex log panel.",
+                )
+            except Exception:
+                pass
 
     def _ensure_dock(self):
         if self.dock is not None:

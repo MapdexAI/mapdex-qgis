@@ -145,3 +145,23 @@ def test_signal_connections_use_guarded_bound_methods():
         assert "@guarded\n    def {}(".format(name) in PLUGIN, (
             "signal connected to unguarded handler: {}".format(name)
         )
+
+
+def test_the_reporter_does_not_depend_on_the_plugins_own_panel():
+    """An error boundary must not report through the thing that broke.
+
+    When the panel fails to build, _set_status and _announce fail too, so a
+    reporter that only used them delivered nothing at all - the user clicked the
+    menu entry and QGIS did nothing, with the real exception swallowed.
+    """
+    body = PLUGIN[PLUGIN.index("def _report_unexpected"):PLUGIN.index("def _ensure_dock")]
+    assert "QgsMessageLog.logMessage" in body
+    assert "messageBar()" in body, "no channel independent of our dock"
+    assert "QMessageBox.critical" in body, "no last resort when the panel is gone"
+
+
+def test_each_reporting_channel_is_independently_protected():
+    body = PLUGIN[PLUGIN.index("def _report_unexpected"):PLUGIN.index("def _ensure_dock")]
+    # One failing channel must not stop the next from being tried.
+    assert body.count("except Exception:") >= 3
+    assert body.count("if not delivered:") == 2
