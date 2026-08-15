@@ -26,13 +26,28 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:open_review@1",
     "qgis:open_results@1",
     "qgis:inspect_layer@1",
+    "qgis:refresh_canvas@1",
+    "qgis:previous_extent@1",
+    "qgis:next_extent@1",
+    "qgis:select_all@1",
+    "qgis:clear_selection@1",
+    "qgis:invert_selection@1",
+    "qgis:set_layer_opacity@1",
 })
 
 TARGETED_ACTIONS = frozenset({
     "qgis:zoom_to_layer@1", "qgis:set_layer_visibility@1",
     "qgis:preview_filter@1", "qgis:semantic_style@1",
     "qgis:open_attribute_table@1", "qgis:inspect_layer@1",
+    "qgis:select_all@1", "qgis:clear_selection@1", "qgis:invert_selection@1",
+    "qgis:set_layer_opacity@1",
 })
+
+SAFE_PARAM_KEYS = {
+    "qgis:zoom_to_extent@1": frozenset({"bbox", "crs"}),
+    "qgis:set_layer_visibility@1": frozenset({"visible"}),
+    "qgis:set_layer_opacity@1": frozenset({"opacity"}),
+}
 
 
 def _text(value: Any, limit: int = MAX_TEXT) -> str:
@@ -87,6 +102,9 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
         params = action.get("params")
         if not isinstance(params, dict):
             params = {}
+        allowed = SAFE_PARAM_KEYS.get(action["kind"])
+        if allowed is not None and any(key not in allowed for key in params):
+            continue
         target = _text(action.get("target"), 128)
         if action["kind"] in TARGETED_ACTIONS and not target:
             continue

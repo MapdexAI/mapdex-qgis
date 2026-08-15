@@ -804,7 +804,12 @@ class MapdexPlugin:
         elif tool == "qgis:zoom_to_extent@1":
             bbox = action["params"].get("bbox")
             if isinstance(bbox, list) and len(bbox) == 4:
-                canvas.setExtent(QgsRectangle(*[float(value) for value in bbox])); canvas.refresh()
+                try:
+                    canvas.setExtent(QgsRectangle(*[float(value) for value in bbox]))
+                except (TypeError, ValueError):
+                    self._set_status("Nivo rejected an invalid map extent.")
+                    return
+                canvas.refresh()
         elif tool == "qgis:open_attribute_table@1" and layer is not None:
             self.iface.showAttributeTable(layer)
         elif tool == "qgis:inspect_layer@1" and layer is not None:
@@ -818,6 +823,32 @@ class MapdexPlugin:
                 return
             QgsProject.instance().layerTreeRoot().findLayer(layer.id()).setItemVisibilityChecked(visible)
             canvas.refresh()
+        elif tool == "qgis:set_layer_opacity@1" and layer is not None:
+            try:
+                opacity = float(action["params"].get("opacity"))
+            except (TypeError, ValueError):
+                self._set_status("Nivo requires a valid opacity percentage.")
+                return
+            if opacity < 0 or opacity > 100:
+                self._set_status("Nivo rejected an out-of-range opacity.")
+                return
+            layer.setOpacity(opacity / 100.0)
+            canvas.refresh()
+        elif tool == "qgis:select_all@1" and isinstance(layer, QgsVectorLayer):
+            layer.selectAll()
+            canvas.refresh()
+        elif tool == "qgis:clear_selection@1" and isinstance(layer, QgsVectorLayer):
+            layer.removeSelection()
+            canvas.refresh()
+        elif tool == "qgis:invert_selection@1" and isinstance(layer, QgsVectorLayer):
+            layer.invertSelection()
+            canvas.refresh()
+        elif tool == "qgis:refresh_canvas@1":
+            canvas.refresh()
+        elif tool == "qgis:previous_extent@1":
+            canvas.zoomToPreviousExtent()
+        elif tool == "qgis:next_extent@1":
+            canvas.zoomToNextExtent()
         elif tool == "qgis:open_processing@1":
             self.iface.showProcessingAlgorithmDialog("", {})
         else:
