@@ -602,10 +602,15 @@ class MapdexPlugin:
             "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;"
             "All files (*.*)"
         )
-        path, _ = QFileDialog.getOpenFileName(
-            self.iface.mainWindow(), "Choose a spatial file", "", file_filter
+        # A file input is the archive/batch entry point.  Keep the active-layer
+        # route deliberately single-source (exporting an arbitrary QGIS layer
+        # collection would make a surprising, potentially huge upload), but
+        # let a user select several compatible files here and create one real
+        # server-side Batch with per-item Run/retry/review state.
+        paths, _ = QFileDialog.getOpenFileNames(
+            self.iface.mainWindow(), "Choose spatial files", "", file_filter
         )
-        paths = [path] if path else []
+        paths = [path for path in paths if path]
         if not paths:
             self.input_box.blockSignals(True)
             self.input_box.setCurrentIndex(0)
