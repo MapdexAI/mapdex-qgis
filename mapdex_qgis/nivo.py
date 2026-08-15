@@ -96,6 +96,25 @@ TARGETED_ACTIONS = frozenset({
     "qgis:processing_operation@1",
 })
 
+# The geometry choice offered when a new-layer request did not state one.
+# Presenting it as a picker rather than a chat question matters: a question
+# asked in the transcript has nowhere to go, because the user's reply starts a
+# fresh turn in which "polygon" is a bare word with no intent attached.
+GEOMETRY_CHOICES = (
+    ("Point", "point"),
+    ("Line", "linestring"),
+    ("Polygon", "polygon"),
+)
+
+
+def geometry_from_choice(label: str) -> str:
+    """Map a picker label to its OGC type, or "" when nothing was chosen."""
+    for choice, geometry in GEOMETRY_CHOICES:
+        if str(label or "").strip().lower() == choice.lower():
+            return geometry
+    return ""
+
+
 SAFE_PARAM_KEYS = {
     "qgis:zoom_to_extent@1": frozenset({"bbox", "crs", "center", "zoom"}),
     "qgis:set_layer_visibility@1": frozenset({"visible"}),

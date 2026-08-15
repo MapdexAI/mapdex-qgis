@@ -9,7 +9,17 @@ from typing import Callable, Optional
 
 from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
-from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
+from qgis.PyQt.QtWidgets import (
+    QAction,
+    QDockWidget,
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
@@ -49,7 +59,14 @@ from .generated_contracts import BatchKind
 from .providers import resolve_runtime
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
-from .nivo import allowed_actions, companion_context, confirmation_actions, transition
+from .nivo import (
+    GEOMETRY_CHOICES,
+    allowed_actions,
+    companion_context,
+    confirmation_actions,
+    geometry_from_choice,
+    transition,
+)
 from .panel import build_companion_panel
 from .processing import build_algorithm_parameters, resolve_processing_algorithm
 from .qt_compat import enum_member, qgis_version
@@ -1162,14 +1179,15 @@ class MapdexPlugin:
         geometry = str(params.get("geometry") or "").strip().lower()
         if geometry not in self.GEOMETRY_TYPES:
             # The one decision that cannot be defaulted safely: a point layer is
-            # useless to someone who wanted to draw parcels.
-            self._nivo_turns.append((
-                "assistant",
-                "What kind of layer should I create: point, line or polygon?",
-            ))
-            self._render_nivo_turns()
-            self._set_status("Nivo needs the geometry type for the new layer.")
-            return False
+            # useless to someone who wanted to draw parcels. Ask with a picker,
+            # not a chat message - a question in the transcript has nowhere to
+            # go, because the user's answer starts a fresh turn where "polygon"
+            # is a bare word carrying no intent.
+            geometry = self._ask_geometry_type()
+            if not geometry:
+                self._set_status("Nivo did not create a layer.")
+                self._nivo_state = transition(self._nivo_state, "done")
+                return False
         crs = str(params.get("crs") or "").strip()
         if not crs:
             crs = self.iface.mapCanvas().mapSettings().destinationCrs().authid()
@@ -1192,6 +1210,21 @@ class MapdexPlugin:
         self._refresh_nivo_context()
         self._set_status("Nivo created the layer '{}'.".format(name))
         return True
+
+    def _ask_geometry_type(self):
+        """Offer the geometry choice as a picker; "" when the user cancels."""
+        labels = [label for label, _geometry in GEOMETRY_CHOICES]
+        choice, accepted = QInputDialog.getItem(
+            self.iface.mainWindow(),
+            "New layer",
+            "What kind of layer should Nivo create?",
+            labels,
+            2,      # Polygon: the most common answer when drawing areas
+            False,  # not editable - only the closed set may be chosen
+        )
+        if not accepted:
+            return ""
+        return geometry_from_choice(choice)
 
     def _unique_layer_name(self, geometry):
         existing = {layer.name() for layer in QgsProject.instance().mapLayers().values()}
