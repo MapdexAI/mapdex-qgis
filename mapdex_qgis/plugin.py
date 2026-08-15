@@ -88,7 +88,7 @@ PANEL_WIDGET_REFS = (
     "open_project_button", "recent", "recent_box", "resume_button",
     "tabs",
     "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
-    "nivo_status",
+    "nivo_stop_button", "nivo_status",
 )
 
 
@@ -204,9 +204,12 @@ class MapdexPlugin:
         self.nivo_status = None
         self.nivo_input = None
         self.nivo_send_button = None
+        self.nivo_stop_button = None
         self._nivo_turns = []
         self._nivo_state = "idle"
         self._executed_nivo_actions = set()
+        self._nivo_compose_task = None
+        self._nivo_request_id = 0
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -305,6 +308,7 @@ class MapdexPlugin:
             self.open_project_button.clicked.connect(self.open_project)
         self.resume_button.clicked.connect(self.resume_recent)
         self.nivo_send_button.clicked.connect(self.ask_nivo)
+        self.nivo_stop_button.clicked.connect(self.stop_nivo)
         self.nivo_input.returnPressed.connect(self.ask_nivo)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
@@ -594,6 +598,7 @@ class MapdexPlugin:
         task.taskCompleted.connect(finished)
         task.taskTerminated.connect(finished)
         QgsApplication.taskManager().addTask(task)
+        return task
 
     def _active_project_id(self) -> str:
         data = self.project_box.currentData() if self.project_box is not None else None
@@ -742,29 +747,65 @@ class MapdexPlugin:
             return QgsProject.instance().mapLayer(target)
         return self._active_qgis_layer()
 
+    def _set_nivo_compose_busy(self, busy):
+        if self.nivo_send_button is not None:
+            self.nivo_send_button.setEnabled(not busy)
+        if self.nivo_input is not None:
+            self.nivo_input.setEnabled(not busy)
+        if self.nivo_stop_button is not None:
+            self.nivo_stop_button.setVisible(busy)
+            self.nivo_stop_button.setEnabled(busy)
+
     def ask_nivo(self):
         if not self.api.token or not self.project_id:
             self._set_status("Connect Mapdex and choose a project before asking Nivo.")
             return
+        if self._nivo_compose_task is not None:
+            self._set_status("Nivo is already working. Use Stop to cancel that request.")
+            return
         message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
         if not message:
             return
-        self.nivo_send_button.setEnabled(False)
+        self._set_nivo_compose_busy(True)
         self._nivo_state = transition(self._nivo_state, "send")
-        self.nivo_input.setEnabled(False)
         self._nivo_turns.append(("user", message))
         self._nivo_turns.append(("assistant", "Thinking…"))
         self._render_nivo_turns()
         self.nivo_status.setText("Nivo AI is reading your map context…")
         self.nivo_input.clear()
         self._refresh_nivo_context()
-        self._task("Nivo compose", lambda: self.api.compose(self.project_id, message, companion_context(self._nivo_snapshot())), self._nivo_composed)
+        self._nivo_request_id += 1
+        request_id = self._nivo_request_id
+        self._nivo_compose_task = self._task(
+            "Nivo compose",
+            lambda: self.api.compose(self.project_id, message, companion_context(self._nivo_snapshot())),
+            lambda exception, response: self._nivo_composed(request_id, exception, response),
+            busy=False,
+        )
 
-    def _nivo_composed(self, exception, response):
-        if self.nivo_send_button is not None:
-            self.nivo_send_button.setEnabled(True)
-        if self.nivo_input is not None:
-            self.nivo_input.setEnabled(True)
+    def stop_nivo(self):
+        if self._nivo_compose_task is None:
+            return
+        self._nivo_request_id += 1
+        try:
+            self._nivo_compose_task.cancel()
+        except RuntimeError:
+            pass
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
+        self._nivo_state = transition(self._nivo_state, "error")
+        if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
+            self._nivo_turns[-1] = ("assistant", "Stopped.")
+            self._render_nivo_turns()
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Stopped")
+        self._set_status("Nivo request stopped.")
+
+    def _nivo_composed(self, request_id, exception, response):
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
         if exception:
             self._nivo_state = transition(self._nivo_state, "error")
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":

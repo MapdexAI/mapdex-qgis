@@ -169,6 +169,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
             padding: 4px 10px;
             font-weight: 600;
         }
+        QPushButton#mapdexSecondaryButton {
+            min-height: 32px;
+            padding: 4px 10px;
+            font-weight: 600;
+        }
         QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
         QFrame#mapdexNivoSurface {
             background: transparent;
@@ -411,11 +416,21 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
     nivo_send_button = QPushButton("Ask Nivo")
     nivo_send_button.setObjectName("mapdexPrimaryButton")
+    nivo_stop_button = QPushButton("Stop")
+    nivo_stop_button.setObjectName("mapdexSecondaryButton")
+    nivo_stop_button.setToolTip("Stop the current Nivo request")
+    nivo_stop_button.setVisible(False)
+    nivo_stop_button.setEnabled(False)
+    nivo_action_row = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
+    nivo_action_row.setContentsMargins(0, 0, 0, 0)
+    nivo_action_row.setSpacing(8)
+    nivo_action_row.addWidget(nivo_send_button, 1)
+    nivo_action_row.addWidget(nivo_stop_button, 0)
     surface_layout.addWidget(nivo_header)
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(nivo_input)
-    surface_layout.addWidget(nivo_send_button)
+    surface_layout.addLayout(nivo_action_row)
     nivo_layout.addWidget(nivo_surface, 1)
 
     jobs = QWidget()
@@ -522,6 +537,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "nivo_status": nivo_status,
         "nivo_input": nivo_input,
         "nivo_send_button": nivo_send_button,
+        "nivo_stop_button": nivo_stop_button,
         "cancel_button": cancel_button,
         "retry_button": retry_button,
         "import_button": import_button,
