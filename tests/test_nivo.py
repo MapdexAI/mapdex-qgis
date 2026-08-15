@@ -19,6 +19,13 @@ def test_companion_context_contains_summary_not_attribute_values_or_credentials(
     assert "password" not in payload["connections"][0]
 
 
+def test_companion_context_keeps_stable_layer_id_even_without_name():
+    payload = companion_context({
+        "active_layer": {"id": "qgis_layer_42", "kind": "vector", "feature_count": 1},
+    })
+    assert payload["active_layer"]["id"] == "qgis_layer_42"
+
+
 def test_only_closed_qgis_actions_can_reach_dispatch():
     actions = allowed_actions({"companion_actions": [
         {"action_id": "act_zoom", "kind": "qgis:zoom_to_layer@1", "params": {}},

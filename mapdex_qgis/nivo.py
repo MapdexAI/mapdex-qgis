@@ -100,7 +100,7 @@ def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         "crs": _text(snapshot.get("crs"), 128),
         "selection_count": max(0, int(snapshot.get("selection_count") or 0)),
         "visible_layer_count": max(0, int(snapshot.get("visible_layer_count") or 0)),
-        "active_layer": layer if layer["name"] else None,
+        "active_layer": layer if layer["id"] or layer["name"] else None,
         "connections": [{"id": _text(item.get("id"), 128), "name": _text(item.get("name"))}
                         for item in (snapshot.get("connections") or [])[:16]
                         if isinstance(item, dict) and _text(item.get("id"), 128)],

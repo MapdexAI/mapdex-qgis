@@ -655,7 +655,7 @@ class MapdexPlugin:
         )
 
     def _summarize_active_layer(self):
-        layer = self.iface.activeLayer()
+        layer = self._active_qgis_layer()
         if layer is None or not layer.isValid():
             self.source_summary.setText("No valid active QGIS layer")
             return
@@ -672,7 +672,7 @@ class MapdexPlugin:
 
     def _nivo_snapshot(self):
         """Return only measured QGIS metadata for the untrusted context envelope."""
-        layer = self.iface.activeLayer()
+        layer = self._active_qgis_layer()
         active = {}
         if layer is not None and layer.isValid():
             active = {
@@ -705,8 +705,43 @@ class MapdexPlugin:
             return
         context = companion_context(self._nivo_snapshot())
         layer = context.get("active_layer") or {}
-        label = layer.get("name") or "No active QGIS layer"
+        label = layer.get("name") or layer.get("id") or "No active QGIS layer"
         self.nivo_context.setText("{} · {} selected · {}".format(label, context.get("selection_count", 0), context.get("crs", "No CRS")))
+
+    def _active_qgis_layer(self):
+        layer = self.iface.activeLayer()
+        if layer is not None and layer.isValid():
+            return layer
+        try:
+            view = self.iface.layerTreeView()
+        except Exception:
+            view = None
+        if view is not None:
+            try:
+                layer = view.currentLayer()
+                if layer is not None and layer.isValid():
+                    return layer
+            except Exception:
+                pass
+            try:
+                for candidate in view.selectedLayers():
+                    if candidate is not None and candidate.isValid():
+                        return candidate
+            except Exception:
+                pass
+            try:
+                node = view.currentNode()
+                layer = node.layer() if node is not None and hasattr(node, "layer") else None
+                if layer is not None and layer.isValid():
+                    return layer
+            except Exception:
+                pass
+        return None
+
+    def _nivo_layer_for_action(self, target):
+        if target:
+            return QgsProject.instance().mapLayer(target)
+        return self._active_qgis_layer()
 
     def ask_nivo(self):
         if not self.api.token or not self.project_id:
@@ -802,7 +837,7 @@ class MapdexPlugin:
         self._nivo_state = transition(self._nivo_state, "execute")
         tool = action["tool"]
         target = action.get("target")
-        layer = QgsProject.instance().mapLayer(target) if target else self.iface.activeLayer()
+        layer = self._nivo_layer_for_action(target)
         if target and (layer is None or not layer.isValid()):
             self._set_status("Nivo did not run the action because its target layer is no longer available.")
             return
@@ -905,7 +940,7 @@ class MapdexPlugin:
 
     def _run_processing_operation(self, action):
         target = action.get("target")
-        layer = QgsProject.instance().mapLayer(target) if target else self.iface.activeLayer()
+        layer = self._nivo_layer_for_action(target)
         if layer is None or not layer.isValid():
             self._set_status("Nivo did not run Processing because the target layer is no longer available.")
             self._nivo_state = transition(self._nivo_state, "error")
