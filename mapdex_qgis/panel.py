@@ -138,17 +138,18 @@ def build_companion_panel(workflows, endpoint_settings=True):
     )
     root.setStyleSheet(
         """
-        QWidget#mapdexPluginRoot { background: palette(window); }
+        QWidget#mapdexPluginRoot { background: #191919; color: #F7F7F5; }
         QLabel#mapdexSectionLabel {
-            color: palette(placeholder-text);
+            color: #8F96A8;
             font-size: 11px;
             font-weight: 600;
             text-transform: uppercase;
         }
         QLabel#mapdexStatus {
             padding: 9px 10px;
-            background: palette(base);
-            border-left: 3px solid palette(highlight);
+            background: #212121;
+            color: #F7F7F5;
+            border-left: 3px solid #6366F1;
         }
         QFrame#mapdexResultCard {
             background: transparent;
@@ -161,26 +162,40 @@ def build_companion_panel(workflows, endpoint_settings=True):
         }
         QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
         QFrame#mapdexNivoSurface {
-            background: palette(base);
-            border: 1px solid palette(mid);
+            background: #212121;
+            color: #F7F7F5;
+            border: 1px solid rgba(230, 233, 242, 0.22);
             border-radius: 8px;
         }
+        QLabel#mapdexNivoTitle {
+            color: #F7F7F5;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        QLabel#mapdexNivoContext,
+        QLabel#mapdexNivoStatus {
+            color: #8F96A8;
+            font-size: 11px;
+        }
         QScrollArea#mapdexChatTranscript {
-            background: palette(window);
-            border: 1px solid palette(mid);
+            background: #191919;
+            border: 1px solid rgba(230, 233, 242, 0.12);
             border-radius: 6px;
             padding: 6px;
         }
+        QWidget#mapdexChatTranscriptContent { background: #191919; }
         QLineEdit#mapdexNivoInput {
-            background: palette(window);
-            border: 1px solid palette(mid);
+            background: #1c1c1c;
+            color: #F7F7F5;
+            selection-background-color: #4F46E5;
+            border: 1px solid rgba(230, 233, 242, 0.22);
             border-radius: 7px;
             padding: 8px 10px;
             min-height: 20px;
         }
-        QLineEdit#mapdexNivoInput:focus { border-color: palette(highlight); }
+        QLineEdit#mapdexNivoInput:focus { border-color: #6366F1; }
         QToolButton#mapdexSegment {
-            color: palette(placeholder-text);
+            color: #8F96A8;
             background: transparent;
             border: 0;
             border-bottom: 2px solid transparent;
@@ -333,10 +348,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     surface_layout.setContentsMargins(12, 12, 12, 12)
     surface_layout.setSpacing(9)
     nivo_title = QLabel("Nivo")
-    nivo_title.setStyleSheet("font-weight: 600;")
+    nivo_title.setObjectName("mapdexNivoTitle")
     nivo_context = QLabel("No active QGIS layer")
+    nivo_context.setObjectName("mapdexNivoContext")
     nivo_context.setWordWrap(True)
-    nivo_context.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
     # A widget transcript keeps messages as native Qt widgets. It intentionally
     # is not HTML: assistant text is data, never markup.
     nivo_reply = QScrollArea()
@@ -346,6 +361,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
     )
     transcript = QWidget()
+    transcript.setObjectName("mapdexChatTranscriptContent")
     transcript_layout = QVBoxLayout(transcript)
     transcript_layout.setContentsMargins(8, 8, 8, 8)
     transcript_layout.setSpacing(8)
@@ -358,7 +374,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
     )
     nivo_status = QLabel("Ready")
     nivo_status.setObjectName("mapdexNivoStatus")
-    nivo_status.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
     nivo_input = QLineEdit()
     nivo_input.setObjectName("mapdexNivoInput")
     nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
