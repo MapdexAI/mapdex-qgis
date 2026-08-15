@@ -341,7 +341,18 @@ def build_companion_panel(workflows, endpoint_settings=True):
     clear_key_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
     )
-    assistant_form.addRow("API key", root.register_pair(api_key_input, clear_key_button))
+    # A plain container widget, NOT a registered responsive pair. A pair's
+    # QBoxLayout has its direction and alignment mutated on every resize; nesting
+    # one inside a QFormLayout row means mutating a layout the form owns, which
+    # is the ownership hand-off this file already warns about under PyQt6. The
+    # row is short enough that it never needs to stack anyway.
+    api_key_row = QWidget()
+    api_key_row_layout = QHBoxLayout(api_key_row)
+    api_key_row_layout.setContentsMargins(0, 0, 0, 0)
+    api_key_row_layout.setSpacing(6)
+    api_key_row_layout.addWidget(api_key_input, 1)
+    api_key_row_layout.addWidget(clear_key_button, 0)
+    assistant_form.addRow("API key", api_key_row)
     connection_layout.addLayout(assistant_form)
     assistant_privacy = QLabel("Mapdex-hosted assistant: bounded map context is sent to Mapdex.")
     assistant_privacy.setWordWrap(True)

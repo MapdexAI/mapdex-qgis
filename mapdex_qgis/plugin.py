@@ -57,6 +57,7 @@ from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
+from .guard import describe_exception, format_traceback, guarded
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import (
@@ -235,6 +236,7 @@ class MapdexPlugin:
         self._nivo_compose_task = None
         self._nivo_request_id = 0
 
+    @guarded
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
         self.action.setToolTip("Open Mapdex for QGIS")
@@ -246,6 +248,7 @@ class MapdexPlugin:
         self._ensure_dock()
         self.dock.hide()
 
+    @guarded
     def _on_current_layer_changed(self, _layer=None):
         """React to the QGIS active layer only while this instance is alive.
 
@@ -263,6 +266,7 @@ class MapdexPlugin:
             # The panel this instance owned is gone; stay quiet.
             return
 
+    @guarded
     def unload(self):
         self.poll_timer.stop()
         self.progress_timer.stop()
@@ -290,6 +294,30 @@ class MapdexPlugin:
         self._panel_root = None
         for name in PANEL_WIDGET_REFS:
             setattr(self, name, None)
+
+    def _report_unexpected(self, action, exc):
+        """The error boundary's reporter: log fully, tell the user plainly.
+
+        Never re-raises. An exception escaping a Qt slot aborts QGIS under
+        PyQt5.5+/PyQt6, so this is the last line before the user loses their
+        session.
+        """
+        try:
+            QgsMessageLog.logMessage(
+                "Nivo action '{}' failed:\n{}".format(action, format_traceback(exc)),
+                "Mapdex",
+                enum_member(Qgis, "MessageLevel", "Critical"),
+            )
+        except Exception:
+            pass
+        try:
+            self._set_status("Nivo hit an unexpected problem and stopped safely. See the Mapdex log for details.")
+            self._announce(
+                "Nivo could not finish that action ({}). QGIS is unaffected.".format(describe_exception(exc)),
+                level=2,
+            )
+        except Exception:
+            pass
 
     def _ensure_dock(self):
         if self.dock is not None:
@@ -380,6 +408,7 @@ class MapdexPlugin:
             # Older Qt without resizeDocks: the widget size hint still applies.
             self.dock.resize(PREFERRED_WIDTH, self.dock.height())
 
+    @guarded
     def show(self):
         self._ensure_dock()
         self.dock.show()
@@ -449,6 +478,7 @@ class MapdexPlugin:
             stored["api_key"] = self._credential_store().load(stored["auth_config_id"])
         return stored
 
+    @guarded
     def _load_assistant_fields(self):
         if getattr(self, "provider_box", None) is None:
             return
@@ -465,6 +495,7 @@ class MapdexPlugin:
             self.api_key_input.setPlaceholderText("A key is stored. Type a new one to replace it.")
         self._assistant_provider_changed()
 
+    @guarded
     def _assistant_provider_changed(self, _index=None):
         if getattr(self, "provider_box", None) is None:
             return
@@ -477,6 +508,7 @@ class MapdexPlugin:
             self.base_url_input.setPlaceholderText("http://127.0.0.1:11434")
         self._refresh_assistant_privacy()
 
+    @guarded
     def _refresh_assistant_privacy(self):
         """State where this install currently sends the assistant turn."""
         if getattr(self, "assistant_privacy", None) is None:
@@ -491,6 +523,7 @@ class MapdexPlugin:
         })
         self.assistant_privacy.setText(describe_privacy(runtime))
 
+    @guarded
     def save_assistant_settings(self) -> bool:
         """Persist assistant preferences; store any new key in the auth DB."""
         if getattr(self, "provider_box", None) is None:
@@ -545,6 +578,7 @@ class MapdexPlugin:
         self._refresh_assistant_privacy()
         return True
 
+    @guarded
     def clear_assistant_key(self, announce: bool = True):
         settings = QSettings()
         self._credential_store().clear(str(settings.value("mapdex/nivo/auth_config_id", "") or ""))
@@ -586,6 +620,7 @@ class MapdexPlugin:
             self.disconnect()
             self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
 
+    @guarded
     def save_connection_settings(self):
         # One Save button covers both sections. Assistant settings are saved
         # even in a released build, where the endpoint fields are pinned.
@@ -646,6 +681,7 @@ class MapdexPlugin:
         self._set_status(str(exc).split("\n")[0])
         QMessageBox.warning(self.iface.mainWindow(), title, detail)
 
+    @guarded
     def _refresh_ui(self):
         # Nothing to refresh once the panel is gone; a late callback must not
         # walk destroyed widgets.
@@ -772,6 +808,7 @@ class MapdexPlugin:
         data = self.project_box.currentData() if self.project_box is not None else None
         return str(data or self.project_id or "")
 
+    @guarded
     def _source_changed(self, _index):
         mode = self.input_box.currentData()
         if mode != "file":
@@ -873,6 +910,7 @@ class MapdexPlugin:
             "plugin_version": PLUGIN_VERSION,
         }
 
+    @guarded
     def _refresh_nivo_context(self):
         if self.nivo_context is None:
             return
@@ -936,6 +974,7 @@ class MapdexPlugin:
             self.nivo_stop_button.setVisible(busy)
             self.nivo_stop_button.setEnabled(busy)
 
+    @guarded
     def ask_nivo(self):
         if not self.api.token or not self.project_id:
             self._set_status("Connect Mapdex and choose a project before asking Nivo.")
@@ -969,6 +1008,7 @@ class MapdexPlugin:
             busy=False,
         )
 
+    @guarded
     def stop_nivo(self):
         if self._nivo_compose_task is None:
             return
@@ -987,6 +1027,7 @@ class MapdexPlugin:
             self.nivo_status.setText("Stopped")
         self._set_status("Nivo request stopped.")
 
+    @guarded
     def _nivo_composed(self, request_id, exception, response):
         if request_id != self._nivo_request_id:
             return
@@ -1021,6 +1062,7 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
 
+    @guarded
     def _render_nivo_turns(self):
         """Render sender-distinct native widget bubbles; no model HTML."""
         if self.nivo_reply is None:
@@ -1070,6 +1112,7 @@ class MapdexPlugin:
         bar = self.nivo_reply.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    @guarded
     def _apply_nivo_action(self, action):
         """Apply only the fixed QGIS presentation action allowlist."""
         action_id = action.get("id")
@@ -1168,6 +1211,7 @@ class MapdexPlugin:
 
     GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
 
+    @guarded
     def _create_scratch_layer(self, params):
         """Create a new empty editable layer and make it the active one.
 
@@ -1211,6 +1255,7 @@ class MapdexPlugin:
         self._set_status("Nivo created the layer '{}'.".format(name))
         return True
 
+    @guarded
     def _ask_geometry_type(self):
         """Offer the geometry choice as a picker; "" when the user cancels."""
         labels = [label for label, _geometry in GEOMETRY_CHOICES]
@@ -1237,6 +1282,7 @@ class MapdexPlugin:
                 return candidate
         return base
 
+    @guarded
     def _zoom_to_server_extent(self, params):
         """Move the canvas to a server-supplied extent, converting its CRS.
 
@@ -1270,6 +1316,7 @@ class MapdexPlugin:
         canvas.refresh()
         return True
 
+    @guarded
     def _confirm_nivo_action(self, action):
         action_id = action.get("id")
         if not action_id or action_id in self._executed_nivo_actions:
@@ -1296,6 +1343,7 @@ class MapdexPlugin:
         self._nivo_state = transition(self._nivo_state, "apply")
         self._run_processing_operation(action)
 
+    @guarded
     def _run_processing_operation(self, action):
         target = action.get("target")
         layer = self._nivo_layer_for_action(target)
@@ -1343,6 +1391,7 @@ class MapdexPlugin:
         QgsApplication.taskManager().addTask(task)
         self._set_status("Nivo Processing is running {}.".format(operation))
 
+    @guarded
     def _workflow_changed(self, _index):
         kind = self.workflow_box.currentData()
         current = self.input_box.currentData()
@@ -1362,12 +1411,14 @@ class MapdexPlugin:
         else:
             self._set_status("Use the active raster layer or choose one file.")
 
+    @guarded
     def connect(self):
         if not self._apply_connection_settings_from_fields():
             return
         self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
         self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
 
+    @guarded
     def disconnect(self):
         self.poll_timer.stop()
         self.progress_timer.stop()
@@ -1387,6 +1438,7 @@ class MapdexPlugin:
         self._set_status("Disconnected.")
         self._refresh_ui()
 
+    @guarded
     def _authorization_created(self, exception, response):
         if exception:
             self._show_error("Mapdex connection failed", exception)
@@ -1407,6 +1459,7 @@ class MapdexPlugin:
         interval = max(5, int(response.get("interval") or 5))
         self.poll_timer.start(interval * 1000)
 
+    @guarded
     def _poll_token(self):
         if not self.device_code:
             return
@@ -1452,6 +1505,7 @@ class MapdexPlugin:
     def _load_projects(self):
         self._task("Load Mapdex projects", self.api.projects, self._projects_loaded)
 
+    @guarded
     def _projects_loaded(self, exception, projects):
         if exception:
             self._show_error("Could not load projects", exception)
@@ -1477,6 +1531,7 @@ class MapdexPlugin:
         else:
             self._set_status("Connected. Choose a project and send work.")
 
+    @guarded
     def run_input(self):
         project_id = self._active_project_id()
         if not project_id:
@@ -1576,6 +1631,7 @@ class MapdexPlugin:
             file_ids.append(file_id)
         return {"batch": self.api.start_batch(project_id, file_ids, kind), "file_ids": file_ids}
 
+    @guarded
     def _run_started(self, exception, response):
         if exception:
             self.batch_id = ""
@@ -1604,6 +1660,7 @@ class MapdexPlugin:
         self._refresh_ui()
         self.progress_timer.start(3000)
 
+    @guarded
     def _poll_batch(self):
         if self.progress_pending or not self.batch_id or self._busy:
             return
@@ -1661,6 +1718,7 @@ class MapdexPlugin:
                 return run_id
         return ""
 
+    @guarded
     def _batch_updated(self, exception, payload):
         self.progress_pending = False
         if exception:
@@ -1723,6 +1781,7 @@ class MapdexPlugin:
             else:
                 self.progress_timer.stop()
 
+    @guarded
     def import_results(self):
         """Pull the result into QGIS, saying plainly when it is still a draft."""
         if not self.batch_id:
@@ -1880,6 +1939,7 @@ class MapdexPlugin:
                 )
         return {"files": prepared, "batch": detail}
 
+    @guarded
     def _results_imported(self, exception, payload):
         if exception:
             self._show_error("Could not import results", exception)
@@ -1954,6 +2014,7 @@ class MapdexPlugin:
         canvas.setExtent(combined)
         canvas.refresh()
 
+    @guarded
     def cancel_batch(self):
         if not self.batch_id:
             return
@@ -1972,6 +2033,7 @@ class MapdexPlugin:
             done,
         )
 
+    @guarded
     def retry_failed(self):
         if not self.batch_id:
             return
@@ -1993,6 +2055,7 @@ class MapdexPlugin:
             done,
         )
 
+    @guarded
     def open_review(self):
         if not self.batch_id:
             return
@@ -2014,6 +2077,7 @@ class MapdexPlugin:
             QUrl("{}{}{}".format(self.web_base, prefix, path))
         )
 
+    @guarded
     def open_project(self):
         project_id = self._active_project_id()
         locale = QLocale.system().name().split("_")[0]
@@ -2055,6 +2119,7 @@ class MapdexPlugin:
             self.recent_box.addItem(label, item)
         self.recent.setVisible(self.recent_box.count() > 0)
 
+    @guarded
     def resume_recent(self):
         item = self.recent_box.currentData()
         if not isinstance(item, dict):
