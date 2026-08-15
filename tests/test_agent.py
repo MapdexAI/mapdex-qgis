@@ -225,8 +225,10 @@ def test_the_objective_reaches_the_model_verbatim_in_any_language():
     provider = ScriptedProvider([answer("Tamam")])
     session = AgentSession(provider, lambda request: None)
     session.run("seçili parsellere git")
-    # No keyword table touched the text; the model sees exactly what was typed.
-    assert "answer in the same language" in provider.last_system.lower()
+    # No keyword table touched the text; the model sees exactly what was typed,
+    # and the shared contract tells it to reply in the user's language.
+    normalized = " ".join(provider.last_system.lower().split())
+    assert "answer in the language the user wrote in" in normalized
 
 
 def test_map_effects_are_collected_so_analysis_lands_on_the_canvas():

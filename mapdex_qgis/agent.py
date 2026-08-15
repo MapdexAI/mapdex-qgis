@@ -33,6 +33,7 @@ import json
 import re
 from typing import Any, Callable, Mapping, Sequence
 
+from .nivo_prompt import system_prompt
 from .capabilities import (
     CLIENT_QGIS,
     CapabilityError,
@@ -57,37 +58,10 @@ STATE_CANCELLED = "cancelled"
 
 TERMINAL_STATES = frozenset({STATE_COMPLETED, STATE_FAILED, STATE_CANCELLED})
 
-SYSTEM_PROMPT = """You are Nivo, a GIS analyst working inside {client}.
-
-You do not write code, SQL, expressions, algorithm ids, or file paths. You act \
-only by choosing one capability from the catalogue below and supplying its \
-parameters. Anything you name that is not in the catalogue does not exist.
-
-Reply with ONE JSON object and nothing else:
-
-  {{"action": "call", "capability": "<id>", "params": {{...}}, "why": "<short reason>"}}
-  {{"action": "answer", "message": "<final answer to the user>"}}
-  {{"action": "clarify", "message": "<the single question you need answered>"}}
-
-Rules:
-- Never state a number, count, area or distance that is not present in the \
-observations. If you need a fact, call a capability to measure it.
-- Inspect before you decide. Check a field's type and distribution before \
-choosing how to classify or style it.
-- When a result is spatial, follow it with a capability that makes it visible \
-on the map. An analysis the user cannot see on the map is only half an answer.
-- Ask for clarification only when two plausible targets exist. If exactly one \
-obvious target exists, use it.
-- Answer in the same language the user wrote in. Keep normal GIS terms in \
-their conventional form.
-- When you have enough to answer, use "answer". Do not keep calling capabilities.
-
-Context:
-{context}
-
-Capabilities:
-{catalog}
-"""
+# The system contract is NOT written here. It lives in
+# packages/ai-prompts/prompts/nivo.system.md and is vendored into
+# nivo_prompt.py, so QGIS and the Mapdex workspace drive the agent from one
+# versioned text. An inline prompt would be a second vocabulary that drifts.
 
 
 class AgentError(Exception):
@@ -241,12 +215,19 @@ class AgentSession:
             return "{}"
 
     def _system_prompt(self, context: Mapping[str, Any]) -> str:
+        """The shared contract, plus this client's context and catalogue.
+
+        The rules come from the versioned prompt both clients share; only the
+        capability catalogue differs between QGIS and the workspace, which is
+        what keeps the same question answerable the same way on both.
+        """
         catalog = catalog_for_prompt(self.client)
-        return SYSTEM_PROMPT.format(
-            client="QGIS" if self.client == CLIENT_QGIS else "the Mapdex workspace",
-            context=self._context_block(context),
-            catalog=json.dumps(catalog, ensure_ascii=False),
-        )
+        client_name = "QGIS" if self.client == CLIENT_QGIS else "the Mapdex workspace"
+        return "\n\n".join((
+            system_prompt(client_name),
+            "<context>\n" + self._context_block(context) + "\n</context>",
+            "<capabilities>\n" + json.dumps(catalog, ensure_ascii=False) + "\n</capabilities>",
+        ))
 
     def _messages(self, objective: str) -> list[dict[str, str]]:
         messages = list(self.history[-MAX_HISTORY_TURNS * 2:])
