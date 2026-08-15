@@ -741,6 +741,17 @@ class MapdexPlugin:
                     return layer
             except Exception:
                 pass
+        try:
+            project = QgsProject.instance()
+            root = project.layerTreeRoot()
+            for node in root.findLayers():
+                if not node.isVisible():
+                    continue
+                layer = node.layer()
+                if layer is not None and layer.isValid():
+                    return layer
+        except Exception:
+            pass
         return None
 
     def _nivo_layer_for_action(self, target):
@@ -946,6 +957,20 @@ class MapdexPlugin:
                 return
             layer.setOpacity(opacity / 100.0)
             canvas.refresh()
+        elif tool == "qgis:add_xyz_basemap@1":
+            if action["params"].get("provider") != "osm":
+                self._set_status("Nivo rejected an unsupported XYZ basemap provider.")
+                return
+            uri = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmin=0&zmax=19"
+            basemap = QgsRasterLayer(uri, "OpenStreetMap", "wms")
+            if not basemap.isValid():
+                self._set_status("QGIS could not create the OpenStreetMap XYZ layer.")
+                self._nivo_state = transition(self._nivo_state, "error")
+                return
+            QgsProject.instance().addMapLayer(basemap)
+            canvas.refresh()
+            self._nivo_turns.append(("assistant", "Added OpenStreetMap XYZ basemap."))
+            self._render_nivo_turns()
         elif tool == "qgis:select_all@1" and isinstance(layer, QgsVectorLayer):
             layer.selectAll()
             canvas.refresh()

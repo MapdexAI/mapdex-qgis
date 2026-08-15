@@ -55,6 +55,7 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:invert_selection@1",
     "qgis:set_layer_opacity@1",
     "qgis:processing_operation@1",
+    "qgis:add_xyz_basemap@1",
 })
 
 TARGETED_ACTIONS = frozenset({
@@ -72,6 +73,7 @@ SAFE_PARAM_KEYS = {
     "qgis:set_layer_opacity@1": frozenset({"opacity"}),
     "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),
     "qgis:processing_operation@1": frozenset({"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}),
+    "qgis:add_xyz_basemap@1": frozenset({"provider"}),
 }
 
 
@@ -136,6 +138,8 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             if renderer in {"categorized", "graduated", "labels"} and not _text(params.get("field") or params.get("label_field"), 128):
                 continue
+        if action["kind"] == "qgis:add_xyz_basemap@1" and params.get("provider") != "osm":
+            continue
         target = _text(action.get("target"), 128)
         if action["kind"] in TARGETED_ACTIONS and not target:
             continue
