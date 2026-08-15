@@ -41,7 +41,9 @@ from .api_client import (
     safe_filename_part,
     same_origin,
 )
+from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
+from .providers import resolve_runtime
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import allowed_actions, companion_context, confirmation_actions, transition
@@ -295,9 +297,12 @@ class MapdexPlugin:
             setattr(self, key if key != "batch" else "batch_group", value)
 
         self._load_connection_fields()
+        self._load_assistant_fields()
         self.connect_button.clicked.connect(self.connect)
         self.disconnect_button.clicked.connect(self.disconnect)
         self.save_settings_button.clicked.connect(self.save_connection_settings)
+        self.provider_box.currentIndexChanged.connect(self._assistant_provider_changed)
+        self.clear_key_button.clicked.connect(self.clear_assistant_key)
         self.run_button.clicked.connect(self.run_input)
         self.input_box.currentIndexChanged.connect(self._source_changed)
         self.workflow_box.currentIndexChanged.connect(self._workflow_changed)
@@ -394,6 +399,142 @@ class MapdexPlugin:
         self.api_url_input.setEditText(self.api.base_url or DEFAULT_API)
         self.web_url_input.setEditText(self.web_base or DEFAULT_WEB)
 
+    # -- Nivo assistant runtime (hosted by default, BYOK when a key is set) --
+
+    def _credential_store(self):
+        """The encrypted key store, created lazily so start-up stays cheap."""
+        if getattr(self, "_credentials", None) is None:
+            try:
+                manager = QgsApplication.authManager()
+            except Exception:
+                manager = None
+            self._credentials = ProviderCredentialStore(auth_manager=manager)
+        return self._credentials
+
+    def assistant_settings(self) -> dict:
+        """Non-secret assistant preferences, plus the key for the transport.
+
+        The key is read here and handed straight to the provider. It is never
+        stored on the plugin object, put in a companion context, or logged.
+        """
+        settings = QSettings()
+        stored = {
+            "provider": str(settings.value("mapdex/nivo/provider", "") or ""),
+            "model": str(settings.value("mapdex/nivo/model", "") or ""),
+            "base_url": str(settings.value("mapdex/nivo/base_url", "") or ""),
+            "auth_config_id": str(settings.value("mapdex/nivo/auth_config_id", "") or ""),
+        }
+        if stored["provider"]:
+            stored["api_key"] = self._credential_store().load(stored["auth_config_id"])
+        return stored
+
+    def _load_assistant_fields(self):
+        if getattr(self, "provider_box", None) is None:
+            return
+        stored = QSettings()
+        provider = str(stored.value("mapdex/nivo/provider", "") or "")
+        index = self.provider_box.findData(provider)
+        self.provider_box.setCurrentIndex(index if index >= 0 else 0)
+        self.model_input.setText(str(stored.value("mapdex/nivo/model", "") or ""))
+        self.base_url_input.setText(str(stored.value("mapdex/nivo/base_url", "") or ""))
+        # The key field is deliberately left blank even when one is stored: a
+        # secret is written, never read back into the interface.
+        self.api_key_input.clear()
+        if provider and str(stored.value("mapdex/nivo/auth_config_id", "") or ""):
+            self.api_key_input.setPlaceholderText("A key is stored. Type a new one to replace it.")
+        self._assistant_provider_changed()
+
+    def _assistant_provider_changed(self, _index=None):
+        if getattr(self, "provider_box", None) is None:
+            return
+        provider = self.provider_box.currentData() or ""
+        needs_endpoint = provider in {"openai_compatible", "ollama"}
+        self.base_url_input.setEnabled(bool(provider))
+        self.api_key_input.setEnabled(bool(provider) and provider != "ollama")
+        self.model_input.setEnabled(bool(provider))
+        if needs_endpoint and not self.base_url_input.text().strip() and provider == "ollama":
+            self.base_url_input.setPlaceholderText("http://127.0.0.1:11434")
+        self._refresh_assistant_privacy()
+
+    def _refresh_assistant_privacy(self):
+        """State where this install currently sends the assistant turn."""
+        if getattr(self, "assistant_privacy", None) is None:
+            return
+        provider = self.provider_box.currentData() or ""
+        typed_key = self.api_key_input.text().strip() if self.api_key_input is not None else ""
+        stored_key = str(QSettings().value("mapdex/nivo/auth_config_id", "") or "")
+        runtime = resolve_runtime({
+            "provider": provider,
+            "api_key": typed_key or stored_key,
+            "base_url": self.base_url_input.text().strip() if self.base_url_input is not None else "",
+        })
+        self.assistant_privacy.setText(describe_privacy(runtime))
+
+    def save_assistant_settings(self) -> bool:
+        """Persist assistant preferences; store any new key in the auth DB."""
+        if getattr(self, "provider_box", None) is None:
+            return True
+        provider = str(self.provider_box.currentData() or "")
+        settings = QSettings()
+        if not provider:
+            # Back to the hosted path: forget the key rather than leaving a
+            # secret behind for a provider that is no longer in use.
+            self.clear_assistant_key(announce=False)
+            settings.setValue("mapdex/nivo/provider", "")
+            self._refresh_assistant_privacy()
+            return True
+        base_url = self.base_url_input.text().strip()
+        if provider in {"openai_compatible"} and not base_url:
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Mapdex",
+                "An OpenAI-compatible provider needs an endpoint URL.",
+            )
+            return False
+        typed_key = self.api_key_input.text().strip()
+        stored_id = str(settings.value("mapdex/nivo/auth_config_id", "") or "")
+        if typed_key:
+            try:
+                result = self._credential_store().store(provider, typed_key)
+            except Exception as exc:
+                self._show_error("Nivo could not store that key", exc)
+                return False
+            stored_id = result.get("auth_config_id", "")
+            if result.get("storage") == "session":
+                self._announce(
+                    "QGIS has no unlocked authentication database, so the key is kept for this "
+                    "session only and is not written to disk.",
+                    level=1,
+                )
+            self.api_key_input.clear()
+            self.api_key_input.setPlaceholderText("A key is stored. Type a new one to replace it.")
+        elif provider != "ollama" and not stored_id:
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Mapdex",
+                "Paste an API key for {}, or choose Mapdex (hosted).".format(provider),
+            )
+            return False
+        clean = public_settings({
+            "provider": provider,
+            "model": self.model_input.text().strip(),
+            "base_url": base_url,
+            "auth_config_id": stored_id,
+        })
+        for key in ("provider", "model", "base_url", "auth_config_id"):
+            settings.setValue("mapdex/nivo/" + key, clean.get(key, ""))
+        self._refresh_assistant_privacy()
+        return True
+
+    def clear_assistant_key(self, announce: bool = True):
+        settings = QSettings()
+        self._credential_store().clear(str(settings.value("mapdex/nivo/auth_config_id", "") or ""))
+        settings.setValue("mapdex/nivo/auth_config_id", "")
+        if getattr(self, "api_key_input", None) is not None:
+            self.api_key_input.clear()
+            self.api_key_input.setPlaceholderText("Paste a key to use your own provider")
+        self._refresh_assistant_privacy()
+        if announce:
+            self._set_status("Removed the stored provider key. Nivo will use your Mapdex plan.")
+
     def _reject_insecure_endpoint(self, url: str) -> bool:
         """Block a plaintext endpoint that is not this machine."""
         if is_transport_secure(url):
@@ -425,7 +566,12 @@ class MapdexPlugin:
             self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
 
     def save_connection_settings(self):
+        # One Save button covers both sections. Assistant settings are saved
+        # even in a released build, where the endpoint fields are pinned.
+        if not self.save_assistant_settings():
+            return
         if not self._endpoints_unlocked:
+            self._set_status("Saved Nivo assistant settings.")
             return
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")

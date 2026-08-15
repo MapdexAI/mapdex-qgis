@@ -265,6 +265,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connection_panel.setVisible(False)
     connection_layout = QVBoxLayout(connection_panel)
     connection_layout.setContentsMargins(0, 0, 0, 0)
+    # The endpoint fields are the part a released build pins; the assistant
+    # settings below them stay available either way, because choosing your own
+    # model provider is a user decision, not a deployment one.
+    endpoint_frame = QFrame()
+    endpoint_layout = QVBoxLayout(endpoint_frame)
+    endpoint_layout.setContentsMargins(0, 0, 0, 0)
     connection_form = root.register_form(QFormLayout())
     connection_form.setFieldGrowthPolicy(
         enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
@@ -279,15 +285,61 @@ def build_companion_panel(workflows, endpoint_settings=True):
         web_url_input.addItem(value)
     connection_form.addRow("API", api_url_input)
     connection_form.addRow("Web", web_url_input)
-    connection_layout.addLayout(connection_form)
+    endpoint_layout.addLayout(connection_form)
+    connection_layout.addWidget(endpoint_frame)
+
+    # Nivo assistant runtime. Hosted through Mapdex is the default and needs no
+    # configuration; entering a key switches this install to BYOK, and the
+    # request then goes straight to the provider instead of through Mapdex.
+    connection_layout.addWidget(_section_label("Nivo assistant"))
+    assistant_form = root.register_form(QFormLayout())
+    assistant_form.setFieldGrowthPolicy(
+        enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
+    )
+    provider_box = _elastic(QComboBox())
+    for label, value in (
+        ("Mapdex (hosted, uses your plan)", ""),
+        ("OpenAI", "openai"),
+        ("Anthropic", "anthropic"),
+        ("Google Gemini", "gemini"),
+        ("OpenAI-compatible endpoint", "openai_compatible"),
+        ("Ollama (local)", "ollama"),
+    ):
+        provider_box.addItem(label, value)
+    model_input = QLineEdit()
+    model_input.setPlaceholderText("Provider default")
+    base_url_input = QLineEdit()
+    base_url_input.setPlaceholderText("https://… (required for compatible/local endpoints)")
+    api_key_input = QLineEdit()
+    # Never echo a secret, and never prefill it back from storage: the stored
+    # key is readable only by the provider transport.
+    api_key_input.setEchoMode(enum_member(QLineEdit, "EchoMode", "Password"))
+    api_key_input.setPlaceholderText("Paste a key to use your own provider")
+    assistant_form.addRow("Provider", provider_box)
+    assistant_form.addRow("Model", model_input)
+    assistant_form.addRow("Endpoint", base_url_input)
+    assistant_form.addRow("API key", api_key_input)
+    connection_layout.addLayout(assistant_form)
+    assistant_privacy = QLabel("Mapdex-hosted assistant: bounded map context is sent to Mapdex.")
+    assistant_privacy.setWordWrap(True)
+    assistant_privacy.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    connection_layout.addWidget(assistant_privacy)
+    clear_key_button = QToolButton()
+    clear_key_button.setText("Remove stored key")
+    clear_key_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    connection_layout.addWidget(clear_key_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
+
     save_settings_button = QPushButton("Save settings")
     connection_layout.addWidget(save_settings_button)
     settings_button.toggled.connect(connection_panel.setVisible)
     layout.addWidget(connection_panel)
     if not endpoint_settings:
-        settings_button.setVisible(False)
-        settings_button.setChecked(False)
-        connection_panel.setVisible(False)
+        # A released build talks to the hosted Mapdex, so nobody can repoint it
+        # by accident - but the assistant provider settings remain reachable.
+        endpoint_frame.setVisible(False)
+        settings_button.setToolTip("Nivo assistant settings")
 
     connect_button = QPushButton("Connect Mapdex")
     connect_button.setObjectName("mapdexPrimaryButton")
@@ -517,6 +569,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "api_url_input": api_url_input,
         "web_url_input": web_url_input,
         "save_settings_button": save_settings_button,
+        "provider_box": provider_box,
+        "model_input": model_input,
+        "base_url_input": base_url_input,
+        "api_key_input": api_key_input,
+        "assistant_privacy": assistant_privacy,
+        "clear_key_button": clear_key_button,
         "connect_button": connect_button,
         "disconnect_button": disconnect_button,
         "workspace": workspace,
