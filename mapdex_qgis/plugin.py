@@ -10,7 +10,6 @@ from typing import Callable, Optional
 from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
-    QAction,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -70,7 +69,7 @@ from .nivo import (
 )
 from .panel import build_companion_panel
 from .processing import build_algorithm_parameters, resolve_processing_algorithm
-from .qt_compat import enum_member, qgis_version
+from .qt_compat import QAction, enum_member, qgis_version
 from .viewport import resolve_extent
 from .results import (
     batch_is_terminal,
@@ -432,10 +431,19 @@ class MapdexPlugin:
             self.dock.resize(PREFERRED_WIDTH, self.dock.height())
 
     @guarded
-    def show(self):
+    def show(self, _checked: bool = False):
         self._ensure_dock()
+        if hasattr(self.dock, "setUserVisible"):
+            try:
+                self.dock.setUserVisible(True)
+            except Exception:
+                pass
         self.dock.show()
         self.dock.raise_()
+        try:
+            self.dock.activateWindow()
+        except Exception:
+            pass
         # If QGIS restored it as floating over the chrome, re-dock on the right.
         if self.dock.isFloating():
             self.dock.setFloating(False)
@@ -602,7 +610,7 @@ class MapdexPlugin:
         return True
 
     @guarded
-    def clear_assistant_key(self, announce: bool = True):
+    def clear_assistant_key(self, *args, announce: bool = True):
         settings = QSettings()
         self._credential_store().clear(str(settings.value("mapdex/nivo/auth_config_id", "") or ""))
         settings.setValue("mapdex/nivo/auth_config_id", "")
@@ -644,7 +652,7 @@ class MapdexPlugin:
             self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
 
     @guarded
-    def save_connection_settings(self):
+    def save_connection_settings(self, *args):
         # One Save button covers both sections. Assistant settings are saved
         # even in a released build, where the endpoint fields are pinned.
         if not self.save_assistant_settings():
@@ -998,7 +1006,7 @@ class MapdexPlugin:
             self.nivo_stop_button.setEnabled(busy)
 
     @guarded
-    def ask_nivo(self):
+    def ask_nivo(self, *args):
         if not self.api.token or not self.project_id:
             self._set_status("Connect Mapdex and choose a project before asking Nivo.")
             return
@@ -1032,7 +1040,7 @@ class MapdexPlugin:
         )
 
     @guarded
-    def stop_nivo(self):
+    def stop_nivo(self, *args):
         if self._nivo_compose_task is None:
             return
         self._nivo_request_id += 1
@@ -1435,14 +1443,14 @@ class MapdexPlugin:
             self._set_status("Use the active raster layer or choose one file.")
 
     @guarded
-    def connect(self):
+    def connect(self, *args):
         if not self._apply_connection_settings_from_fields():
             return
         self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
         self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
 
     @guarded
-    def disconnect(self):
+    def disconnect(self, *args):
         self.poll_timer.stop()
         self.progress_timer.stop()
         self.api.token = ""  # nosec B105 - disconnect clears the session
@@ -1555,7 +1563,7 @@ class MapdexPlugin:
             self._set_status("Connected. Choose a project and send work.")
 
     @guarded
-    def run_input(self):
+    def run_input(self, *args):
         project_id = self._active_project_id()
         if not project_id:
             QMessageBox.information(
@@ -1805,7 +1813,7 @@ class MapdexPlugin:
                 self.progress_timer.stop()
 
     @guarded
-    def import_results(self):
+    def import_results(self, *args):
         """Pull the result into QGIS, saying plainly when it is still a draft."""
         if not self.batch_id:
             return
@@ -2038,7 +2046,7 @@ class MapdexPlugin:
         canvas.refresh()
 
     @guarded
-    def cancel_batch(self):
+    def cancel_batch(self, *args):
         if not self.batch_id:
             return
         project_id = self._active_project_id()
@@ -2057,7 +2065,7 @@ class MapdexPlugin:
         )
 
     @guarded
-    def retry_failed(self):
+    def retry_failed(self, *args):
         if not self.batch_id:
             return
         project_id = self._active_project_id()
@@ -2079,7 +2087,7 @@ class MapdexPlugin:
         )
 
     @guarded
-    def open_review(self):
+    def open_review(self, *args):
         if not self.batch_id:
             return
         locale = QLocale.system().name().split("_")[0]
@@ -2101,7 +2109,7 @@ class MapdexPlugin:
         )
 
     @guarded
-    def open_project(self):
+    def open_project(self, *args):
         project_id = self._active_project_id()
         locale = QLocale.system().name().split("_")[0]
         prefix = "" if locale == "en" else "/{}".format(locale)
@@ -2143,7 +2151,7 @@ class MapdexPlugin:
         self.recent.setVisible(self.recent_box.count() > 0)
 
     @guarded
-    def resume_recent(self):
+    def resume_recent(self, *args):
         item = self.recent_box.currentData()
         if not isinstance(item, dict):
             return

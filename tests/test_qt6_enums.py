@@ -92,3 +92,20 @@ def test_qgis_version_supports_qgis4_qgis_constant():
         QGIS_VERSION = "4.0.2-Norrköping"
 
     assert qgis_version(Application, QgisApi) == "4.0.2-Norrköping"
+
+
+def test_qaction_is_not_imported_directly_from_qtwidgets():
+    """In Qt6/PyQt6 (QGIS 4), QAction moved from QtWidgets to QtGui.
+    
+    All source files must import QAction from .qt_compat, never from QtWidgets.
+    """
+    offenders = []
+    for path in _sources():
+        content = path.read_text(encoding="utf-8")
+        if "from qgis.PyQt.QtWidgets import" in content and "QAction" in content:
+            # Check if QAction is inside the QtWidgets import block
+            match = re.search(r"from qgis\.PyQt\.QtWidgets import \([^)]*QAction[^)]*\)", content)
+            if match:
+                offenders.append(f"{path.name}: imports QAction from qgis.PyQt.QtWidgets")
+    assert not offenders, "Import QAction from .qt_compat instead:\n" + "\n".join(offenders)
+

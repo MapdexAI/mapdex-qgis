@@ -6,6 +6,20 @@ helpers so the plugin loads on QGIS 3.34+ and QGIS 4.x.
 """
 from __future__ import annotations
 
+try:
+    from qgis.PyQt.QtGui import QAction  # Qt6 (QGIS 4)
+except (ImportError, ModuleNotFoundError):
+    try:
+        from qgis.PyQt.QtWidgets import QAction  # Qt5 (QGIS 3)
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from PyQt6.QtGui import QAction
+        except (ImportError, ModuleNotFoundError):
+            try:
+                from PyQt5.QtWidgets import QAction
+            except (ImportError, ModuleNotFoundError):
+                QAction = None
+
 
 def enum_member(owner, *names):
     """Resolve ``owner.A.B`` or fall back through ``owner.B``, ``owner.A``, …"""

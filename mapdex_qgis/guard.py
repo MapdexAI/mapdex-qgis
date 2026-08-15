@@ -56,7 +56,17 @@ def guarded(method: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         try:
-            return method(self, *args, **kwargs)
+            try:
+                return method(self, *args, **kwargs)
+            except TypeError as type_err:
+                # Qt signals (e.g. QAction.triggered, QPushButton.clicked) pass a boolean `checked`
+                # argument that parameterless Python slot methods do not declare.
+                if args and not kwargs:
+                    try:
+                        return method(self)
+                    except TypeError:
+                        pass
+                raise type_err
         except Exception as exc:  # noqa: BLE001 - the boundary is the point
             report = getattr(self, "_report_unexpected", None)
             if callable(report):
