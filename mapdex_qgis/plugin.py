@@ -41,6 +41,7 @@ from .api_client import (
     safe_filename_part,
     same_origin,
 )
+from .build_version import PLUGIN_VERSION
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
@@ -848,7 +849,7 @@ class MapdexPlugin:
             # secrets and DSNs must never enter a compose payload.
             "connections": [],
             "qgis_version": qgis_version(QgsApplication, Qgis),
-            "plugin_version": "0.9.13",
+            "plugin_version": PLUGIN_VERSION,
         }
 
     def _refresh_nivo_context(self):
