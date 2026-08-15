@@ -25,6 +25,13 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:open_processing@1",
     "qgis:open_review@1",
     "qgis:open_results@1",
+    "qgis:inspect_layer@1",
+})
+
+TARGETED_ACTIONS = frozenset({
+    "qgis:zoom_to_layer@1", "qgis:set_layer_visibility@1",
+    "qgis:preview_filter@1", "qgis:semantic_style@1",
+    "qgis:open_attribute_table@1", "qgis:inspect_layer@1",
 })
 
 
@@ -37,6 +44,7 @@ def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     active = snapshot.get("active_layer") if isinstance(snapshot.get("active_layer"), dict) else {}
     fields = active.get("fields") if isinstance(active.get("fields"), list) else []
     layer = {
+        "id": _text(active.get("id"), 128),
         "name": _text(active.get("name")),
         "kind": _text(active.get("kind"), 32),
         "crs": _text(active.get("crs"), 128),
@@ -57,22 +65,32 @@ def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
                         for item in (snapshot.get("connections") or [])[:16]
                         if isinstance(item, dict) and _text(item.get("id"), 128)],
     }
+    context["supported_action_kinds"] = sorted(ALLOWED_ACTIONS)
+    context["qgis_version"] = _text(snapshot.get("qgis_version"), 64)
+    context["plugin_version"] = _text(snapshot.get("plugin_version"), 64)
     if viewport:
         context["viewport"] = viewport
     return {key: value for key, value in context.items() if value not in (None, "", [], {})}
 
 
 def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only schema-shaped allowlisted actions from a compose response."""
-    raw = response.get("ui_commands") if isinstance(response, dict) else None
+    """Return only schema-shaped allowlisted companion actions from compose."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
     if not isinstance(raw, list):
         return []
     result = []
     for action in raw:
-        if not isinstance(action, dict) or action.get("tool") not in ALLOWED_ACTIONS:
+        if not isinstance(action, dict) or action.get("kind") not in ALLOWED_ACTIONS:
+            continue
+        if action.get("requires_confirmation") is True:
             continue
         params = action.get("params")
         if not isinstance(params, dict):
             params = {}
-        result.append({"tool": action["tool"], "params": params, "summary": _text(action.get("summary"))})
+        target = _text(action.get("target"), 128)
+        if action["kind"] in TARGETED_ACTIONS and not target:
+            continue
+        # These fields are opaque server-issued identifiers. Never accept a model
+        # supplied SQL, Python, path or confirmation executable payload.
+        result.append({"tool": action["kind"], "params": params, "summary": _text(action.get("summary")), "undo": bool(action.get("undo")), "undo_token": _text(action.get("undo_token"), 128), "target": target, "correlation_id": _text(action.get("correlation_id"), 128)})
     return result

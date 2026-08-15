@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
-from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QMessageBox
+from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QLabel, QMessageBox, QVBoxLayout, QWidget
 from qgis.core import (
     QgsApplication,
     QgsCoordinateTransform,
@@ -85,6 +85,7 @@ PANEL_WIDGET_REFS = (
     "open_project_button", "recent", "recent_box", "resume_button",
     "tabs",
     "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
+    "nivo_status",
 )
 
 
@@ -197,8 +198,10 @@ class MapdexPlugin:
         self.tabs = None
         self.nivo_context = None
         self.nivo_reply = None
+        self.nivo_status = None
         self.nivo_input = None
         self.nivo_send_button = None
+        self._nivo_turns = []
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -667,6 +670,7 @@ class MapdexPlugin:
         active = {}
         if layer is not None and layer.isValid():
             active = {
+                "id": layer.id(),
                 "name": layer.name(),
                 "kind": "raster" if isinstance(layer, QgsRasterLayer) else "vector" if isinstance(layer, QgsVectorLayer) else "other",
                 "crs": layer.crs().authid() if layer.crs().isValid() else "",
@@ -686,6 +690,8 @@ class MapdexPlugin:
             # Saved connection discovery is intentionally deferred: connection
             # secrets and DSNs must never enter a compose payload.
             "connections": [],
+            "qgis_version": QgsApplication.qgisVersion(),
+            "plugin_version": "0.9.13",
         }
 
     def _refresh_nivo_context(self):
@@ -704,27 +710,83 @@ class MapdexPlugin:
         if not message:
             return
         self.nivo_send_button.setEnabled(False)
+        self.nivo_input.setEnabled(False)
+        self._nivo_turns.append(("user", message))
+        self._nivo_turns.append(("assistant", "Thinking…"))
+        self._render_nivo_turns()
+        self.nivo_status.setText("Nivo AI is reading your map context…")
+        self.nivo_input.clear()
         self._refresh_nivo_context()
         self._task("Nivo compose", lambda: self.api.compose(self.project_id, message, companion_context(self._nivo_snapshot())), self._nivo_composed)
 
     def _nivo_composed(self, exception, response):
         if self.nivo_send_button is not None:
             self.nivo_send_button.setEnabled(True)
+        if self.nivo_input is not None:
+            self.nivo_input.setEnabled(True)
         if exception:
+            if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
+                self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.")
+            self._render_nivo_turns()
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Request failed")
             self._show_error("Nivo could not compose a response", exception)
             return
         if not isinstance(response, dict):
             self._show_error("Nivo could not compose a response", RuntimeError("Invalid compose response"))
             return
         if self.nivo_reply is not None:
-            self.nivo_reply.setPlainText(str(response.get("text") or response.get("message") or "Nivo returned no message."))
+            reply = str(response.get("text") or response.get("message") or "Nivo returned no message.")
+            if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
+                self._nivo_turns[-1] = ("assistant", reply)
+            else:
+                self._nivo_turns.append(("assistant", reply))
+            self._render_nivo_turns()
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Ready")
         for action in allowed_actions(response):
             self._apply_nivo_action(action)
+
+    def _render_nivo_turns(self):
+        """Render sender-distinct native widget bubbles; no model HTML."""
+        if self.nivo_reply is None:
+            return
+        transcript = self.nivo_reply.widget()
+        layout = transcript.layout() if transcript is not None else None
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for sender, text in self._nivo_turns:
+            card = QWidget()
+            row = QVBoxLayout(card)
+            row.setContentsMargins(8, 7, 8, 7)
+            row.setSpacing(3)
+            label = QLabel("You" if sender == "user" else "Nivo")
+            label.setStyleSheet("font-weight: 600;")
+            body = QLabel(str(text))
+            body.setWordWrap(True)
+            row.addWidget(label)
+            row.addWidget(body)
+            if sender == "user":
+                card.setStyleSheet("background:#28658f; color:#ffffff; border-radius:8px;")
+            else:
+                card.setStyleSheet("background:palette(base); border:1px solid palette(mid); border-radius:8px;")
+            layout.addWidget(card)
+        layout.addStretch(1)
+        bar = self.nivo_reply.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _apply_nivo_action(self, action):
         """Apply only the fixed QGIS presentation action allowlist."""
         tool = action["tool"]
-        layer = self.iface.activeLayer()
+        target = action.get("target")
+        layer = QgsProject.instance().mapLayer(target) if target else self.iface.activeLayer()
+        if target and (layer is None or not layer.isValid()):
+            self._set_status("Nivo did not run the action because its target layer is no longer available.")
+            return
         canvas = self.iface.mapCanvas()
         if tool == "qgis:zoom_to_layer@1" and layer is not None:
             self._zoom_to_layers([layer])
@@ -745,6 +807,17 @@ class MapdexPlugin:
                 canvas.setExtent(QgsRectangle(*[float(value) for value in bbox])); canvas.refresh()
         elif tool == "qgis:open_attribute_table@1" and layer is not None:
             self.iface.showAttributeTable(layer)
+        elif tool == "qgis:inspect_layer@1" and layer is not None:
+            kind = "vector" if isinstance(layer, QgsVectorLayer) else "raster"
+            self._nivo_turns.append(("assistant", "{} · {} · {}".format(layer.name(), kind, layer.crs().authid())))
+            self._render_nivo_turns()
+        elif tool == "qgis:set_layer_visibility@1" and layer is not None:
+            visible = action["params"].get("visible")
+            if not isinstance(visible, bool):
+                self._set_status("Nivo requires a validated visibility value.")
+                return
+            QgsProject.instance().layerTreeRoot().findLayer(layer.id()).setItemVisibilityChecked(visible)
+            canvas.refresh()
         elif tool == "qgis:open_processing@1":
             self.iface.showProcessingAlgorithmDialog("", {})
         else:

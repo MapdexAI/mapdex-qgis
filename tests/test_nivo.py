@@ -19,11 +19,19 @@ def test_companion_context_contains_summary_not_attribute_values_or_credentials(
 
 
 def test_only_closed_qgis_actions_can_reach_dispatch():
-    actions = allowed_actions({"ui_commands": [
-        {"tool": "qgis:zoom_to_layer@1", "params": {}},
-        {"tool": "shell:run@1", "params": {"command": "rm -rf /"}},
-        {"tool": "qgis:open_attribute_table@1", "params": "not-an-object"},
+    actions = allowed_actions({"companion_actions": [
+        {"kind": "qgis:zoom_to_layer@1", "params": {}},
+        {"kind": "shell:run@1", "params": {"command": "rm -rf /"}},
+        {"kind": "qgis:open_attribute_table@1", "target": "layer_1", "params": "not-an-object"},
     ]})
-    assert [item["tool"] for item in actions] == ["qgis:zoom_to_layer@1", "qgis:open_attribute_table@1"]
-    assert actions[1]["params"] == {}
+    assert [item["tool"] for item in actions] == ["qgis:open_attribute_table@1"]
+    assert actions[0]["params"] == {}
     assert "shell:run@1" not in ALLOWED_ACTIONS
+
+
+def test_targeted_action_requires_stable_layer_identity():
+    actions = allowed_actions({"companion_actions": [
+        {"kind": "qgis:zoom_to_layer@1", "target": "layer_abc", "params": {}},
+        {"kind": "qgis:zoom_to_layer@1", "target": "roads", "params": {}},
+    ]})
+    assert [item["target"] for item in actions] == ["layer_abc", "roads"]

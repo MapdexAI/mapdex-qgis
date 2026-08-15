@@ -11,10 +11,10 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QProgressBar,
     QLineEdit,
-    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
-    QTabWidget,
+    QStackedWidget,
+    QStackedLayout,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -151,14 +151,50 @@ def build_companion_panel(workflows, endpoint_settings=True):
             border-left: 3px solid palette(highlight);
         }
         QFrame#mapdexResultCard {
-            background: palette(base);
-            border: 1px solid palette(mid);
-            border-radius: 3px;
+            background: transparent;
+            border: 0;
         }
         QPushButton#mapdexPrimaryButton {
-            min-height: 34px;
+            min-height: 32px;
+            padding: 4px 10px;
             font-weight: 600;
         }
+        QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
+        QFrame#mapdexNivoSurface {
+            background: palette(base);
+            border: 1px solid palette(mid);
+            border-radius: 8px;
+        }
+        QScrollArea#mapdexChatTranscript {
+            background: palette(window);
+            border: 1px solid palette(mid);
+            border-radius: 6px;
+            padding: 6px;
+        }
+        QLineEdit#mapdexNivoInput {
+            background: palette(window);
+            border: 1px solid palette(mid);
+            border-radius: 7px;
+            padding: 8px 10px;
+            min-height: 20px;
+        }
+        QLineEdit#mapdexNivoInput:focus { border-color: palette(highlight); }
+        QToolButton#mapdexSegment {
+            color: palette(placeholder-text);
+            background: transparent;
+            border: 0;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            padding: 9px 13px 8px;
+        }
+        QToolButton#mapdexSegment:checked {
+            color: palette(text);
+            background: transparent;
+            border-bottom-color: palette(highlight);
+            font-weight: 600;
+        }
+        QStackedWidget#mapdexPages { background: transparent; }
+        QWidget#mapdexPage { background: palette(window); }
         QToolButton#mapdexSettingsButton { padding: 3px 6px; }
         """
     )
@@ -235,17 +271,29 @@ def build_companion_panel(workflows, endpoint_settings=True):
     layout.addWidget(connect_button)
     layout.addWidget(disconnect_button, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
 
-    # Task execution, assistant conversation and job monitoring are separate
-    # modes. Keeping them in tabs gives Nivo a useful reading/composition area
-    # instead of burying it in the middle of the task form.
-    tabs = QTabWidget()
-    tabs.setObjectName("mapdexMainTabs")
-    layout.addWidget(tabs, 1)
+    # Deliberately avoid QTabWidget: QGIS' themed tab pane allowed sibling
+    # page widgets to bleed into the active page on narrow docks. This compact
+    # segmented navigation controls one clipped stacked page at a time.
+    segment_bar = QFrame()
+    segment_bar.setObjectName("mapdexSegmentBar")
+    segment_layout = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
+    segment_bar.setLayout(segment_layout)
+    segment_layout.setContentsMargins(0, 0, 0, 0)
+    segment_layout.setSpacing(5)
+    pages = QStackedWidget()
+    pages.setObjectName("mapdexPages")
+    # QGIS' stylesheet can leave non-current pages painted. Force StackOne so
+    # only the selected page remains visible and receives layout geometry.
+    pages.layout().setStackingMode(enum_member(QStackedLayout, "StackingMode", "StackOne"))
+    layout.addWidget(segment_bar)
+    layout.addWidget(pages, 1)
 
     workspace = QWidget()
+    workspace.setObjectName("mapdexPage")
     workspace_layout = QVBoxLayout(workspace)
-    workspace_layout.setContentsMargins(0, 4, 0, 0)
+    workspace_layout.setContentsMargins(12, 12, 12, 12)
     workspace_layout.setSpacing(8)
+    workspace_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
     new_task_label = _section_label("New task")
     open_project_button = QPushButton("Open project")
     open_project_button.setToolTip("Open this project in Mapdex web workspace")
@@ -271,36 +319,65 @@ def build_companion_panel(workflows, endpoint_settings=True):
     run_button = QPushButton("Start task")
     run_button.setObjectName("mapdexPrimaryButton")
     workspace_layout.addWidget(run_button)
-    tabs.addTab(workspace, "Task")
 
     # Nivo is a separate, map-aware companion surface. It calls the same
     # server compose path as Studio; it is not a local chatbot or Python console.
-    nivo = QFrame()
-    nivo.setObjectName("mapdexResultCard")
+    nivo = QWidget()
+    nivo.setObjectName("mapdexPage")
     nivo_layout = QVBoxLayout(nivo)
-    nivo_layout.setContentsMargins(10, 10, 10, 10)
-    nivo_layout.setSpacing(7)
+    nivo_layout.setContentsMargins(14, 14, 14, 14)
+    nivo_layout.setSpacing(9)
+    nivo_surface = QFrame()
+    nivo_surface.setObjectName("mapdexNivoSurface")
+    surface_layout = QVBoxLayout(nivo_surface)
+    surface_layout.setContentsMargins(12, 12, 12, 12)
+    surface_layout.setSpacing(9)
     nivo_title = QLabel("Nivo")
     nivo_title.setStyleSheet("font-weight: 600;")
     nivo_context = QLabel("No active QGIS layer")
     nivo_context.setWordWrap(True)
     nivo_context.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
-    nivo_reply = QPlainTextEdit()
-    nivo_reply.setReadOnly(True)
-    nivo_reply.setMaximumHeight(112)
-    nivo_reply.setPlaceholderText("Nivo replies and confirmed plans appear here.")
+    # A widget transcript keeps messages as native Qt widgets. It intentionally
+    # is not HTML: assistant text is data, never markup.
+    nivo_reply = QScrollArea()
+    nivo_reply.setObjectName("mapdexChatTranscript")
+    nivo_reply.setWidgetResizable(True)
+    nivo_reply.setHorizontalScrollBarPolicy(
+        enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
+    )
+    transcript = QWidget()
+    transcript_layout = QVBoxLayout(transcript)
+    transcript_layout.setContentsMargins(8, 8, 8, 8)
+    transcript_layout.setSpacing(8)
+    transcript_layout.addStretch(1)
+    nivo_reply.setWidget(transcript)
+    nivo_reply.setMinimumHeight(170)
+    nivo_reply.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+    )
+    nivo_status = QLabel("Ready")
+    nivo_status.setObjectName("mapdexNivoStatus")
+    nivo_status.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
     nivo_input = QLineEdit()
+    nivo_input.setObjectName("mapdexNivoInput")
     nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
     nivo_send_button = QPushButton("Ask Nivo")
     nivo_send_button.setObjectName("mapdexPrimaryButton")
-    for widget in (nivo_title, nivo_context, nivo_reply, nivo_input, nivo_send_button):
-        nivo_layout.addWidget(widget)
-    tabs.addTab(nivo, "Nivo")
+    surface_layout.addWidget(nivo_title)
+    surface_layout.addWidget(nivo_context)
+    surface_layout.addWidget(nivo_reply, 1)
+    surface_layout.addWidget(nivo_status)
+    surface_layout.addWidget(nivo_input)
+    surface_layout.addWidget(nivo_send_button)
+    nivo_layout.addWidget(nivo_surface, 1)
 
     jobs = QWidget()
+    jobs.setObjectName("mapdexPage")
     jobs_layout = QVBoxLayout(jobs)
-    jobs_layout.setContentsMargins(0, 4, 0, 0)
+    jobs_layout.setContentsMargins(12, 12, 12, 12)
     jobs_layout.setSpacing(10)
+    jobs_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
 
     batch = QFrame()
     batch.setObjectName("mapdexResultCard")
@@ -345,7 +422,29 @@ def build_companion_panel(workflows, endpoint_settings=True):
     recent_layout.addLayout(root.register_pair(recent_box, resume_button))
     jobs_layout.addWidget(recent)
     jobs_layout.addStretch(1)
-    tabs.addTab(jobs, "Jobs")
+    # Nivo is the primary companion surface. Explicitly hide sibling pages on
+    # every switch as a QGIS theme safety net against stacked-page bleed.
+    page_order = (nivo, workspace, jobs)
+    for page in page_order:
+        pages.addWidget(page)
+
+    def switch_page(target):
+        pages.setCurrentIndex(target)
+        for index, page in enumerate(page_order):
+            page.setVisible(index == target)
+
+    for index, title in enumerate(("Nivo AI", "Task", "Jobs")):
+        button = QToolButton()
+        button.setObjectName("mapdexSegment")
+        button.setText(title)
+        button.setCheckable(True)
+        button.setAutoExclusive(True)
+        button.clicked.connect(lambda _checked=False, target=index: switch_page(target))
+        segment_layout.addWidget(button)
+        if index == 0:
+            button.setChecked(True)
+    switch_page(0)
+    segment_layout.addStretch(1)
 
     scroll.setWidget(body)
     outer.addWidget(scroll)
@@ -360,7 +459,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "connect_button": connect_button,
         "disconnect_button": disconnect_button,
         "workspace": workspace,
-        "tabs": tabs,
+        "tabs": pages,
         "batch": batch,
         "batch_title": batch_title,
         "phase_label": phase_label,
@@ -374,6 +473,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "run_button": run_button,
         "nivo_context": nivo_context,
         "nivo_reply": nivo_reply,
+        "nivo_status": nivo_status,
         "nivo_input": nivo_input,
         "nivo_send_button": nivo_send_button,
         "cancel_button": cancel_button,

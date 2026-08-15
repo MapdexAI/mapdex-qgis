@@ -31,7 +31,21 @@ def test_panel_can_be_dragged_narrower_than_it_opens():
 
 def test_nivo_is_a_primary_tab_not_an_inline_task_card():
     panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
-    assert "QTabWidget" in panel
-    assert 'tabs.addTab(workspace, "Task")' in panel
-    assert 'tabs.addTab(nivo, "Nivo")' in panel
-    assert 'tabs.addTab(jobs, "Jobs")' in panel
+    assert "QStackedWidget" in panel
+    assert "QTabWidget," not in panel
+    assert 'page_order = (nivo, workspace, jobs)' in panel
+    assert 'for index, title in enumerate(("Nivo AI", "Task", "Jobs"))' in panel
+    assert 'page.setVisible(index == target)' in panel
+
+
+def test_nivo_panel_exposes_a_visible_turn_status():
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    assert '"nivo_status": nivo_status' in panel
+
+
+def test_nivo_transcript_is_native_widgets_not_model_html():
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert "QTextBrowser" not in panel
+    assert "setHtml(" not in plugin
+    assert "QScrollArea" in panel
