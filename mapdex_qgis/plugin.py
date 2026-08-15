@@ -1398,20 +1398,47 @@ class MapdexPlugin:
         context.setProject(QgsProject.instance())
         feedback = QgsProcessingFeedback()
         task = QgsProcessingAlgRunnerTask(algorithm, parameters, context, feedback)
+        task._context = context
+        task._feedback = feedback
+        task._algorithm = algorithm
         self._tasks.append(task)
 
+        @guarded
         def completed(successful, results):
             if task in self._tasks:
                 self._tasks.remove(task)
+            if self.dock is None:
+                return
             if not successful:
                 self._set_status("Nivo Processing task failed or was cancelled.")
                 self._nivo_state = transition(self._nivo_state, "error")
                 return
-            for value in (results or {}).values():
-                if hasattr(value, "isValid") and value.isValid():
-                    QgsProject.instance().addMapLayer(value)
-                    self.iface.setActiveLayer(value)
-                    break
+            output_layer = None
+            if isinstance(results, dict):
+                for key in ("OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"):
+                    if key in results:
+                        val = results[key]
+                        if hasattr(val, "isValid") and val.isValid():
+                            output_layer = val
+                            break
+                        if isinstance(val, str) and hasattr(context, "takeResultLayer"):
+                            try:
+                                output_layer = context.takeResultLayer(val)
+                                if output_layer is not None and output_layer.isValid():
+                                    break
+                            except Exception:
+                                pass
+                        if isinstance(val, str):
+                            try:
+                                from qgis.core import QgsProcessingUtils
+                                output_layer = QgsProcessingUtils.mapLayerFromString(val, context, True)
+                                if output_layer is not None and output_layer.isValid():
+                                    break
+                            except Exception:
+                                pass
+            if output_layer is not None and output_layer.isValid():
+                QgsProject.instance().addMapLayer(output_layer)
+                self.iface.setActiveLayer(output_layer)
             self._nivo_turns.append(("assistant", "Completed {} with {}.".format(operation, algorithm_id)))
             self._render_nivo_turns()
             self.iface.mapCanvas().refresh()
