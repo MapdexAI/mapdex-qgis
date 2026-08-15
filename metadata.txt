@@ -1,15 +1,15 @@
 [general]
 name=Mapdex for QGIS
-description=Send map data to Mapdex and add completed raster or vector results back into QGIS.
+description=Chat with Nivo in QGIS, send map data to Mapdex, and add completed raster or vector results back into QGIS.
 version=0.9.13
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
 author=Mapdex
 email=support@mapdex.ai
-about=Mapdex for QGIS sends a raster, PDF or vector layer to the Mapdex service, runs a georeference, parcel digitization, validation or full-pipeline task there, and adds the completed raster or vector result back as a QGIS layer. Review of flagged features happens in the browser. Requires a Mapdex account: the plugin opens your browser once to authorize this QGIS installation, and the token is stored in the QGIS Authentication Manager. Needs network access to your Mapdex endpoint (mapdex.ai by default, configurable for self-hosted installs). No external Python packages are required beyond the QGIS standard runtime; works on Windows, Linux and macOS, with Qt5 (QGIS 3.34+) and Qt6 (QGIS 4).
+about=Mapdex for QGIS adds Nivo, a map-aware AI co-pilot inside the QGIS dock. Nivo can inspect active layer context, perform bounded reversible QGIS actions, prepare confirmed Processing operations, send Mapdex georeference, parcel digitization, validation or full-pipeline tasks, and add completed raster or vector results back as QGIS layers. Review of flagged features happens in the browser. Requires a Mapdex account: the plugin opens your browser once to authorize this QGIS installation, and the token is stored in the QGIS Authentication Manager. Needs network access to your Mapdex endpoint (mapdex.ai by default, configurable for self-hosted installs). No external Python packages are required beyond the QGIS standard runtime; works on Windows, Linux and macOS, with Qt5 (QGIS 3.34+) and Qt6 (QGIS 4).
 icon=icon.png
-tags=georeferencing,digitizing,raster,vector,web service,cadastre,vectorization,ai
+tags=georeferencing,digitizing,raster,vector,web service,cadastre,vectorization,ai,nivo,processing
 category=Web
 experimental=False
 deprecated=False
@@ -17,7 +17,8 @@ homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
 changelog=0.9.13
-    - Version bump for a fresh upload; no code change since 0.9.12.
+    - Add Nivo, the QGIS companion chat for active-layer context, reversible map actions and confirmed Processing operations.
+    - Add optimized Nivo avatar and loading animation assets to the dock.
     0.9.12
     - Clean the plugin repository scan: lint policy, narrowed exception handling, no silent notice drops.
     0.9.11

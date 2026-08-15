@@ -6,12 +6,13 @@
 > [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Send a scanned map, PDF or vector layer from QGIS to [Mapdex](https://mapdex.ai),
-run a georeference / parcel digitization / validation task there, and add the
-finished raster or vector result back into your QGIS project.
+chat with Nivo about the active layer, run bounded QGIS actions, start
+georeference / parcel digitization / validation tasks, and add the finished
+raster or vector result back into your QGIS project.
 
-The plugin is a companion to the Mapdex web workspace: heavy processing and the
-review of flagged features happen in Mapdex, while QGIS stays the place where
-you prepare the input and use the result.
+The plugin is a companion to the Mapdex web workspace: Nivo handles map-aware
+chat and safe desktop actions, heavy processing and review happen in Mapdex, and
+QGIS stays the place where you prepare the input and use the result.
 
 ## What it does
 
@@ -21,6 +22,23 @@ you prepare the input and use the result.
 | Digitize parcels | georeferenced raster | vector parcel layer (GeoJSON) |
 | Validate & deliver | vector layer | validation report + delivery package |
 | Full pipeline | scanned map / plan | georeferenced raster + vector result |
+
+## Nivo in QGIS
+
+Nivo is the Mapdex companion inside the dock. It collects compact QGIS context
+without credentials, raw attributes, DSNs or project dumps, then sends that
+context through the same bounded Mapdex compose endpoint used by Studio.
+
+Nivo can help with active-layer inspection, canvas navigation, layer visibility
+and opacity, selections, attribute table/toolbox navigation, safe styling
+previews and confirmed QGIS Processing operations such as buffer, heatmap,
+clip/intersection, reprojection, nearest-neighbour and related spatial tasks.
+Consequential actions use a confirmation step, are validated against the live
+QGIS project, and keep stable layer ids instead of display-name guesses.
+
+Nivo does not run arbitrary Python, SQL, provider URIs, expressions, file paths
+or Processing algorithm ids from model text. PostGIS requests through Nivo are
+read-only and typed; mutation requests are refused.
 
 Work runs in the background: you can close the panel, keep working, or restart
 QGIS — the panel picks the task back up from *Recent tasks*.
@@ -53,11 +71,13 @@ Open the panel from *Web → Mapdex*, or the Mapdex toolbar button.
 3. **Pick a workflow** and a **source**: the active QGIS layer, or a file on
    disk. A vector layer is exported to GeoPackage first; a raster is sent as
    its own file.
-4. **Start task.** Progress, the current phase, and the next action appear in
+4. **Ask Nivo** when you want to inspect the active layer, zoom, select, style,
+   prepare a Processing action, or send a Mapdex workflow in natural language.
+5. **Start task.** Progress, the current phase, and the next action appear in
    the panel.
-5. **Review** flagged features in the browser when the task asks for it
+6. **Review** flagged features in the browser when the task asks for it
    (*Review in Mapdex*).
-6. **Add result to QGIS** loads the finished layer into your project.
+7. **Add result to QGIS** loads the finished layer into your project.
 
 ## Self-hosted / custom endpoint
 
