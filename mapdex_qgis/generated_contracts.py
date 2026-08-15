@@ -1974,7 +1974,7 @@ TOOLS = [
         "credits": 10,
         "capability": {
             "visibility": "api_available",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -1994,7 +1994,7 @@ TOOLS = [
         "credits": 10,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "raster_operation",
             "requires_materialization": True,
@@ -2014,7 +2014,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": False,
@@ -2134,7 +2134,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "raster_operation",
             "requires_materialization": True,
@@ -2274,7 +2274,7 @@ TOOLS = [
         "credits": 3,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": False,
@@ -2334,7 +2334,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "model_call",
             "requires_materialization": True,
@@ -2354,7 +2354,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "model_call",
             "requires_materialization": True,
@@ -2434,7 +2434,7 @@ TOOLS = [
         "credits": 2,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -2494,7 +2494,7 @@ TOOLS = [
         "credits": 2,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "raster_operation",
             "requires_materialization": False,
@@ -2514,7 +2514,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -3114,7 +3114,7 @@ TOOLS = [
         "credits": 3,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": False,
@@ -3194,7 +3194,7 @@ TOOLS = [
         "credits": 1,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -3214,7 +3214,7 @@ TOOLS = [
         "credits": 1,
         "capability": {
             "visibility": "api_available",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "read_only",
             "requires_materialization": False,
@@ -3234,7 +3234,7 @@ TOOLS = [
         "credits": 2,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -3314,7 +3314,7 @@ TOOLS = [
         "credits": 0,
         "capability": {
             "visibility": "contextual_action",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "model_call",
             "requires_materialization": True,
@@ -3414,7 +3414,7 @@ TOOLS = [
         "credits": 2,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": True,
@@ -3554,7 +3554,7 @@ TOOLS = [
         "credits": 1,
         "capability": {
             "visibility": "public_seo_entry",
-            "backend": "piri-extension-host",
+            "backend": "mapdex-extension-host",
             "backend_fallback": "",
             "security_profile": "file_ingest",
             "requires_materialization": False,
