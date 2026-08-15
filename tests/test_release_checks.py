@@ -114,6 +114,16 @@ def test_the_real_package_is_releasable():
     check_package(metadata, tag="v{}".format(metadata["version"]))
 
 
+def test_the_real_package_includes_nivo_assets():
+    built = ROOT / "dist" / "mapdex-qgis.zip"
+    if not built.is_file():
+        pytest.skip("run scripts/package.py first")
+    with zipfile.ZipFile(built) as archive:
+        names = set(archive.namelist())
+    assert "mapdex/assets/assistant/nivo.png" in names
+    assert "mapdex/assets/assistant/nivo-loading.gif" in names
+
+
 def test_publish_returns_a_failing_exit_code_so_ci_stops(tmp_path):
     """CI only blocks a bad release if the script exits non-zero."""
     sys.path.insert(0, str(ROOT / "scripts"))

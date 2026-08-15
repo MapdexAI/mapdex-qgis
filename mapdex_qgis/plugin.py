@@ -7,9 +7,9 @@ import time
 import traceback
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
-from qgis.PyQt.QtGui import QDesktopServices, QIcon
-from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QLabel, QMessageBox, QVBoxLayout, QWidget
+from qgis.PyQt.QtCore import Qt, QLocale, QSize, QSettings, QTimer, QUrl
+from qgis.PyQt.QtGui import QDesktopServices, QIcon, QMovie, QPixmap
+from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
 from qgis.core import (
     QgsApplication,
     QgsCoordinateTransform,
@@ -72,6 +72,8 @@ WORKFLOWS = (
 
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://mapdex.ai"
+NIVO_AVATAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo.png")
+NIVO_LOADING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo-loading.gif")
 
 # While a task waits for browser review the panel keeps a slow watch, so an
 # approved result still lands in QGIS without the user pressing Resume.
@@ -208,6 +210,7 @@ class MapdexPlugin:
         self._nivo_turns = []
         self._nivo_state = "idle"
         self._executed_nivo_actions = set()
+        self._nivo_movies = []
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -799,6 +802,7 @@ class MapdexPlugin:
         """Render sender-distinct native widget bubbles; no model HTML."""
         if self.nivo_reply is None:
             return
+        self._nivo_movies = []
         transcript = self.nivo_reply.widget()
         layout = transcript.layout() if transcript is not None else None
         if layout is None:
@@ -812,11 +816,31 @@ class MapdexPlugin:
             row = QVBoxLayout(card)
             row.setContentsMargins(8, 7, 8, 7)
             row.setSpacing(3)
+            header = QWidget()
+            header_row = QHBoxLayout(header)
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(6)
             label = QLabel("You" if sender == "user" else "Nivo")
+            if sender != "user":
+                icon = QLabel()
+                icon.setFixedSize(32, 32)
+                if str(text).startswith("Thinking") and os.path.isfile(NIVO_LOADING_PATH):
+                    movie = QMovie(NIVO_LOADING_PATH)
+                    movie.setScaledSize(QSize(32, 32))
+                    icon.setMovie(movie)
+                    self._nivo_movies.append(movie)
+                    movie.start()
+                elif os.path.isfile(NIVO_AVATAR_PATH):
+                    icon.setPixmap(QPixmap(NIVO_AVATAR_PATH).scaled(32, 32, enum_member(Qt, "AspectRatioMode", "KeepAspectRatio"), enum_member(Qt, "TransformationMode", "SmoothTransformation")))
+                label.setText("Nivo")
+                label.setBuddy(icon)
+                label.setStyleSheet("font-weight: 600;")
+                header_row.addWidget(icon)
             label.setStyleSheet("font-weight: 600;")
+            header_row.addWidget(label)
             body = QLabel(str(text))
             body.setWordWrap(True)
-            row.addWidget(label)
+            row.addWidget(header)
             row.addWidget(body)
             if sender == "user":
                 card.setStyleSheet("background:#28658f; color:#ffffff; border-radius:8px;")

@@ -62,6 +62,12 @@ def main(argv) -> int:
             source = ROOT / "mapdex_qgis" / name
             if source.is_file():
                 archive.write(source, f"{PLUGIN_DIR_NAME}/{name}")
+        for path in sorted((ROOT / "mapdex_qgis" / "assets").rglob("*")):
+            if path.is_file():
+                archive.write(
+                    path,
+                    f"{PLUGIN_DIR_NAME}/assets/{path.relative_to(ROOT / 'mapdex_qgis' / 'assets').as_posix()}",
+                )
         for path in sorted((ROOT / "mapdex_qgis").rglob("*.py")):
             if path.name.endswith("_test.py") or path.name == "conftest.py":
                 continue
