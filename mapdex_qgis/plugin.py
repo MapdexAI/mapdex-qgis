@@ -1075,6 +1075,9 @@ class MapdexPlugin:
                 except QgsCsException:
                     return
             canvas.setExtent(extent); canvas.refresh()
+        elif tool == "qgis:create_layer@1":
+            if not self._create_scratch_layer(action.get("params") or {}):
+                return
         elif tool == "qgis:zoom_to_extent@1":
             if not self._zoom_to_server_extent(action.get("params") or {}):
                 return
@@ -1139,6 +1142,61 @@ class MapdexPlugin:
             self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
             return
         self._nivo_state = transition(self._nivo_state, "done")
+
+    GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
+
+    def _create_scratch_layer(self, params):
+        """Create a new empty editable layer and make it the active one.
+
+        A scratch (memory) layer is the right default: it appears immediately,
+        needs no path or format decision, and the user can save it wherever they
+        want afterwards. Writing a file without being asked would put data on
+        their disk that they never chose a location for.
+        """
+        geometry = str(params.get("geometry") or "").strip().lower()
+        if geometry not in self.GEOMETRY_TYPES:
+            # The one decision that cannot be defaulted safely: a point layer is
+            # useless to someone who wanted to draw parcels.
+            self._nivo_turns.append((
+                "assistant",
+                "What kind of layer should I create: point, line or polygon?",
+            ))
+            self._render_nivo_turns()
+            self._set_status("Nivo needs the geometry type for the new layer.")
+            return False
+        crs = str(params.get("crs") or "").strip()
+        if not crs:
+            crs = self.iface.mapCanvas().mapSettings().destinationCrs().authid()
+        name = str(params.get("name") or "").strip()[:120] or self._unique_layer_name(geometry)
+        uri = "{}?crs={}&index=yes".format(geometry, crs or "EPSG:4326")
+        layer = QgsVectorLayer(uri, name, "memory")
+        if not layer.isValid():
+            self._set_status("QGIS could not create that layer.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        QgsProject.instance().addMapLayer(layer)
+        self.iface.setActiveLayer(layer)
+        self.iface.mapCanvas().refresh()
+        self._nivo_turns.append((
+            "assistant",
+            "Created '{}' ({}, {}). It is the active layer - toggle editing to start drawing.".format(
+                name, geometry, crs or "EPSG:4326"),
+        ))
+        self._render_nivo_turns()
+        self._refresh_nivo_context()
+        self._set_status("Nivo created the layer '{}'.".format(name))
+        return True
+
+    def _unique_layer_name(self, geometry):
+        existing = {layer.name() for layer in QgsProject.instance().mapLayers().values()}
+        base = "New {} layer".format(geometry)
+        if base not in existing:
+            return base
+        for index in range(2, 100):
+            candidate = "{} {}".format(base, index)
+            if candidate not in existing:
+                return candidate
+        return base
 
     def _zoom_to_server_extent(self, params):
         """Move the canvas to a server-supplied extent, converting its CRS.
