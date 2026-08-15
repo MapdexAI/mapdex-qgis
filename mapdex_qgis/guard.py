@@ -22,6 +22,7 @@ destroyed panel is itself a crash.
 from __future__ import annotations
 
 import functools
+import inspect
 import traceback
 from typing import Any, Callable
 
@@ -44,6 +45,21 @@ def format_traceback(exc: BaseException) -> str:
     )[:MAX_REPORTED_CHARS]
 
 
+def _max_positional_args(method: Callable[..., Any]) -> int | None:
+    """How many positional arguments the method accepts, excluding ``self``.
+
+    None means "no limit" - the method takes ``*args`` and can be handed
+    whatever Qt sends.
+    """
+    try:
+        spec = inspect.getfullargspec(method)
+    except TypeError:
+        return None
+    if spec.varargs is not None:
+        return None
+    return max(0, len(spec.args) - 1)
+
+
 def guarded(method: Callable[..., Any]) -> Callable[..., Any]:
     """Stop an exception in a Qt slot from terminating QGIS.
 
@@ -53,20 +69,27 @@ def guarded(method: Callable[..., Any]) -> Callable[..., Any]:
     "nothing happened, and the user was told".
     """
 
+    limit = _max_positional_args(method)
+
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
+        # Qt signals pass extra arguments - QAction.triggered and
+        # QPushButton.clicked both send a boolean `checked`. PyQt normally
+        # inspects the slot and passes only as many arguments as it declares,
+        # but it inspects THIS wrapper, and functools.wraps does not copy a
+        # signature. A `*args` wrapper therefore reads as "accepts anything",
+        # so Qt started passing `checked` into every parameterless handler and
+        # every button in the plugin raised TypeError.
+        #
+        # Truncating here reproduces PyQt's own rule deterministically. The
+        # alternative - catching TypeError and retrying with fewer arguments -
+        # cannot tell a Qt arity mismatch from a TypeError raised inside the
+        # method, so it would silently run a handler twice and repeat whatever
+        # side effects it had already performed.
+        if limit is not None and len(args) > limit:
+            args = args[:limit]
         try:
-            try:
-                return method(self, *args, **kwargs)
-            except TypeError as type_err:
-                # Qt signals (e.g. QAction.triggered, QPushButton.clicked) pass a boolean `checked`
-                # argument that parameterless Python slot methods do not declare.
-                if args and not kwargs:
-                    try:
-                        return method(self)
-                    except TypeError:
-                        pass
-                raise type_err
+            return method(self, *args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - the boundary is the point
             report = getattr(self, "_report_unexpected", None)
             if callable(report):
