@@ -23,6 +23,9 @@ from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
+    QgsPointXY,
+    QgsGeometry,
+    QgsFeature,
     QgsCsException,
     Qgis,
     QgsMessageLog,
@@ -56,6 +59,7 @@ from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
+from .features import describe_placement, plan_points, scatter_in_rectangle
 from .guard import describe_exception, format_traceback, guarded
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
@@ -1172,6 +1176,9 @@ class MapdexPlugin:
                 except QgsCsException:
                     return
             canvas.setExtent(extent); canvas.refresh()
+        elif tool == "qgis:add_features@1":
+            if not self._add_features(action.get("params") or {}, action.get("id") or ""):
+                return
         elif tool == "qgis:create_layer@1":
             if not self._create_scratch_layer(action.get("params") or {}):
                 return
@@ -1241,6 +1248,113 @@ class MapdexPlugin:
         self._nivo_state = transition(self._nivo_state, "done")
 
     GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
+
+    @guarded
+    def _add_features(self, params, seed=""):
+        """Place real features on a layer, creating one only if needed.
+
+        Asking for points used to resolve to "create an empty layer", which is
+        worse than refusing: the layer appeared, so the request looked handled.
+        """
+        geometry = str(params.get("geometry") or "point").strip().lower()
+        if geometry not in self.GEOMETRY_TYPES:
+            geometry = "point"
+        layer = self._layer_for_features(geometry, params)
+        if layer is None:
+            return False
+        target_crs = layer.crs()
+
+        if str(params.get("area") or "") == "viewport":
+            # The user meant what they can see. The canvas extent is already in
+            # the map CRS, so this needs no geocoding and no guessing.
+            canvas = self.iface.mapCanvas()
+            extent = canvas.extent()
+            positions = scatter_in_rectangle(
+                [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
+                params.get("count") or 1,
+                seed,
+            )
+            source_crs = canvas.mapSettings().destinationCrs()
+            where = "the current view"
+        else:
+            plan = plan_points(params, seed)
+            if not plan.get("points"):
+                self._set_status("Nivo had no area to place features in.")
+                return False
+            positions = plan["points"]
+            source_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            where = str(params.get("place") or "")
+
+        transform = None
+        if source_crs.isValid() and target_crs.isValid() and source_crs != target_crs:
+            try:
+                transform = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance())
+            except Exception:
+                self._set_status("Nivo could not place those features in the layer's CRS.")
+                return False
+
+        features = []
+        for x, y in positions:
+            point = QgsPointXY(float(x), float(y))
+            if transform is not None:
+                try:
+                    point = transform.transform(point)
+                except QgsCsException:
+                    continue
+            feature = QgsFeature(layer.fields())
+            feature.setGeometry(QgsGeometry.fromPointXY(point))
+            features.append(feature)
+        if not features:
+            self._set_status("Nivo could not place those features in the layer's CRS.")
+            return False
+
+        ok, _added = layer.dataProvider().addFeatures(features)
+        if not ok:
+            self._set_status("QGIS rejected the new features.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        layer.updateExtents()
+        layer.triggerRepaint()
+        self.iface.setActiveLayer(layer)
+        self._zoom_to_layers([layer])
+        self.iface.mapCanvas().refresh()
+        self._nivo_turns.append(("assistant", describe_placement(len(features), len(positions), where)))
+        self._render_nivo_turns()
+        self._refresh_nivo_context()
+        self._set_status("Nivo added {} feature(s) to '{}'.".format(len(features), layer.name()))
+        return True
+
+    def _layer_for_features(self, geometry, params):
+        """Reuse a compatible editable layer, or make one for the features."""
+        active = self._active_qgis_layer()
+        if isinstance(active, QgsVectorLayer) and active.isValid():
+            # Only an in-memory scratch layer is written to without asking; a
+            # file or database layer is the user's data, not ours to append to.
+            if active.dataProvider().name() == "memory" and self._geometry_matches(active, geometry):
+                return active
+        created = self._create_scratch_layer({
+            "geometry": geometry,
+            "crs": params.get("layer_crs") or "",
+        })
+        if not created:
+            return None
+        return self._active_qgis_layer()
+
+    def _geometry_matches(self, layer, geometry):
+        try:
+            from qgis.core import QgsWkbTypes
+
+            wanted = {
+                "point": QgsWkbTypes.PointGeometry,
+                "multipoint": QgsWkbTypes.PointGeometry,
+                "linestring": QgsWkbTypes.LineGeometry,
+                "multilinestring": QgsWkbTypes.LineGeometry,
+                "polygon": QgsWkbTypes.PolygonGeometry,
+                "multipolygon": QgsWkbTypes.PolygonGeometry,
+            }.get(geometry)
+            return wanted is not None and layer.geometryType() == wanted
+        except Exception:
+            return False
 
     @guarded
     def _create_scratch_layer(self, params):

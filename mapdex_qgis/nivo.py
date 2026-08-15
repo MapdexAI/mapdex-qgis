@@ -57,6 +57,7 @@ ALLOWED_ACTIONS = frozenset({
     "qgis:processing_operation@1",
     "qgis:add_xyz_basemap@1",
     "qgis:create_layer@1",
+    "qgis:add_features@1",
 })
 
 # What this build can actually carry out. ALLOWED_ACTIONS above is the protocol
@@ -83,6 +84,7 @@ IMPLEMENTED_ACTIONS = frozenset({
     "qgis:invert_selection@1",
     "qgis:add_xyz_basemap@1",
     "qgis:create_layer@1",
+    "qgis:add_features@1",
     # Runs through the confirmation path rather than the direct dispatcher.
     "qgis:processing_operation@1",
 })
@@ -123,6 +125,9 @@ SAFE_PARAM_KEYS = {
     "qgis:processing_operation@1": frozenset({"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}),
     "qgis:add_xyz_basemap@1": frozenset({"provider"}),
     "qgis:create_layer@1": frozenset({"geometry", "crs", "name"}),
+    "qgis:add_features@1": frozenset(
+        {"geometry", "count", "coordinates", "bbox", "center", "crs", "area", "place"}
+    ),
 }
 
 
