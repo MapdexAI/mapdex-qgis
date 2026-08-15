@@ -939,9 +939,15 @@ class MapdexPlugin:
         self._refresh_nivo_context()
         self._nivo_request_id += 1
         request_id = self._nivo_request_id
+        # Build the context HERE, on the main thread. QgsTask.run() executes on a
+        # worker thread, and iface.activeLayer(), the map canvas and the layer
+        # tree are main-thread only: reading them from the task returned an empty
+        # snapshot, so Nivo answered "no layer is active yet" while a layer was
+        # plainly open. Only the HTTP call belongs in the background.
+        context = companion_context(self._nivo_snapshot())
         self._nivo_compose_task = self._task(
             "Nivo compose",
-            lambda: self.api.compose(self.project_id, message, companion_context(self._nivo_snapshot())),
+            lambda: self.api.compose(self.project_id, message, context),
             lambda exception, response: self._nivo_composed(request_id, exception, response),
             busy=False,
         )
