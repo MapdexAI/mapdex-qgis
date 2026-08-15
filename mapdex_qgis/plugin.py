@@ -7,8 +7,8 @@ import time
 import traceback
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSize, QSettings, QTimer, QUrl
-from qgis.PyQt.QtGui import QDesktopServices, QIcon, QMovie, QPixmap
+from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
+from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
 from qgis.core import (
     QgsApplication,
@@ -72,9 +72,6 @@ WORKFLOWS = (
 
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://mapdex.ai"
-NIVO_AVATAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo.png")
-NIVO_LOADING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo-loading.gif")
-
 # While a task waits for browser review the panel keeps a slow watch, so an
 # approved result still lands in QGIS without the user pressing Resume.
 REVIEW_POLL_MS = 15000
@@ -210,7 +207,6 @@ class MapdexPlugin:
         self._nivo_turns = []
         self._nivo_state = "idle"
         self._executed_nivo_actions = set()
-        self._nivo_movies = []
 
     def initGui(self):
         self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
@@ -802,7 +798,6 @@ class MapdexPlugin:
         """Render sender-distinct native widget bubbles; no model HTML."""
         if self.nivo_reply is None:
             return
-        self._nivo_movies = []
         transcript = self.nivo_reply.widget()
         layout = transcript.layout() if transcript is not None else None
         if layout is None:
@@ -814,29 +809,24 @@ class MapdexPlugin:
         for sender, text in self._nivo_turns:
             card = QWidget()
             row = QVBoxLayout(card)
+            is_thinking = sender != "user" and str(text).startswith("Thinking")
+            if is_thinking:
+                row.setContentsMargins(2, 2, 2, 2)
+                body = QLabel(str(text))
+                body.setWordWrap(True)
+                body.setStyleSheet("color:#8F96A8; background:transparent; border:0;")
+                row.addWidget(body)
+                card.setStyleSheet("background:transparent; border:0;")
+                layout.addWidget(card)
+                continue
             row.setContentsMargins(8, 7, 8, 7)
             row.setSpacing(3)
             header = QWidget()
             header_row = QHBoxLayout(header)
             header_row.setContentsMargins(0, 0, 0, 0)
-            header_row.setSpacing(6)
+            header_row.setSpacing(0)
             label = QLabel("You" if sender == "user" else "Nivo")
-            if sender != "user":
-                icon = QLabel()
-                icon.setFixedSize(32, 32)
-                if str(text).startswith("Thinking") and os.path.isfile(NIVO_LOADING_PATH):
-                    movie = QMovie(NIVO_LOADING_PATH)
-                    movie.setScaledSize(QSize(32, 32))
-                    icon.setMovie(movie)
-                    self._nivo_movies.append(movie)
-                    movie.start()
-                elif os.path.isfile(NIVO_AVATAR_PATH):
-                    icon.setPixmap(QPixmap(NIVO_AVATAR_PATH).scaled(32, 32, enum_member(Qt, "AspectRatioMode", "KeepAspectRatio"), enum_member(Qt, "TransformationMode", "SmoothTransformation")))
-                label.setText("Nivo")
-                label.setBuddy(icon)
-                label.setStyleSheet("color:#F7F7F5; font-weight:600;")
-                header_row.addWidget(icon)
-            label.setStyleSheet("color:#F7F7F5; font-weight:600;" if sender != "user" else "color:#ffffff; font-weight:600;")
+            label.setStyleSheet("color:#8F96A8; font-weight:600;" if sender != "user" else "color:#ffffff; font-weight:600;")
             header_row.addWidget(label)
             body = QLabel(str(text))
             body.setWordWrap(True)
@@ -846,7 +836,7 @@ class MapdexPlugin:
                 card.setStyleSheet("background:#4F46E5; color:#ffffff; border-radius:8px;")
                 body.setStyleSheet("color:#ffffff;")
             else:
-                card.setStyleSheet("background:#212121; color:#F7F7F5; border:1px solid rgba(230,233,242,0.12); border-radius:8px;")
+                card.setStyleSheet("background:transparent; color:#F7F7F5; border:0;")
                 body.setStyleSheet("color:#F7F7F5;")
             layout.addWidget(card)
         layout.addStretch(1)

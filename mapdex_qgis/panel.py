@@ -1,12 +1,16 @@
 """Compact, QGIS-native Mapdex task panel (layout only)."""
 from __future__ import annotations
 
+import os
+
 from qgis.PyQt.QtCore import QSize, Qt
+from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
     QBoxLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QProgressBar,
@@ -27,6 +31,11 @@ from .layout_rules import (
     panel_layout_mode,
 )
 from .qt_compat import enum_member
+
+
+NIVO_AVATAR_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo.png"
+)
 
 
 def _section_label(text):
@@ -162,11 +171,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
         }
         QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
         QFrame#mapdexNivoSurface {
-            background: #212121;
+            background: transparent;
             color: #F7F7F5;
-            border: 1px solid rgba(230, 233, 242, 0.22);
-            border-radius: 8px;
+            border: 0;
         }
+        QLabel#mapdexNivoTitleIcon { background: transparent; border: 0; }
         QLabel#mapdexNivoTitle {
             color: #F7F7F5;
             font-size: 13px;
@@ -178,12 +187,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
             font-size: 11px;
         }
         QScrollArea#mapdexChatTranscript {
-            background: #191919;
-            border: 1px solid rgba(230, 233, 242, 0.12);
-            border-radius: 6px;
-            padding: 6px;
+            background: transparent;
+            border: 0;
+            padding: 0;
         }
-        QWidget#mapdexChatTranscriptContent { background: #191919; }
+        QWidget#mapdexChatTranscriptContent { background: transparent; }
         QLineEdit#mapdexNivoInput {
             background: #1c1c1c;
             color: #F7F7F5;
@@ -345,13 +353,37 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_surface = QFrame()
     nivo_surface.setObjectName("mapdexNivoSurface")
     surface_layout = QVBoxLayout(nivo_surface)
-    surface_layout.setContentsMargins(12, 12, 12, 12)
-    surface_layout.setSpacing(9)
+    surface_layout.setContentsMargins(0, 0, 0, 0)
+    surface_layout.setSpacing(10)
+    nivo_header = QWidget()
+    nivo_header_layout = QHBoxLayout(nivo_header)
+    nivo_header_layout.setContentsMargins(0, 0, 0, 0)
+    nivo_header_layout.setSpacing(8)
+    nivo_icon = QLabel()
+    nivo_icon.setObjectName("mapdexNivoTitleIcon")
+    nivo_icon.setFixedSize(34, 34)
+    if os.path.isfile(NIVO_AVATAR_PATH):
+        nivo_icon.setPixmap(
+            QPixmap(NIVO_AVATAR_PATH).scaled(
+                34,
+                34,
+                enum_member(Qt, "AspectRatioMode", "KeepAspectRatio"),
+                enum_member(Qt, "TransformationMode", "SmoothTransformation"),
+            )
+        )
     nivo_title = QLabel("Nivo")
     nivo_title.setObjectName("mapdexNivoTitle")
     nivo_context = QLabel("No active QGIS layer")
     nivo_context.setObjectName("mapdexNivoContext")
     nivo_context.setWordWrap(True)
+    nivo_header_text = QWidget()
+    nivo_header_text_layout = QVBoxLayout(nivo_header_text)
+    nivo_header_text_layout.setContentsMargins(0, 0, 0, 0)
+    nivo_header_text_layout.setSpacing(1)
+    nivo_header_text_layout.addWidget(nivo_title)
+    nivo_header_text_layout.addWidget(nivo_context)
+    nivo_header_layout.addWidget(nivo_icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+    nivo_header_layout.addWidget(nivo_header_text, 1)
     # A widget transcript keeps messages as native Qt widgets. It intentionally
     # is not HTML: assistant text is data, never markup.
     nivo_reply = QScrollArea()
@@ -379,8 +411,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
     nivo_send_button = QPushButton("Ask Nivo")
     nivo_send_button.setObjectName("mapdexPrimaryButton")
-    surface_layout.addWidget(nivo_title)
-    surface_layout.addWidget(nivo_context)
+    surface_layout.addWidget(nivo_header)
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(nivo_input)
