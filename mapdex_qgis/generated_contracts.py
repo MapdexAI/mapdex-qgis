@@ -1157,6 +1157,7 @@ class ArtifactInfo:
     content_type: Optional[str] = None
     checksum_sha256: Optional[str] = None
     purpose: Optional[str] = None
+    download_label: Optional[str] = None
 
 @dataclass
 class JobUsage:
