@@ -8,6 +8,8 @@ every enum through ``qt_compat.enum_member``, which handles both bindings.
 import pathlib
 import re
 
+from mapdex_qgis.qt_compat import qgis_version
+
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "mapdex_qgis"
 
 # Attributes on these classes that are NOT enum members: methods, nested enum
@@ -71,3 +73,22 @@ def test_no_bare_qt_namespace_enum():
             for attribute in BARE_QT.findall(line):
                 offenders.append("{}:{}: Qt.{}".format(path.name, number, attribute))
     assert not offenders, "Use enum_member(Qt, ...) instead:\n" + "\n".join(offenders)
+
+
+def test_qgis_version_supports_qgis3_application_accessor():
+    class Application:
+        @staticmethod
+        def qgisVersion():
+            return "3.34.0"
+
+    assert qgis_version(Application) == "3.34.0"
+
+
+def test_qgis_version_supports_qgis4_qgis_constant():
+    class Application:
+        pass
+
+    class QgisApi:
+        QGIS_VERSION = "4.0.2-Norrköping"
+
+    assert qgis_version(Application, QgisApi) == "4.0.2-Norrköping"

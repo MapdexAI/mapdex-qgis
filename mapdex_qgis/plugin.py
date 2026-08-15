@@ -14,6 +14,7 @@ from qgis.core import (
     QgsApplication,
     QgsCoordinateTransform,
     QgsCsException,
+    Qgis,
     QgsMessageLog,
     QgsProcessingAlgRunnerTask,
     QgsProcessingContext,
@@ -46,7 +47,7 @@ from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import allowed_actions, companion_context, confirmation_actions, transition
 from .panel import build_companion_panel
 from .processing import build_algorithm_parameters, resolve_processing_algorithm
-from .qt_compat import enum_member
+from .qt_compat import enum_member, qgis_version
 from .results import (
     batch_is_terminal,
     batch_state,
@@ -700,7 +701,7 @@ class MapdexPlugin:
             # Saved connection discovery is intentionally deferred: connection
             # secrets and DSNs must never enter a compose payload.
             "connections": [],
-            "qgis_version": QgsApplication.qgisVersion(),
+            "qgis_version": qgis_version(QgsApplication, Qgis),
             "plugin_version": "0.9.13",
         }
 

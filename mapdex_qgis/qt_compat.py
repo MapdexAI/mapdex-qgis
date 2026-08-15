@@ -27,3 +27,30 @@ def enum_member(owner, *names):
             path=".".join(names),
         )
     )
+
+
+def qgis_version(application_cls, qgis_cls=None):
+    """Return the QGIS version across QGIS 3 and QGIS 4 Python APIs.
+
+    QGIS 3 exposed ``QgsApplication.qgisVersion()`` in common builds. QGIS 4
+    removed that accessor; the public version constant lives on ``Qgis``.
+    Keep the lookup centralized so context collection does not crash when a
+    binding drops or moves a version API.
+    """
+    version_fn = getattr(application_cls, "qgisVersion", None)
+    if callable(version_fn):
+        value = version_fn()
+        if value:
+            return str(value)
+    if qgis_cls is not None:
+        for name in ("QGIS_VERSION", "QGIS_RELEASE_NAME"):
+            value = getattr(qgis_cls, name, "")
+            if value:
+                return str(value)
+    for name in ("applicationVersion", "version"):
+        version_fn = getattr(application_cls, name, None)
+        if callable(version_fn):
+            value = version_fn()
+            if value:
+                return str(value)
+    return ""
