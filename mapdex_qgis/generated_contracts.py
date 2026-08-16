@@ -1912,6 +1912,12 @@ ERROR_REGISTRY = [
         "template": "Validation found blocking issues in this dataset, so the export was stopped. Repair or review the findings, then export again."
     },
     {
+        "code": "MERGE_COUNT_MISMATCH",
+        "type": "processing",
+        "http": 500,
+        "template": "The merged dataset does not contain the same number of features as its sources, so it was discarded rather than delivered."
+    },
+    {
         "code": "DELIVERY_BLOCKED_UNVERIFIED_REPAIR",
         "type": "validation",
         "http": 422,
