@@ -502,6 +502,24 @@ _c("report.build@1", "report", "Build an evidence-based report from the analyses
    execution=EXEC_LOCAL, produces=("report",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
 # -- explicit refusals -----------------------------------------------------
+# -- Measurement and delivery: the two ends of an ordinary GIS session --------
+#
+# Scenario 1 finishes with "export it" and Scenario 2 is measuring between two
+# clicked points. Both were unreachable, so the desktop could carry a whole
+# analysis and then not hand it over.
+_c("measure.distance@1", "measure", "Measure the distance between two positions.",
+   params={"from_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "from_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "to_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "to_lat": {"type": "number", "required": True, "min": -90, "max": 90}},
+   execution=EXEC_LOCAL, produces=("measurement",))
+_c("export.layer@1", "export", "Write a layer to a file in a standard GIS format.",
+   params={"layer_id": {"type": "string", "required": True},
+           "format": {"type": "string",
+                      "enum": ["geojson", "gpkg", "shp", "csv"],
+                      "default": "gpkg"}},
+   targets=("vector",), execution=EXEC_LOCAL, produces=("file",))
+
 _c("system.execute_code@1", "system", "Run arbitrary code.", risk=RISK_FORBIDDEN,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE),
    refusal="Nivo cannot run arbitrary code. Every action it takes comes from its trusted capability list.")

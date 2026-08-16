@@ -441,6 +441,88 @@ class QGISRuntime:
 
     # -- undo --------------------------------------------------------------
 
+    def measure_distance(self, point_a, point_b) -> dict[str, Any]:
+        """Distance between two WGS84 positions.
+
+        QGIS is asked first because QgsDistanceArea measures on the ellipsoid,
+        which is the better answer. The pure spherical fallback exists so the
+        capability still works when no ellipsoid is configured, and the result
+        always names which one produced it: the two differ by enough to matter
+        on a cadastral boundary and not at all on a site plan, and a reader
+        cannot tell them apart from the number.
+        """
+        try:
+            from qgis.core import QgsCoordinateReferenceSystem, QgsDistanceArea, QgsPointXY
+
+            calculator = QgsDistanceArea()
+            crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            calculator.setSourceCrs(crs, self.project.transformContext())
+            ellipsoid = self.project.ellipsoid() or "WGS84"
+            calculator.setEllipsoid(ellipsoid)
+            metres = calculator.measureLine(
+                QgsPointXY(float(point_a[0]), float(point_a[1])),
+                QgsPointXY(float(point_b[0]), float(point_b[1])),
+            )
+            if metres and metres > 0:
+                return {
+                    "kind": "measurement", "metres": float(metres),
+                    "method": "ellipsoidal", "ellipsoid": ellipsoid,
+                }
+        except Exception:  # noqa: BLE001 - fall back rather than fail the turn
+            pass
+        result = spatial.measure_distance(point_a, point_b, True, "degrees")
+        result["kind"] = "measurement"
+        return result
+
+    def export_layer(self, layer_id: str, output_format: str = "gpkg") -> dict[str, Any]:
+        """Write a layer to a file and report where it went.
+
+        The path is derived here rather than taken as a parameter. A model that
+        can name the output path can be steered into overwriting something, and
+        no phrasing of the prompt makes an arbitrary filesystem write safe.
+        """
+        import os
+        import tempfile
+
+        from qgis.core import QgsVectorFileWriter
+
+        from .qt_compat import enum_member
+
+        layer = self._require_layer(layer_id)
+        drivers = {"geojson": ("GeoJSON", "geojson"), "gpkg": ("GPKG", "gpkg"),
+                   "shp": ("ESRI Shapefile", "shp"), "csv": ("CSV", "csv")}
+        chosen = drivers.get(str(output_format).lower())
+        if chosen is None:
+            raise CapabilityError("{} is not a format this build can write".format(output_format))
+        driver, extension = chosen
+
+        directory = os.path.join(tempfile.gettempdir(), "mapdex-exports")
+        os.makedirs(directory, exist_ok=True)
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in layer.name())[:60] or "layer"
+        path = os.path.join(directory, "{}.{}".format(safe_name, extension))
+
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = driver
+        error = QgsVectorFileWriter.writeAsVectorFormatV3(
+            layer, path, self.project.transformContext(), options)
+        # The API returns a tuple whose first element is the error code.
+        # Reporting a path without checking it is how a user is handed a
+        # filename that was never written.
+        #
+        # The success constant is resolved through enum_member: PyQt6 requires
+        # the scoped path and the flat form raises AttributeError at runtime, in
+        # a code path no unit test opens.
+        code = error[0] if isinstance(error, (tuple, list)) else error
+        no_error = enum_member(QgsVectorFileWriter, "WriterError", "NoError")
+        if code != no_error:
+            raise CapabilityError("QGIS could not write the {} file".format(driver))
+        if not os.path.exists(path):
+            raise CapabilityError("the export reported success but no file was written")
+        return {
+            "kind": "export", "path": path, "format": output_format,
+            "features": layer.featureCount(), "bytes": os.path.getsize(path),
+        }
+
     def undo(self) -> dict[str, Any]:
         """Restore the previous state of the last reversible change."""
         if not self._undo:
@@ -507,6 +589,9 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         return {"analysis": result, "map": applied}
 
     handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
+        "measure.distance@1": lambda p: runtime.measure_distance(
+            (p["from_lon"], p["from_lat"]), (p["to_lon"], p["to_lat"])),
+        "export.layer@1": lambda p: runtime.export_layer(p["layer_id"], p.get("format", "gpkg")),
         "inspect.layer@1": lambda p: runtime.profile_layer(p["layer_id"]),
         "inspect.raster@1": lambda p: runtime.profile_layer(p["layer_id"]),
         "inspect.fields@1": lambda p: runtime.field_profile(p["layer_id"]),

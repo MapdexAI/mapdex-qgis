@@ -335,3 +335,81 @@ def transform_bbox(bbox: Sequence[float], transform) -> list[float] | None:
     xs = [point[0] for point in transformed]
     ys = [point[1] for point in transformed]
     return [min(xs), min(ys), max(xs), max(ys)]
+
+
+# Mean Earth radius (IUGG). Used only by the spherical fallback below, which
+# always says it is spherical.
+_EARTH_RADIUS_M = 6371008.8
+
+
+def measure_distance(
+    point_a: tuple[float, float],
+    point_b: tuple[float, float],
+    crs_is_geographic: bool,
+    crs_map_units: str,
+) -> dict[str, Any]:
+    """Distance between two points, stating how it was obtained.
+
+    The inverse of :func:`plan_distance`: that converts a real-world distance
+    into a layer's units, this reads a real-world distance out of two positions.
+
+    ``method`` is part of the answer, not decoration. A spherical result and an
+    ellipsoidal one differ by up to about 0.5%, which is nothing on a site plan
+    and a great deal on a cadastral boundary. A measurement that does not say
+    which it is invites the reader to assume the better one.
+
+    Returns ``unsupported`` rather than a number when the CRS unit is unknown.
+    Guessing a unit here would produce a plausible figure in the wrong scale,
+    which is worse than refusing.
+    """
+    try:
+        ax, ay = float(point_a[0]), float(point_a[1])
+        bx, by = float(point_b[0]), float(point_b[1])
+    except (TypeError, ValueError, IndexError):
+        return {"strategy": "unsupported", "reason": "invalid_points"}
+    for value in (ax, ay, bx, by):
+        if not math.isfinite(value):
+            return {"strategy": "unsupported", "reason": "invalid_points"}
+
+    map_unit = normalize_unit(crs_map_units)
+    if crs_is_geographic or map_unit in ANGULAR_UNITS:
+        if not (-180.0 <= ax <= 180.0 and -180.0 <= bx <= 180.0
+                and -90.0 <= ay <= 90.0 and -90.0 <= by <= 90.0):
+            # Coordinates outside the geographic domain mean the CRS and the
+            # numbers disagree. Measuring anyway would return a confident,
+            # meaningless figure.
+            return {"strategy": "unsupported", "reason": "coordinates_outside_geographic_range"}
+        return {
+            "strategy": "measured",
+            "metres": _haversine_metres(ax, ay, bx, by),
+            "method": "spherical",
+            "note": "Great-circle distance on a sphere. QGIS reports an ellipsoidal figure when available.",
+        }
+
+    factor = METRES_PER_UNIT.get(map_unit)
+    if factor is None:
+        return {"strategy": "unsupported", "reason": "unknown_crs_unit", "crs_unit": map_unit}
+    planar = math.hypot(bx - ax, by - ay)
+    return {
+        "strategy": "measured",
+        "metres": planar * factor,
+        "map_units": planar,
+        "crs_unit": map_unit,
+        "method": "planar",
+    }
+
+
+def _haversine_metres(lon_a: float, lat_a: float, lon_b: float, lat_b: float) -> float:
+    """Great-circle distance. Stable for the short distances a user clicks.
+
+    Haversine rather than the spherical law of cosines: the latter loses
+    precision at small separations through floating-point cancellation, and
+    small separations are exactly what someone measuring two points on screen
+    produces.
+    """
+    phi_a, phi_b = math.radians(lat_a), math.radians(lat_b)
+    delta_phi = math.radians(lat_b - lat_a)
+    delta_lambda = math.radians(lon_b - lon_a)
+    h = (math.sin(delta_phi / 2) ** 2
+         + math.cos(phi_a) * math.cos(phi_b) * math.sin(delta_lambda / 2) ** 2)
+    return 2 * _EARTH_RADIUS_M * math.asin(min(1.0, math.sqrt(h)))
