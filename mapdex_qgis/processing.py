@@ -45,6 +45,68 @@ TWO_LAYER_OPERATIONS = frozenset({
 
 PROCESSING_OUTPUT_KEYS = frozenset({"OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"})
 
+# What the person who asked for a buffer calls it. `native:buffer` is how QGIS
+# spells the algorithm internally: it is developer data, it is untranslatable,
+# and reading it back to the user tells them nothing they can act on.
+OPERATION_LABELS: dict[str, str] = {
+    "buffer": "buffer",
+    "clip": "clip",
+    "intersection": "intersection",
+    "select_by_location": "selection by location",
+    "nearest_neighbor": "nearest-neighbour join",
+    "reproject": "reprojection",
+    "heatmap": "heatmap",
+    "measure_geometry": "geometry measurement",
+    "dissolve": "dissolve",
+    "union": "union",
+    "difference": "difference",
+    "merge": "merge",
+    "centroid": "centroids",
+    "convex_hull": "convex hull",
+    "split": "split",
+    "zonal_statistics": "zonal statistics",
+}
+
+
+def operation_label(operation: Any) -> str:
+    """A human name for an operation, never an algorithm id."""
+    key = str(operation or "").strip()
+    return OPERATION_LABELS.get(key) or key.replace("_", " ") or "that operation"
+
+
+def describe_empty_input(operation: Any, source_name: str = "") -> str:
+    """Why the run was not started at all.
+
+    Running a buffer over an empty layer succeeds and produces an empty layer,
+    which is how "buffer yaptım" ended with a new layer and nothing in it.
+    """
+    where = "'{}'".format(source_name) if source_name else "The selected layer"
+    return (
+        "{} has no features yet, so a {} would produce an empty layer. Add or "
+        "import data first, then ask again."
+    ).format(where, operation_label(operation))
+
+
+def describe_processing_outcome(
+    operation: Any,
+    output_name: str = "",
+    feature_count: Any = None,
+    source_name: str = "",
+) -> str:
+    """One honest line about what the run actually left on the map."""
+    label = operation_label(operation)
+    if not output_name:
+        return "The {} ran but produced no layer, so nothing was added to the map.".format(label)
+    if feature_count == 0:
+        if source_name:
+            return "The {} produced an empty layer because '{}' has no features to work on.".format(
+                label, source_name)
+        return "The {} produced an empty layer, so there is nothing to see on the map.".format(label)
+    if isinstance(feature_count, int) and feature_count > 0:
+        return "Added '{}' with {} feature{} from the {}.".format(
+            output_name, feature_count, "s" if feature_count != 1 else "", label)
+    return "Added '{}' from the {}.".format(output_name, label)
+
 
 def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
     """Accept only operation-level parameters owned by the companion contract."""

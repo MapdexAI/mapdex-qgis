@@ -16,6 +16,19 @@ import random
 from typing import Any, Mapping, Sequence
 
 MAX_FEATURES = 1000
+# Placement invents positions, never shapes. A point IS a position; a polygon or
+# a line is a shape whose vertices nobody supplied, so producing one would be
+# fabricating geometry. The layer type used to be honoured while the features
+# were always points, so a polygon request created "New polygon layer" and then
+# QGIS refused every feature ("Could not add feature with geometry type Point to
+# layer of type Polygon"), leaving an empty layer that looked like a done job.
+PLACEABLE_GEOMETRIES = ("point", "multipoint")
+_SHAPE_WORDS = {
+    "polygon": "polygon",
+    "multipolygon": "polygon",
+    "linestring": "line",
+    "multilinestring": "line",
+}
 # A bbox smaller than this is treated as a point: scattering inside a degenerate
 # extent would stack every feature on one spot.
 MIN_SPAN_DEGREES = 1e-9
@@ -121,6 +134,22 @@ def scatter_in_rectangle(
         return [((minx + maxx) / 2.0, (miny + maxy) / 2.0)] * count
     generator = random.Random(seed or "mapdex")
     return [(generator.uniform(minx, maxx), generator.uniform(miny, maxy)) for _index in range(count)]
+
+
+def can_place(geometry: Any) -> bool:
+    """True when features of this geometry can be placed from coordinates."""
+    return str(geometry or "").strip().lower() in PLACEABLE_GEOMETRIES
+
+
+def describe_unplaceable_geometry(geometry: Any) -> str:
+    """Say what will not happen, and what the user can do instead."""
+    kind = str(geometry or "").strip().lower()
+    shape = _SHAPE_WORDS.get(kind, "those")
+    return (
+        "I can place points, but I cannot invent {} shapes - their corners would "
+        "be made up. Draw them on a layer yourself, or extract them from a "
+        "scanned map or an existing dataset."
+    ).format(shape)
 
 
 def describe_placement(added: int, requested: int, where: str) -> str:

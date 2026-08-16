@@ -61,7 +61,13 @@ from .generated_contracts import BatchKind
 from .providers import resolve_runtime
 from .capabilities import CapabilityError, validate_request
 from .qgis_runtime import QGISRuntime, build_executor
-from .features import describe_placement, plan_points, scatter_in_rectangle
+from .features import (
+    can_place,
+    describe_placement,
+    describe_unplaceable_geometry,
+    plan_points,
+    scatter_in_rectangle,
+)
 from .guard import describe_exception, format_traceback, guarded
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
@@ -74,7 +80,13 @@ from .nivo import (
     transition,
 )
 from .panel import build_companion_panel
-from .processing import build_algorithm_parameters, resolve_processing_algorithm
+from .processing import (
+    build_algorithm_parameters,
+    describe_empty_input,
+    describe_processing_outcome,
+    operation_label,
+    resolve_processing_algorithm,
+)
 from .qt_compat import QAction, enum_member, qgis_version
 from .viewport import resolve_extent
 from .results import (
@@ -1325,6 +1337,16 @@ class MapdexPlugin:
         geometry = str(params.get("geometry") or "point").strip().lower()
         if geometry not in self.GEOMETRY_TYPES:
             geometry = "point"
+        if not can_place(geometry):
+            # Refused BEFORE a layer exists. Honouring the requested type for the
+            # layer while always building point geometry made QGIS reject every
+            # feature and left an empty polygon layer behind - a request that
+            # looked answered, plus a raw provider error in the message bar.
+            self._nivo_turns.append(("assistant", describe_unplaceable_geometry(geometry)))
+            self._render_nivo_turns()
+            self._set_status("Nivo did not place features.")
+            self._nivo_state = transition(self._nivo_state, "done")
+            return False
         layer = self._layer_for_features(geometry, params)
         if layer is None:
             return False
@@ -1537,7 +1559,7 @@ class MapdexPlugin:
         message = "{}\n\nTarget layer: {}\nOperation: {}".format(
             action.get("summary") or "Nivo prepared a QGIS Processing operation.",
             action.get("target") or "active layer",
-            operation or "unknown",
+            operation_label(operation),
         )
         answer = QMessageBox.question(
             self.iface.mainWindow(),
@@ -1563,10 +1585,22 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "error")
             return
         operation = action.get("params", {}).get("operation")
-        algorithm_id, algorithm = resolve_processing_algorithm(QgsApplication.processingRegistry(), operation)
+        _algorithm_id, algorithm = resolve_processing_algorithm(QgsApplication.processingRegistry(), operation)
         if algorithm is None:
-            self._set_status("This QGIS installation does not have the required Processing algorithm.")
+            self._set_status("This QGIS installation has no algorithm for the {}.".format(
+                operation_label(operation)))
             self._nivo_state = transition(self._nivo_state, "error")
+            return
+        source_name = layer.name() if hasattr(layer, "name") else ""
+        count = layer.featureCount() if hasattr(layer, "featureCount") else None
+        if count == 0:
+            # Only an exact zero counts as empty: several providers answer -1 for
+            # "unknown". Running anyway SUCCEEDS and writes an empty layer, which
+            # is how "buffer yap" ended with a new layer and no buffer in it.
+            self._nivo_turns.append(("assistant", describe_empty_input(operation, source_name)))
+            self._render_nivo_turns()
+            self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
+            self._nivo_state = transition(self._nivo_state, "done")
             return
         try:
             parameters = build_algorithm_parameters(algorithm, operation, layer, action.get("params", {}))
@@ -1616,18 +1650,38 @@ class MapdexPlugin:
                                     break
                             except Exception:
                                 pass
+            output_name = ""
+            produced = None
             if output_layer is not None and output_layer.isValid():
                 QgsProject.instance().addMapLayer(output_layer)
                 self.iface.setActiveLayer(output_layer)
-            self._nivo_turns.append(("assistant", "Completed {} with {}.".format(operation, algorithm_id)))
+                output_name = output_layer.name()
+                counter = getattr(output_layer, "featureCount", None)
+                if counter is not None:
+                    try:
+                        produced = int(counter())
+                    except Exception:
+                        produced = None
+                    if produced is not None and produced < 0:
+                        produced = None
+            # An algorithm that finished is not the same as a result the user can
+            # see: "completed" over an empty or missing output is a claim the map
+            # contradicts. The algorithm id stays out of this line entirely.
+            self._nivo_turns.append(("assistant", describe_processing_outcome(
+                operation, output_name, produced, source_name)))
             self._render_nivo_turns()
             self.iface.mapCanvas().refresh()
             self._nivo_state = transition(self._nivo_state, "done")
-            self._set_status("Nivo Processing completed.")
+            if output_name and produced != 0:
+                self._set_status("Nivo finished the {}.".format(operation_label(operation)))
+            else:
+                self._set_status("The {} finished without producing anything.".format(
+                    operation_label(operation)))
 
         task.executed.connect(completed)
         QgsApplication.taskManager().addTask(task)
-        self._set_status("Nivo Processing is running {}.".format(operation))
+        self._set_status("Nivo is running the {} on '{}'.".format(
+            operation_label(operation), source_name))
 
     @guarded
     def _workflow_changed(self, _index):

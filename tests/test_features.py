@@ -13,7 +13,9 @@ sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.features import (  # noqa: E402
     MAX_FEATURES,
+    can_place,
     describe_placement,
+    describe_unplaceable_geometry,
     plan_points,
     scatter_in_rectangle,
     valid_pair,
@@ -102,6 +104,30 @@ def test_the_reply_states_what_landed_not_what_was_asked_for():
     assert describe_placement(1, 1, "") == "Added 1 feature."
     assert "3 of the 20" in describe_placement(3, 20, "Türkiye")
     assert describe_placement(0, 5, "Türkiye") == "I could not place any features."
+
+
+# A polygon request used to create "New polygon layer" and then feed it point
+# geometry, so QGIS refused every feature ("Could not add feature with geometry
+# type Point to layer of type Polygon") and an empty layer stayed on the map.
+def test_only_positions_can_be_placed_shapes_are_refused():
+    assert can_place("point") and can_place("multipoint") and can_place("POINT")
+    for geometry in ("polygon", "multipolygon", "linestring", "multilinestring", ""):
+        assert not can_place(geometry)
+
+
+def test_the_refusal_names_the_shape_and_offers_a_real_next_step():
+    assert "polygon" in describe_unplaceable_geometry("polygon")
+    assert "polygon" in describe_unplaceable_geometry("multipolygon")
+    assert "line" in describe_unplaceable_geometry("linestring")
+    assert "Draw" in describe_unplaceable_geometry("polygon")
+
+
+def test_the_plugin_refuses_before_it_creates_a_layer():
+    # Order matters: creating the layer first and failing afterwards is what
+    # left an empty polygon layer behind, looking like a completed request.
+    source = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    body = source.split("def _add_features", 1)[1].split("\n    def ", 1)[0]
+    assert body.index("can_place(geometry)") < body.index("_layer_for_features(")
 
 
 def test_the_action_is_advertised_and_its_parameters_are_allowlisted():
