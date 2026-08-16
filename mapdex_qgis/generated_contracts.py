@@ -1912,6 +1912,12 @@ ERROR_REGISTRY = [
         "template": "Validation found blocking issues in this dataset, so the export was stopped. Repair or review the findings, then export again."
     },
     {
+        "code": "DELIVERY_BLOCKED_UNVERIFIED_REPAIR",
+        "type": "validation",
+        "http": 422,
+        "template": "This dataset was repaired but not re-checked afterwards, so its quality is unknown. Validate it again, then export."
+    },
+    {
         "code": "CONNECTION_DISCOVERY_FAILED",
         "type": "validation",
         "http": 422,
