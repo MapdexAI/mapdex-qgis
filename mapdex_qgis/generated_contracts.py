@@ -1233,6 +1233,34 @@ class RepairAttempt:
     created_at: Optional[str] = None
 
 @dataclass
+class PlanAdjustment:
+    id: str
+    step_id: str
+    step_name: str
+    iteration: int
+    decision: str
+    status: str
+    steps_executed: int
+    step_budget: int
+    adjustments_used: int
+    adjustment_budget: int
+    trigger: Optional[str] = None
+    reason: Optional[str] = None
+    observation_id: Optional[str] = None
+    risk_before: Optional[str] = None
+    risk_after: Optional[str] = None
+    requires_confirmation: bool = False
+    plan_hash_before: Optional[str] = None
+    plan_hash_after: Optional[str] = None
+    replaced_step_ids: List[str] = dataclasses.field(default_factory=list)
+    replacement_step_ids: List[str] = dataclasses.field(default_factory=list)
+    replacement_tools: List[str] = dataclasses.field(default_factory=list)
+    model_role: Optional[str] = None
+    model_version: Optional[str] = None
+    prompt_version: Optional[str] = None
+    created_at: Optional[str] = None
+
+@dataclass
 class RunHistoryNextAction:
     id: str
     label: str
@@ -1257,6 +1285,7 @@ class RunHistoryToolCall:
     duration_ms: Optional[int] = None
     observations: List[ToolObservation] = dataclasses.field(default_factory=list)
     repair_attempts: List[RepairAttempt] = dataclasses.field(default_factory=list)
+    plan_adjustments: List[PlanAdjustment] = dataclasses.field(default_factory=list)
     next_actions: List[RunHistoryNextAction] = dataclasses.field(default_factory=list)
 
 @dataclass
@@ -1273,6 +1302,7 @@ class RunHistoryResponse:
     model_versions: Dict[str, Any] = dataclasses.field(default_factory=dict)
     observations: List[ToolObservation] = dataclasses.field(default_factory=list)
     repair_attempts: List[RepairAttempt] = dataclasses.field(default_factory=list)
+    plan_adjustments: List[PlanAdjustment] = dataclasses.field(default_factory=list)
     next_actions: List[RunHistoryNextAction] = dataclasses.field(default_factory=list)
     input_file_ids: List[str] = dataclasses.field(default_factory=list)
     created_at: Optional[str] = None
@@ -1664,6 +1694,18 @@ ERROR_REGISTRY = [
         "type": "bad_request",
         "http": 400,
         "template": "The workflow plan is invalid: {message}"
+    },
+    {
+        "code": "AGENT_STEP_BUDGET_EXHAUSTED",
+        "type": "processing",
+        "http": 422,
+        "template": "The assistant reached its step limit before it could finish adjusting this work. Everything that ran is kept; review it and continue."
+    },
+    {
+        "code": "AGENT_PLAN_CHANGE_REQUIRES_CONFIRMATION",
+        "type": "processing",
+        "http": 422,
+        "template": "Continuing this work needs a change that alters the risk of the run: {message}"
     },
     {
         "code": "UNSUPPORTED_FORMAT",
