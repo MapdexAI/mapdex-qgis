@@ -3063,6 +3063,26 @@ TOOLS = [
         }
     },
     {
+        "id": "spatial:merge_layers@1",
+        "superseded_by": None,
+        "title": "Merge layers into one dataset",
+        "version": 1,
+        "category": "spatial",
+        "summary": "Concatenate several layers into a single dataset, keeping every feature and recording which layer each came from.",
+        "executor": "spatial:merge_layers@1",
+        "credits": 2,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "postgis",
+            "backend_fallback": "",
+            "security_profile": "vector_operation",
+            "requires_materialization": True,
+            "requires_verification": True,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
         "id": "monitor:create_change_monitor@1",
         "superseded_by": None,
         "title": "Create Change Monitor",
