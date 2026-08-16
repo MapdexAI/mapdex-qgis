@@ -1958,6 +1958,18 @@ ERROR_REGISTRY = [
         "type": "validation",
         "http": 422,
         "template": "The selected resource returned no features to import."
+    },
+    {
+        "code": "CONNECTION_QUERY_REFUSED",
+        "type": "validation",
+        "http": 422,
+        "template": "That question cannot be asked of this table: {message}"
+    },
+    {
+        "code": "CONNECTION_QUERY_FAILED",
+        "type": "validation",
+        "http": 422,
+        "template": "The database could not answer the question: {message}"
     }
 ]
 
@@ -3197,6 +3209,66 @@ TOOLS = [
             "backend_fallback": "",
             "security_profile": "network_egress",
             "requires_materialization": True,
+            "requires_verification": False,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
+        "id": "geo:postgis_analyze@1",
+        "superseded_by": None,
+        "title": "Analyze a PostGIS table",
+        "version": 1,
+        "category": "analytics",
+        "summary": "Read-only statistics, category breakdowns, group-by aggregation, top-N ranking, area counts and nearest-feature lookups on one table in an attached PostGIS connection. The request names a table, a column and an operation; it never carries SQL, so there is no path by which a generated statement can write.",
+        "executor": "geo:postgis_analyze@1",
+        "credits": 1,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "geo",
+            "backend_fallback": "",
+            "security_profile": "network_egress",
+            "requires_materialization": False,
+            "requires_verification": False,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
+        "id": "geo:postgis_profile@1",
+        "superseded_by": None,
+        "title": "Profile a PostGIS table",
+        "version": 1,
+        "category": "analytics",
+        "summary": "Read the shape of one table in an attached PostGIS connection - feature count, extent, SRID and how much of its geometry is missing or invalid. Read-only by construction the request names a schema, a table and nothing else; it never carries SQL.",
+        "executor": "geo:postgis_profile@1",
+        "credits": 1,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "geo",
+            "backend_fallback": "",
+            "security_profile": "network_egress",
+            "requires_materialization": False,
+            "requires_verification": False,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
+        "id": "geo:postgis_spatial@1",
+        "superseded_by": None,
+        "title": "Relate two PostGIS tables",
+        "version": 1,
+        "category": "analytics",
+        "summary": "Read-only spatial relationship counts between two tables in the same attached PostGIS connection - how many features of one intersect, contain or fall within the other, either as a single count or broken down per group. The work runs where the spatial index lives instead of pulling every geometry to the client.",
+        "executor": "geo:postgis_spatial@1",
+        "credits": 1,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "geo",
+            "backend_fallback": "",
+            "security_profile": "network_egress",
+            "requires_materialization": False,
             "requires_verification": False,
             "execution_location": "",
             "execution_location_fallback": ""
