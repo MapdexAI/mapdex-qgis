@@ -593,7 +593,21 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             raise CapabilityError("{} is not available in this QGIS build yet".format(capability))
         return handler(dict(request.get("params") or {}))
 
+    # What this build can actually carry out. Advertising more than this is how
+    # a user gets "Nivo prepared a QGIS action" and a canvas that never moves.
+    execute.capabilities = frozenset(handlers)
     return execute
+
+
+def bound_capability_ids() -> frozenset:
+    """The capability ids this build implements.
+
+    Built with no runtime because only the handler *keys* are wanted; the
+    lambdas close over the argument and are never called here. That keeps the
+    advertised set derivable without a live QGIS, which is what lets the parity
+    test run in CI.
+    """
+    return build_executor(None).capabilities
 
 
 def _active_layer_id(runtime: QGISRuntime) -> str:

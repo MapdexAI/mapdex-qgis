@@ -67,7 +67,13 @@ ALLOWED_ACTIONS = frozenset({
 # doing nothing produces "Nivo prepared a QGIS action" followed by a map that
 # never changes, which reads as a broken assistant rather than a missing feature.
 # test_action_parity.py fails if this drifts from the dispatcher.
-IMPLEMENTED_ACTIONS = frozenset({
+#
+# The canonical half is derived rather than listed. Every capability with a
+# bound executor is advertised, so adding one to the runtime table makes it
+# reachable without anyone remembering to edit this file. The `qgis:*` entries
+# below stay hand-written because they are the legacy vocabulary: a fixed,
+# closed set that will only ever shrink.
+LEGACY_ACTIONS = frozenset({
     "qgis:zoom_to_layer@1",
     "qgis:zoom_to_selection@1",
     "qgis:zoom_to_extent@1",
@@ -88,6 +94,28 @@ IMPLEMENTED_ACTIONS = frozenset({
     # Runs through the confirmation path rather than the direct dispatcher.
     "qgis:processing_operation@1",
 })
+
+
+def _bound_capabilities() -> frozenset:
+    """Capabilities the runtime implements, or nothing if it cannot be read.
+
+    Imported lazily and defensively: capability negotiation happening at all
+    matters more than it being complete, and a plugin that fails to advertise
+    is degraded while a plugin that fails to load is broken.
+    """
+    try:
+        from .qgis_runtime import bound_capability_ids
+
+        return bound_capability_ids()
+    except Exception:  # noqa: BLE001 - advertisement must never break the plugin
+        return frozenset()
+
+
+IMPLEMENTED_ACTIONS = LEGACY_ACTIONS | _bound_capabilities()
+
+# The protocol allowlist has to admit the canonical vocabulary too, or the
+# parser rejects the very actions the negotiation just advertised.
+ALLOWED_ACTIONS = ALLOWED_ACTIONS | _bound_capabilities()
 
 TARGETED_ACTIONS = frozenset({
     "qgis:zoom_to_layer@1", "qgis:set_layer_visibility@1",

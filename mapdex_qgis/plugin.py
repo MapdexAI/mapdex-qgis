@@ -59,6 +59,8 @@ from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
+from .capabilities import CapabilityError, validate_request
+from .qgis_runtime import QGISRuntime, build_executor
 from .features import describe_placement, plan_points, scatter_in_rectangle
 from .guard import describe_exception, format_traceback, guarded
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
@@ -1163,6 +1165,15 @@ class MapdexPlugin:
             self._set_status("Nivo did not run the action because its target layer is no longer available.")
             return
         canvas = self.iface.mapCanvas()
+
+        # A canonical capability id runs through the registry and the executor
+        # table. That is the same path the bounded agent loop uses, so analytics,
+        # styling, PostGIS and spatial relations behave identically however the
+        # turn was routed. The legacy `qgis:*` branches below remain for servers
+        # and installs that still speak the older vocabulary.
+        if "." in tool.split("@")[0] and self._run_capability(tool, action, target):
+            self._nivo_state = transition(self._nivo_state, "done")
+            return
         if tool == "qgis:zoom_to_layer@1" and layer is not None:
             self._zoom_to_layers([layer])
             canvas.refresh()
@@ -1246,6 +1257,61 @@ class MapdexPlugin:
             self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
             return
         self._nivo_state = transition(self._nivo_state, "done")
+
+    def _capability_executor(self):
+        """The executor table, built on first use.
+
+        Built lazily because it binds to the live project, and a plugin that
+        constructs it at load time fails to load at all when anything in that
+        chain raises.
+        """
+        executor = getattr(self, "_nivo_executor", None)
+        if executor is None:
+            from qgis.core import QgsProject
+
+            executor = build_executor(QGISRuntime(self.iface, QgsProject.instance(), self._set_status))
+            self._nivo_executor = executor
+        return executor
+
+    def _run_capability(self, tool, action, target):
+        """Run a registry capability. Returns False to fall through.
+
+        Every failure becomes a status message. This runs inside QGIS, where an
+        escaping exception is not a stack trace in a log but a broken host
+        application, which is why the plugin grew an error boundary in the first
+        place.
+        """
+        params = dict(action.get("params") or {})
+        if target and "layer_id" not in params:
+            params["layer_id"] = target
+        try:
+            request = validate_request(tool, params)
+            result = self._capability_executor()(request)
+        except CapabilityError as error:
+            self._set_status("Nivo could not run that: {}".format(error))
+            return True
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._set_status("Nivo failed to run {}: {}".format(tool, describe_exception(error)))
+            return True
+        summary = action.get("summary") or tool
+        self._nivo_turns.append(("assistant", self._describe_capability_result(summary, result)))
+        self._render_nivo_turns()
+        self.iface.mapCanvas().refresh()
+        return True
+
+    @staticmethod
+    def _describe_capability_result(summary, result):
+        """One line for the transcript.
+
+        Deliberately not a rendering of the whole result: the numbers belong to
+        the analytics module and are already carried in the result object, and
+        restating them here would be a second place they could be wrong.
+        """
+        if isinstance(result, dict):
+            kind = result.get("kind") or result.get("analysis", {}).get("kind") if isinstance(result.get("analysis"), dict) else result.get("kind")
+            if kind:
+                return "{} ({})".format(summary, kind)
+        return str(summary)
 
     GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
 

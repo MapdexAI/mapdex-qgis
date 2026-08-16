@@ -18,8 +18,10 @@ sys.path.insert(0, str(ROOT))
 from mapdex_qgis.nivo import (  # noqa: E402
     ALLOWED_ACTIONS,
     IMPLEMENTED_ACTIONS,
+    LEGACY_ACTIONS,
     companion_context,
 )
+from mapdex_qgis.qgis_runtime import bound_capability_ids  # noqa: E402
 
 PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
 
@@ -35,12 +37,24 @@ def _dispatcher_branches() -> set[str]:
     return set(re.findall(r"tool == \"([^\"]+)\"", PLUGIN[start:end]))
 
 
-def test_every_advertised_action_has_an_implementation():
-    missing = sorted(IMPLEMENTED_ACTIONS - _dispatcher_branches() - CONFIRMATION_PATH)
+def test_every_advertised_legacy_action_has_a_dispatcher_branch():
+    # The legacy vocabulary is hand-written on both sides, so it is the half
+    # that can still drift.
+    missing = sorted(LEGACY_ACTIONS - _dispatcher_branches() - CONFIRMATION_PATH)
     assert not missing, "advertised but not implemented: {}".format(missing)
 
 
-def test_every_implemented_action_is_advertised():
+def test_every_advertised_capability_has_a_bound_executor():
+    # The canonical half is derived from the executor table rather than listed,
+    # so this asserts the derivation rather than a copy of it: advertising a
+    # capability with no executor is what produces "Nivo prepared a QGIS action"
+    # and a canvas that never moves.
+    canonical = {action for action in IMPLEMENTED_ACTIONS if not action.startswith("qgis:")}
+    assert canonical, "no canonical capability is advertised; the subsystem is unreachable again"
+    assert canonical <= bound_capability_ids()
+
+
+def test_every_implemented_legacy_action_is_advertised():
     # The opposite drift wastes a capability: the desktop can do it, but the
     # server is never told and so never chooses it.
     extra = sorted(_dispatcher_branches() - IMPLEMENTED_ACTIONS)
