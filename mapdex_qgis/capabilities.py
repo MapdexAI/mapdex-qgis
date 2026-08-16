@@ -427,6 +427,13 @@ _c("postgis.profile@1", "postgis", "Profile a PostGIS table: feature count, exte
            "schema": {"type": "string", "required": True},
            "table": {"type": "string", "required": True}},
    execution=EXEC_POSTGIS, produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+#
+# These three are declared for both clients and the Workspace implements them as
+# `geo:postgis_profile@1`, `geo:postgis_analyze@1` and `geo:postgis_spatial@1`.
+# `scripts/nivo_registry_drift.py` pairs them and fails the build if the two
+# registries stop agreeing about what a question takes, so a parameter added
+# here without its counterpart is caught rather than discovered by a user who
+# asked the same thing on the other surface.
 _c("postgis.analyze@1", "postgis", "Read-only statistics, categories or group-by aggregation on a PostGIS table.",
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
@@ -435,6 +442,15 @@ _c("postgis.analyze@1", "postgis", "Read-only statistics, categories or group-by
                          "enum": ["numeric", "categories", "group", "top_n", "bbox_count", "nearest"]},
            "field": {"type": "string"},
            "group_field": {"type": "string"},
+           # top_n and nearest return identifiers so the answer can be selected
+           # on the map, and nearest needs a probe point. build_top_n and
+           # build_nearest have always taken these; leaving them undeclared made
+           # two of the six operations unreachable through the registry.
+           "id_field": {"type": "string"},
+           "ascending": {"type": "boolean", "default": False},
+           "x": {"type": "number"},
+           "y": {"type": "number"},
+           "srid": {"type": "integer", "default": 4326},
            "statistic": {"type": "string",
                          "enum": ["count", "sum", "mean", "min", "max", "median", "distinct"], "default": "count"},
            "limit": {"type": "integer", "min": 1, "max": 1000, "default": 25},
@@ -445,12 +461,16 @@ _c("postgis.spatial@1", "postgis", "Read-only spatial relationship counts and jo
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
            "table": {"type": "string", "required": True},
-           "other_schema": {"type": "string", "required": True},
+           # Optional: the overwhelmingly common case is two tables in the same
+           # schema, and making the caller repeat it is friction with no safety
+           # value. It defaults to `schema`.
+           "other_schema": {"type": "string"},
            "other_table": {"type": "string", "required": True},
            "predicate": {"type": "string",
                          "enum": ["intersects", "within", "contains", "overlaps", "touches", "crosses", "disjoint"],
                          "default": "intersects"},
-           "group_field": {"type": "string"}},
+           "group_field": {"type": "string"},
+           "limit": {"type": "integer", "min": 1, "max": 200, "default": 50}},
    execution=EXEC_POSTGIS, produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("postgis.write@1", "postgis", "Modify PostGIS data.", risk=RISK_FORBIDDEN, execution=EXEC_POSTGIS,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE),
