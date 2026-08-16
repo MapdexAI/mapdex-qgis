@@ -1906,6 +1906,12 @@ ERROR_REGISTRY = [
         "template": "Required source attribution could not be preserved, so the export was stopped."
     },
     {
+        "code": "DELIVERY_BLOCKED_BY_QUALITY",
+        "type": "validation",
+        "http": 422,
+        "template": "Validation found blocking issues in this dataset, so the export was stopped. Repair or review the findings, then export again."
+    },
+    {
         "code": "CONNECTION_DISCOVERY_FAILED",
         "type": "validation",
         "http": 422,
