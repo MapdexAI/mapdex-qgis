@@ -1259,7 +1259,19 @@ class PlanAdjustment:
     model_version: Optional[str] = None
     prompt_version: Optional[str] = None
     created_at: Optional[str] = None
+class RepairEvaluation:
+    """Verdict on an applied repair, produced by re-measuring the dataset.
 
+    A repair that was never re-measured is "unverified", not "accepted".
+    """
+    verdict: str
+    reason: str
+    score_before: int = 0
+    score_after: int = 0
+    regressions: List[str] = dataclasses.field(default_factory=list)
+    applied_strategies: List[str] = dataclasses.field(default_factory=list)
+    highest_risk: Optional[str] = None
+    features_removed: int = 0
 @dataclass
 class RunHistoryNextAction:
     id: str
@@ -1267,6 +1279,11 @@ class RunHistoryNextAction:
     description: str
     source_observation_ids: List[str] = dataclasses.field(default_factory=list)
     result_references: List[ResultReference] = dataclasses.field(default_factory=list)
+    # Present when the action is executable rather than advisory.
+    tool: Optional[str] = None
+    params: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Repair risk class ("green" | "amber" | "red"). Red is advisory only.
+    risk: Optional[str] = None
 
 @dataclass
 class RunHistoryToolCall:
@@ -1287,6 +1304,8 @@ class RunHistoryToolCall:
     repair_attempts: List[RepairAttempt] = dataclasses.field(default_factory=list)
     plan_adjustments: List[PlanAdjustment] = dataclasses.field(default_factory=list)
     next_actions: List[RunHistoryNextAction] = dataclasses.field(default_factory=list)
+    # Set only when this step applied a repair and it was evaluated.
+    quality_repair: Optional[RepairEvaluation] = None
 
 @dataclass
 class RunHistoryResponse:
