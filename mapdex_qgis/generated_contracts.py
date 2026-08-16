@@ -2343,6 +2343,26 @@ TOOLS = [
         }
     },
     {
+        "id": "spatial:dedupe_seams@1",
+        "superseded_by": None,
+        "title": "Remove duplicate features along sheet seams",
+        "version": 1,
+        "category": "spatial",
+        "summary": "Delete one copy of each feature that two adjacent sheets both recorded. Only exact duplicates are touched; where sheets disagree about a boundary, both are kept for a person to decide.",
+        "executor": "spatial:dedupe_seams@1",
+        "credits": 1,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "postgis",
+            "backend_fallback": "",
+            "security_profile": "vector_operation",
+            "requires_materialization": True,
+            "requires_verification": True,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
         "id": "ai:doc_extract_lite@1",
         "superseded_by": None,
         "title": "Document to map (single page, OCR + SAM)",
