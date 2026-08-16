@@ -19,7 +19,29 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "reproject": ("native:reprojectlayer", "qgis:reprojectlayer"),
     "heatmap": ("qgis:heatmapkerneldensityestimation",),
     "measure_geometry": ("native:exportaddgeometrycolumns", "qgis:exportaddgeometrycolumns"),
+    # Operations a professional expects from any GIS and that Nivo could not
+    # name. Each is an installed native algorithm; the gap was the allowlist,
+    # not the capability. Alternative ids are listed because algorithm names
+    # moved between QGIS versions and resolve_processing_algorithm tries them in
+    # order against the live registry.
+    "dissolve": ("native:dissolve", "qgis:dissolve"),
+    "union": ("native:union", "qgis:union"),
+    "difference": ("native:difference", "qgis:difference"),
+    "merge": ("native:mergevectorlayers", "qgis:mergevectorlayers"),
+    "centroid": ("native:centroids", "qgis:centroids"),
+    "convex_hull": ("native:convexhull", "qgis:convexhull"),
+    "split": ("native:splitwithlines", "qgis:splitwithlines"),
+    "zonal_statistics": ("native:zonalstatisticsfb", "qgis:zonalstatistics"),
 }
+
+# Operations that combine two layers. Naming them makes the requirement
+# checkable rather than implied by whichever parameter the algorithm happens to
+# expose: running one of these against a single layer produces an empty or
+# nonsensical result instead of an error.
+TWO_LAYER_OPERATIONS = frozenset({
+    "clip", "intersection", "union", "difference", "merge",
+    "select_by_location", "nearest_neighbor", "split", "zonal_statistics",
+})
 
 PROCESSING_OUTPUT_KEYS = frozenset({"OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"})
 
@@ -30,6 +52,11 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
     if operation not in PROCESSING_OPERATION_CATALOG:
         return {}
     safe: dict[str, Any] = {"operation": operation}
+    if operation in TWO_LAYER_OPERATIONS and not str(params.get("target_layer") or "").strip():
+        # Refused rather than defaulted. A two-layer operation with one layer is
+        # not a smaller version of the same request; it is a different question
+        # nobody asked.
+        return {}
     if "distance" in params:
         try:
             distance = float(params.get("distance"))
@@ -46,7 +73,7 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         if segments < 1 or segments > 96:
             return {}
         safe["segments"] = segments
-    for key in ("predicate", "target_layer"):
+    for key in ("predicate", "target_layer", "field"):
         if key in params:
             value = str(params.get(key) or "").strip()[:MAX_PARAM_TEXT]
             if value:
@@ -81,6 +108,13 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
         payload["SEGMENTS"] = int(params.get("segments") or 16)
     if "TARGET_CRS" in names:
         payload["TARGET_CRS"] = layer.crs()
+    if "LAYERS" in names:
+        # native:mergevectorlayers takes a list rather than INPUT/OVERLAY.
+        payload["LAYERS"] = [layer] + ([params["target_layer"]] if params.get("target_layer") else [])
+    if "LINES" in names and params.get("target_layer"):
+        payload["LINES"] = params["target_layer"]
+    if "FIELD" in names and params.get("field"):
+        payload["FIELD"] = params["field"]
     if "PREDICATE" in names:
         payload["PREDICATE"] = [0]
     for key in PROCESSING_OUTPUT_KEYS:
