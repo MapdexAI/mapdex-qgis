@@ -523,6 +523,144 @@ class QGISRuntime:
             "features": layer.featureCount(), "bytes": os.path.getsize(path),
         }
 
+    def calculate_field(
+        self,
+        layer_id: str,
+        field: str,
+        expression: str,
+        field_type: str = "number",
+        preview: bool = False,
+    ) -> dict[str, Any]:
+        """Add a field computed from the layer's own fields.
+
+        Two properties this has to hold. The expression is parsed by the bounded
+        grammar in expressions.py before a single row is touched, so a bad
+        expression is a refusal rather than a layer left half-modified. And an
+        existing field is never overwritten: silently replacing a column the user
+        already had is the one mistake here that destroys data rather than merely
+        adding a wrong number.
+        """
+        from . import expressions
+
+        layer = self.vector(layer_id)
+        name = str(field or "").strip()
+        # CapabilityError rather than _require: these are things the caller got
+        # wrong and can fix, not the runtime being unavailable, and the two are
+        # shown to the user in different words.
+        if not name:
+            raise CapabilityError("the new field needs a name")
+        if len(name) > 60:
+            raise CapabilityError("that field name is too long")
+
+        existing = self.field_names(layer)
+        if any(name.lower() == present.lower() for present in existing):
+            raise CapabilityError(
+                "{} already exists on this layer. Pick a different name - I will not "
+                "overwrite a column you already have.".format(name))
+
+        try:
+            compiled = expressions.compile_expression(expression, existing)
+        except expressions.ExpressionError as error:
+            raise CapabilityError(str(error)) from None
+
+        referenced = expressions.referenced_fields(compiled)
+        missing = sorted(referenced - set(existing))
+        if missing:
+            raise CapabilityError("this layer has no field called {}".format(", ".join(missing)))
+
+        # Evaluate first, write second. A preview and a real run compute exactly
+        # the same values, so what the user approves is what lands.
+        values: dict[int, Any] = {}
+        failures: list[str] = []
+        sample: list[Any] = []
+        for feature in layer.getFeatures():
+            row = {key: feature[key] for key in existing}
+            try:
+                value = expressions.evaluate(compiled, row)
+            except expressions.ExpressionError as error:
+                # One unusable row must not abandon the layer, but the count is
+                # reported rather than hidden.
+                value = None
+                if len(failures) < 3:
+                    failures.append(str(error))
+            values[feature.id()] = value
+            if len(sample) < 5 and value is not None:
+                sample.append(value)
+
+        if preview:
+            return {
+                "kind": "field_preview", "field": name, "rows": len(values),
+                "sample": sample, "nulls": sum(1 for v in values.values() if v is None),
+                "problems": failures,
+            }
+
+        # Imported here rather than at module scope: everything above this line
+        # is validation, and it must be able to refuse a bad expression without
+        # QGIS being importable at all.
+        from qgis.core import QgsField
+
+        from .qt_compat import field_type as resolve_field_type
+
+        kind = str(field_type).lower()
+        if kind not in ("number", "integer", "text"):
+            kind = "number"
+        provider = layer.dataProvider()
+        if not provider.addAttributes([QgsField(name, resolve_field_type(kind))]):
+            raise CapabilityError("this layer's storage does not accept a new field")
+        layer.updateFields()
+
+        index = layer.fields().indexOf(name)
+        if index < 0:
+            raise CapabilityError("the field was accepted but did not appear on the layer")
+
+        # Coerced from the requested kind rather than from the resolved Qt enum,
+        # because that enum's identity differs between Qt5 and Qt6 and comparing
+        # against it would quietly write floats into an integer column on one of
+        # the two bindings.
+        coerce = {"integer": int, "text": str}.get(kind, float)
+        changes = {}
+        for feature_id, value in values.items():
+            changes[feature_id] = {index: None if value is None else coerce(value)}
+        provider.changeAttributeValues(changes)
+        layer.updateFields()
+        layer.triggerRepaint()
+        return {
+            "kind": "field_calculated", "field": name, "rows": len(values),
+            "nulls": sum(1 for v in values.values() if v is None),
+            "sample": sample, "problems": failures,
+        }
+
+    def reorder_layer(self, layer_id: str, position: str = "top") -> dict[str, Any]:
+        """Move a layer in the drawing order.
+
+        Drawing order is the difference between a map that reads and one where
+        the polygons cover the labels, and it is the one cartographic complaint a
+        user cannot phrase as a style change.
+        """
+        layer = self.layer(layer_id)
+        root = self.project.layerTreeRoot()
+        node = root.findLayer(layer.id())
+        _require(node is not None, "that layer is not in the layer tree")
+
+        parent = node.parent() or root
+        children = list(parent.children())
+        current = children.index(node)
+        target = {"top": 0, "bottom": len(children) - 1,
+                  "up": max(0, current - 1), "down": min(len(children) - 1, current + 1)}.get(
+                      str(position).lower(), 0)
+        if target == current:
+            return {"kind": "reorder_unchanged", "position": position, "index": current}
+
+        # A layer tree node cannot be moved, only cloned into place and the
+        # original removed. Insert first so a failure leaves the tree intact
+        # rather than short one layer.
+        clone = node.clone()
+        parent.insertChildNode(target, clone)
+        parent.removeChildNode(node)
+        self._push_undo({"kind": "layer_order", "layer_id": layer_id, "index": current})
+        self.iface.mapCanvas().refresh()
+        return {"kind": "reorder_applied", "position": position, "from": current, "to": target}
+
     def undo(self) -> dict[str, Any]:
         """Restore the previous state of the last reversible change."""
         if not self._undo:
@@ -550,6 +688,18 @@ class QGISRuntime:
             layer.setLabeling(entry.get("labeling"))
             layer.setLabelsEnabled(bool(entry.get("enabled")))
             layer.triggerRepaint()
+        elif kind == "layer_order" and layer is not None:
+            # Declaring a capability reversible and then having undo say "that
+            # change cannot be reversed" is worse than not offering undo at all,
+            # so the branch exists for every kind _push_undo can record.
+            node = self.project.layerTreeRoot().findLayer(layer.id())
+            if node is None:
+                return {"kind": "undo_failed", "reason": "the layer is no longer in the layer tree"}
+            parent = node.parent() or self.project.layerTreeRoot()
+            index = max(0, min(len(parent.children()) - 1, int(entry.get("index") or 0)))
+            clone = node.clone()
+            parent.insertChildNode(index, clone)
+            parent.removeChildNode(node)
         else:
             return {"kind": "undo_failed", "reason": "that change cannot be reversed"}
         self.iface.mapCanvas().refresh()
@@ -592,6 +742,10 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "measure.distance@1": lambda p: runtime.measure_distance(
             (p["from_lon"], p["from_lat"]), (p["to_lon"], p["to_lat"])),
         "export.layer@1": lambda p: runtime.export_layer(p["layer_id"], p.get("format", "gpkg")),
+        "field.calculate@1": lambda p: runtime.calculate_field(
+            p["layer_id"], p["field"], p["expression"],
+            p.get("field_type", "number"), bool(p.get("preview"))),
+        "layer.reorder@1": lambda p: runtime.reorder_layer(p["layer_id"], p.get("position", "top")),
         "inspect.layer@1": lambda p: runtime.profile_layer(p["layer_id"]),
         "inspect.raster@1": lambda p: runtime.profile_layer(p["layer_id"]),
         "inspect.fields@1": lambda p: runtime.field_profile(p["layer_id"]),

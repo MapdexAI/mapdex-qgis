@@ -43,6 +43,35 @@ def enum_member(owner, *names):
     )
 
 
+def field_type(kind):
+    """Resolve a field storage type across Qt5 and Qt6.
+
+    ``QVariant.Double`` is a Qt5 spelling. Qt6 removed the ``QVariant::Type``
+    enum, so PyQt6 raises AttributeError on the flat form and the modern path is
+    ``QMetaType.Type.Double``. Both are tried here, newest first, because a
+    plugin that writes a field only on QGIS 3 is broken on QGIS 4 in a code path
+    no unit test opens.
+
+    ``kind`` is one of "number", "integer", "text".
+    """
+    scoped = {"number": "Double", "integer": "Int", "text": "QString"}
+    flat = {"number": "Double", "integer": "Int", "text": "String"}
+    name = str(kind).lower()
+
+    try:  # Qt6 / QGIS 4
+        from qgis.PyQt.QtCore import QMetaType
+
+        member = getattr(getattr(QMetaType, "Type", QMetaType), scoped.get(name, "Double"), None)
+        if member is not None:
+            return member
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        pass
+
+    from qgis.PyQt.QtCore import QVariant  # Qt5 / QGIS 3
+
+    return enum_member(QVariant, "Type", flat.get(name, "Double"))
+
+
 def qgis_version(application_cls, qgis_cls=None):
     """Return the QGIS version across QGIS 3 and QGIS 4 Python APIs.
 

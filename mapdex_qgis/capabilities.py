@@ -520,6 +520,26 @@ _c("export.layer@1", "export", "Write a layer to a file in a standard GIS format
                       "default": "gpkg"}},
    targets=("vector",), execution=EXEC_LOCAL, produces=("file",))
 
+# -- the field calculator ----------------------------------------------------
+#
+# Consequential and not reversible: it writes a column into the user's data, and
+# once written there is no undo outside QGIS's own edit buffer. The expression
+# is parsed by mapdex_qgis.expressions, a grammar that can only express
+# arithmetic over the layer's own fields. That grammar, not a prompt
+# instruction, is what stops a calculation reaching outside the row.
+_c("field.calculate@1", "field", "Add a field computed from the layer's existing fields.",
+   params={"layer_id": {"type": "string", "required": True},
+           "field": {"type": "string", "required": True},
+           "expression": {"type": "string", "required": True},
+           "field_type": {"type": "string", "enum": ["number", "integer", "text"], "default": "number"}},
+   targets=("vector",), risk=RISK_CONSEQUENTIAL, execution=EXEC_LOCAL,
+   produces=("layer_change",), reversible=False, previewable=True)
+_c("layer.reorder@1", "layer", "Move a layer up or down in the drawing order.",
+   params=dict(_LAYER, **{"position": {"type": "string",
+                                       "enum": ["top", "bottom", "up", "down"],
+                                       "default": "top"}}),
+   execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect",))
+
 _c("system.execute_code@1", "system", "Run arbitrary code.", risk=RISK_FORBIDDEN,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE),
    refusal="Nivo cannot run arbitrary code. Every action it takes comes from its trusted capability list.")

@@ -30,10 +30,15 @@ ALLOWED = {
     },
     "QgsTask": {"fromFunction", "Flag", "TaskStatus", "CanCancel"},
     "QDockWidget": {"DockWidgetFeature", "setWidget"},
+    # QVariant::Type was REMOVED in Qt6, so QVariant.Double is not merely
+    # unscoped, it does not exist. Resolve a field's storage type through
+    # qt_compat.field_type, which tries QMetaType.Type first.
+    "QVariant": {"Type"},
 }
 
 PATTERN = re.compile(
-    r"\b(QMessageBox|QgsVectorFileWriter|QFileDialog|QgsTask|QDockWidget)\.([A-Za-z_][A-Za-z0-9_]*)"
+    r"\b(QMessageBox|QgsVectorFileWriter|QFileDialog|QgsTask|QDockWidget|QVariant)"
+    r"\.([A-Za-z_][A-Za-z0-9_]*)"
 )
 BARE_QT = re.compile(r"\bQt\.([A-Z][A-Za-z0-9_]*)")
 
