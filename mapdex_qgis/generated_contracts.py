@@ -3262,6 +3262,26 @@ TOOLS = [
         }
     },
     {
+        "id": "georef:place_layers@1",
+        "superseded_by": None,
+        "title": "Position a layer extracted before its sheet was georeferenced",
+        "version": 1,
+        "category": "georeference",
+        "summary": "Transform a layer that is still in source-image pixels into the coordinate system its sheet was georeferenced to. The transform belongs to the sheet, so positioning the sheet positions everything already extracted from it without extracting again.",
+        "executor": "georef:place_layers@1",
+        "credits": 0,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "mapdex-extension-host",
+            "backend_fallback": "",
+            "security_profile": "file_ingest",
+            "requires_materialization": True,
+            "requires_verification": True,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
         "id": "geo:places@1",
         "superseded_by": None,
         "title": "Search Places",
