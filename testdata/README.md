@@ -94,3 +94,96 @@ That run found one defect no unit test could: `export_layer` called
 `self._require_layer`, a method defined nowhere, so export raised
 `AttributeError` on first real use. Every export test asserted against
 `validate_request` and none ran the executor body.
+
+## Driving the panel, the controls and the dispatcher
+
+`verify_in_qgis.py` never builds a widget. `verify_qgis_end_to_end.py` does: it
+constructs the companion panel, constructs the plugin against a real dock and a
+real map canvas, presses its controls, opens the History dialog modally and
+walks it through four states, and then sends a simulated compose response for
+**every** action the plugin advertises to the server.
+
+```
+set QT_QPA_PLATFORM=offscreen
+"C:/Program Files/QGIS 4.0.2/bin/python-qgis.bat" verify_qgis_end_to_end.py
+```
+
+Same staging rules as above: stage `mapdex_qgis/` and the fixture beside the
+script, run from a native Windows path, and let the script make its own copy of
+the GeoPackage. `MAPDEX_VERIFY_TRACE=1` prints tracebacks. It exits non-zero on
+any failure and prints the dispatch sweep in full.
+
+Two boundaries are stubbed and only two — the HTTP client and the modal question
+box, because a script cannot answer a network call or a blocking prompt. Every
+widget, enum, layer, renderer and capability executor is the real one. Two
+consequences worth remembering:
+
+- **A stub that is missing a method reports a working feature as broken.**
+  `apply_visualization` calls `iface.layerTreeView().refreshLayerSymbology(...)`
+  unguarded, so a fake interface without it turns every successful restyle into
+  a reported `AttributeError`. The harness therefore hands the plugin a real
+  `QgsLayerTreeView` over the real project tree.
+- **A `QgsMapCanvas` records no extent history offscreen.** Verified directly:
+  two `setExtent` calls followed by `zoomToPreviousExtent` leave the canvas
+  exactly where it was, with the canvas shown and the event loop pumped. So
+  forward/back navigation cannot be told from a no-op here, and
+  `qgis:next_extent@1` is reported as *not run* rather than as a defect.
+
+**Measured 2026-08-17, QGIS 4.0.2-Norrköping / Qt 6.11.0 / PyQt 6.11.0,
+offscreen: 41 checks ran — 38 passed, 2 failed, 1 not run.** The dispatch sweep
+covered all 53 advertised actions (18 legacy `qgis:*` plus 35 bound
+capabilities): 51 executed with an observable effect or a stated result, 1 was
+not verifiable offscreen, and **none was silently dropped**. Two runs
+back to back produced byte-identical output apart from QGIS's generated layer
+id. What it proved, and the two things it disproved:
+
+| | |
+| --- | --- |
+| Panel | Nivo header carries the title, the context line, History and New chat in one row; the composer owns none of them; the transcript is a `QScrollArea` over a widget tree, and a `<b>` in replayed text renders as those characters through the plugin's own renderer |
+| Controls | New chat clears the transcript, drops the thread and says where the old one went — and refuses while a request is in flight; History is disabled without a session, and reaches loading, empty, error-with-retry and loaded; Delete asks first, No means no, Yes deletes and reloads; opening a conversation replays it |
+| Answers | 24 features, EPSG:32635, 250,000 m² measured off the geometry by `analytics.geometry@1` (planar, EPSG:32635) **and** stated in `alan_m2`, mean 10,416.667, largest P-013 at 20,000, `nufus` sum 9,125 over 23 values with mean 396.739 — not 380.2 |
+| Effects | select-all really selects 24, select-by-ids 3; categorized styling really produces a `QgsCategorizedSymbolRenderer` with 3 categories; labels really turn on from `parsel_no`; opacity really moves 0.55 → 0.40; zoom really moves the canvas, and into the canvas CRS rather than raw UTM metres pasted onto degrees; a preview filter really cuts the layer to 7 and clearing restores 24; export really writes a file |
+| Gates | `field.calculate@1` asks before writing and writes nothing when declined; a Processing operation asks before it runs; `system.execute_code@1`, `system.execute_sql@1` and `postgis.write@1` are refused by the registry and never advertised |
+| **Failed** | **the `kullanim` breakdown does not separate the null from the empty string**, and **the geometry-area answer states no number in the transcript** |
+
+### The two failures
+
+**1. Null and empty string are merged.** `analytics.categorical_summary`
+collapses `None` and `""` into a single `nulls` count. Against this fixture it
+reports `count=24, usable=22, nulls=2` and three category buckets, and the
+transcript line reads *"3 distinct values in 22 · tarım (8), konut (7), ticari
+(7) · 2 empty"*.
+
+Nothing is dropped and the arithmetic is right, so this is milder than the
+failure the fixture was built to catch. But the two values are distinct in the
+file on purpose — `make_fixture.py` writes `SetFieldNull` on parcel 8 and `""`
+on parcel 16 — and "no value recorded" and "recorded as blank" are different
+facts about a cadastre. The table above asks for five buckets; this build can
+express three plus a merged count.
+
+**2. A correct measurement nobody is told.** `analytics.geometry@1` measures the
+area off the geometry and gets it exactly right — 250,000.0 m², planar, in
+EPSG:32635, confirmed by calling `QGISRuntime.measure_geometry` directly. The
+line the user actually reads is *"verification · geometry measurement"*:
+`RESULT_DESCRIBERS` in `plugin.py` has no entry for this result kind, so
+`describe_capability_result` falls back to the kind name. The fallback is
+deliberately honest — its comment says an unrecognised kind must not be dressed
+up as a measurement — so this is a missing describer, not a wrong answer. It is
+still the whole point of the capability going undelivered. Measured against the
+working tree on the day `analytics.geometry@1` landed, so check whether the
+describer arrived with a later commit before treating it as open.
+
+The canonical payloads in the sweep are derived from the registry rather than
+listed, so a capability added tomorrow is dispatched here without anyone
+extending a table. If it declares a required parameter the script has no value
+for, that row is reported as **not run** and names the parameter to add.
+
+### What this cannot cover
+
+The harness is offscreen and has no server, so a human still has to check: that
+the dock is legible and correctly sized at real dock widths and on a real
+theme; that the canvas visibly redraws (it asserts renderer and extent state,
+not pixels); forward/back map navigation; that a Processing algorithm confirmed
+with **Yes** produces the right output layer; and the whole compose round trip
+against a live Mapdex — the sweep supplies the server's responses rather than
+receiving them.

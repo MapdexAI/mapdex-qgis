@@ -1,0 +1,4 @@
+# Working copies the verification harnesses make of the fixture before they
+# write to it. The pristine GeoPackage is committed; these are per-run.
+_run-parcels.gpkg
+_e2e-parcels.gpkg

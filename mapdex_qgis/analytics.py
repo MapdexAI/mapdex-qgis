@@ -154,12 +154,28 @@ def categorical_summary(values: Iterable[Any], limit: int = MAX_CATEGORIES) -> d
     """
     limit = max(1, min(int(limit or MAX_CATEGORIES), MAX_CATEGORIES))
     counts: dict[str, int] = {}
+    # A null and an empty string are two different facts about a dataset and
+    # were being counted as one. "Nobody recorded a land use here" and "somebody
+    # recorded that it has none" call for different work: the first is a gap to
+    # chase, the second is data. Merging them reported three categories where
+    # the fixture deliberately holds five, and a reviewer who trusts the number
+    # of buckets is told a decision was made on their behalf.
+    #
+    # They stay together in `nulls` for the caller that only wants "how many
+    # values could not be used", so nothing that reads that number changes.
     nulls = 0
+    missing = 0
+    blank = 0
     total = 0
     for value in values:
         total += 1
-        if value is None or (isinstance(value, str) and not value.strip()):
+        if value is None:
             nulls += 1
+            missing += 1
+            continue
+        if isinstance(value, str) and not value.strip():
+            nulls += 1
+            blank += 1
             continue
         key = str(value).strip()
         counts[key] = counts.get(key, 0) + 1
@@ -178,6 +194,11 @@ def categorical_summary(values: Iterable[Any], limit: int = MAX_CATEGORIES) -> d
         "count": total,
         "usable": usable,
         "nulls": nulls,
+        # Reported separately so the reader can tell a gap from a recorded
+        # absence. `nulls` remains their sum for callers that only need the
+        # count of values that could not be categorised.
+        "missing": missing,
+        "blank": blank,
         "distinct": len(counts),
         "truncated": len(counts) > len(categories),
         "categories": categories,
