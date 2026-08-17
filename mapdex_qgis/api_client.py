@@ -21,6 +21,29 @@ def safe_filename_part(value: str, fallback: str = "result") -> str:
     return cleaned[:120] or fallback
 
 
+def _path_segment(value: Any) -> str:
+    """Percent-encode an id before it becomes part of a request path.
+
+    A thread id round-trips through QSettings, which is a local file the user
+    (or another program) can edit, so it is not trusted to be a bare `th_…`.
+    Encoding keeps a stray `/` or `..` from re-pointing the request at another
+    endpoint.
+    """
+    return parse.quote(str(value or ""), safe="")
+
+
+def _rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    """The list in a response, whether bare or wrapped in an envelope."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys + ("items", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+    return []
+
+
 def _origin(url: str) -> tuple[str, str, int]:
     parsed = parse.urlsplit(str(url or ""))
     scheme = (parsed.scheme or "").lower()
@@ -77,6 +100,7 @@ class MapdexAPIError(RuntimeError):
         url: str = "",
         method: str = "",
         retry_after: int = 0,
+        code: str = "",
     ):
         super().__init__(message)
         self.status = status
@@ -84,6 +108,11 @@ class MapdexAPIError(RuntimeError):
         self.url = url
         self.method = method
         self.retry_after = retry_after
+        # The canonical machine code from the error envelope. Callers branch on
+        # this and on `status`, never on the message text: the message is
+        # human copy that may be localized or reworded, and matching it would
+        # be a keyword list in disguise.
+        self.code = code
 
 
 def normalize_api_base(url: str) -> str:
@@ -150,13 +179,16 @@ class MapdexAPI:
             envelope = {}
         message = None
         corr = ""
+        code = ""
         if isinstance(envelope, dict):
             message = envelope.get("message")
             corr = envelope.get("correlation_id") or ""
+            code = str(envelope.get("code") or "")
             err = envelope.get("error")
             if isinstance(err, dict):
                 message = message or err.get("message")
                 corr = err.get("correlation_id") or corr
+                code = code or str(err.get("code") or "")
             elif isinstance(err, str):
                 message = message or err
         if not message:
@@ -174,7 +206,7 @@ class MapdexAPI:
         except (TypeError, ValueError):
             retry_after = 0
         raise MapdexAPIError(
-            str(message), exc.code, corr, url=url, method=method, retry_after=retry_after
+            str(message), exc.code, corr, url=url, method=method, retry_after=retry_after, code=code
         ) from exc
 
     def _request(self, method: str, path: str, payload=None, project_id: str = ""):
@@ -346,17 +378,60 @@ class MapdexAPI:
             project_id,
         )
 
-    def compose(self, project_id: str, message: str, companion_context: dict[str, Any]):
+    def compose(
+        self,
+        project_id: str,
+        message: str,
+        companion_context: dict[str, Any],
+        thread_id: str = "",
+    ):
         """Call the canonical compose endpoint with bounded QGIS context.
 
         The server independently validates this as untrusted companion data;
         this client method exists so no hidden local automation path emerges.
+
+        `thread_id` is what makes a follow-up question work: given one, compose
+        replays the conversation and carries the earlier source reference
+        forward, so "and the largest one?" resolves against the layer named in
+        the previous turn. Omitted when empty, because a turn with no
+        conversation is a legitimate first turn, not a malformed request.
         """
-        return self._request(
+        payload: dict[str, Any] = {
+            "input": str(message or "").strip(),
+            "companion_context": companion_context,
+        }
+        if thread_id:
+            payload["thread_id"] = str(thread_id)
+        return self._request("POST", "/v1/compose", payload, project_id)
+
+    def list_threads(self, project_id: str) -> list[dict[str, Any]]:
+        """Conversations in this project, in the server's newest-first order.
+
+        The API returns a bare JSON array of `ThreadListItem`; an envelope is
+        accepted too so an older or proxied deployment does not make the
+        History dialog claim there is nothing to show.
+        """
+        return _rows(self._request("GET", "/v1/threads", project_id=project_id), "threads")
+
+    def create_thread(self, project_id: str, title: str = "") -> dict[str, Any]:
+        """Open a conversation. `project_id` is required in the body itself."""
+        response = self._request(
             "POST",
-            "/v1/compose",
-            {"input": str(message or "").strip(), "companion_context": companion_context},
+            "/v1/threads",
+            {"title": str(title or ""), "project_id": project_id},
             project_id,
+        )
+        return response if isinstance(response, dict) else {}
+
+    def thread_messages(self, thread_id: str, project_id: str = "") -> list[dict[str, Any]]:
+        """The stored messages of one conversation, oldest first."""
+        path = "/v1/threads/{}/messages".format(_path_segment(thread_id))
+        return _rows(self._request("GET", path, project_id=project_id), "messages")
+
+    def delete_thread(self, thread_id: str, project_id: str = "") -> None:
+        """Soft-delete a conversation. The API answers 204 with no body."""
+        self._request(
+            "DELETE", "/v1/threads/{}".format(_path_segment(thread_id)), project_id=project_id
         )
 
     def batch(self, project_id: str, batch_id: str):

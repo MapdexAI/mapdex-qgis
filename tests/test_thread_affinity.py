@@ -43,7 +43,11 @@ def test_no_task_work_reads_main_thread_only_qgis_state():
 
 
 def test_the_compose_task_sends_a_prebuilt_context():
+    # The context captured on the main thread is the one handed to compose.
+    # Spelled as a pattern rather than one exact call, because the compose call
+    # moved into a worker-thread helper when conversation threads landed - what
+    # must not change is that `context` is passed through, never rebuilt.
     body = PLUGIN[PLUGIN.index("def ask_nivo"):PLUGIN.index("def stop_nivo")]
-    assert "self.api.compose(self.project_id, message, context)" in body
+    assert re.search(r"self\.api\.compose\(\s*project_id,\s*message,\s*context", body)
     # The old shape rebuilt the snapshot inside the lambda.
     assert "companion_context(self._nivo_snapshot())" not in body.split("self._task(")[1]

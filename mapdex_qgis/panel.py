@@ -7,11 +7,13 @@ from qgis.PyQt.QtCore import QSize, Qt
 from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QFrame,
     QBoxLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QPushButton,
     QProgressBar,
     QLineEdit,
@@ -224,6 +226,19 @@ def build_companion_panel(workflows, endpoint_settings=True):
         QStackedWidget#mapdexPages { background: transparent; }
         QWidget#mapdexPage { background: palette(window); }
         QToolButton#mapdexSettingsButton { padding: 3px 6px; }
+        QToolButton#mapdexNivoHeaderButton {
+            color: #C9CDD8;
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.18);
+            border-radius: 6px;
+            padding: 4px 9px;
+            font-size: 11px;
+        }
+        QToolButton#mapdexNivoHeaderButton:hover {
+            color: #F7F7F5;
+            border-color: #6366F1;
+        }
+        QToolButton#mapdexNivoHeaderButton:disabled { color: #6B6B6B; }
         """
     )
 
@@ -398,7 +413,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     workspace_layout.setContentsMargins(12, 12, 12, 12)
     workspace_layout.setSpacing(8)
     workspace_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
-    new_task_label = _section_label("New task")
+    new_task_label = _section_label("New chat")
     open_project_button = QPushButton("Open project")
     open_project_button.setToolTip("Open this project in Mapdex web workspace")
     workspace_layout.addLayout(root.register_pair(new_task_label, open_project_button))
@@ -463,8 +478,36 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_header_text_layout.setSpacing(1)
     nivo_header_text_layout.addWidget(nivo_title)
     nivo_header_text_layout.addWidget(nivo_context)
+    # Two compact conversation controls, beside the title rather than near the
+    # composer: they act on the transcript as a whole, and putting them by the
+    # input would read as something the next message does.
+    nivo_new_button = QToolButton()
+    nivo_new_button.setObjectName("mapdexNivoHeaderButton")
+    nivo_new_button.setText("New chat")
+    nivo_new_button.setToolTip(
+        "Start a new conversation. The current one is kept in History; "
+        "nothing is deleted from Mapdex."
+    )
+    nivo_new_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    nivo_history_button = QToolButton()
+    nivo_history_button.setObjectName("mapdexNivoHeaderButton")
+    nivo_history_button.setText("History")
+    nivo_history_button.setToolTip(
+        "Open an earlier Nivo conversation in this project and continue it"
+    )
+    nivo_history_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
     nivo_header_layout.addWidget(nivo_icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
     nivo_header_layout.addWidget(nivo_header_text, 1)
+    nivo_header_layout.addWidget(
+        nivo_new_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop")
+    )
+    nivo_header_layout.addWidget(
+        nivo_history_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop")
+    )
     # A widget transcript keeps messages as native Qt widgets. It intentionally
     # is not HTML: assistant text is data, never markup.
     nivo_reply = QScrollArea()
@@ -615,6 +658,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "source_summary": source_summary,
         "run_button": run_button,
         "nivo_context": nivo_context,
+        "nivo_new_button": nivo_new_button,
+        "nivo_history_button": nivo_history_button,
         "nivo_reply": nivo_reply,
         "nivo_status": nivo_status,
         "nivo_input": nivo_input,
@@ -627,4 +672,71 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "recent": recent,
         "recent_box": recent_box,
         "resume_button": resume_button,
+    }
+
+
+def build_thread_history_dialog(parent=None):
+    """The Nivo History dialog: layout and every state it can be in.
+
+    Loading, empty, failed and populated each get a widget here. A dialog that
+    shows an empty box while the request is in flight, and the same empty box
+    when the request failed, has told the user that this project has no earlier
+    conversations - which may be false and is not recoverable from.
+
+    Rows are plain `QListWidget` text, never rich text: a conversation title is
+    the user's own words coming back from the server, and this panel renders
+    such text as data everywhere else too.
+    """
+    dialog = QDialog(parent)
+    dialog.setObjectName("mapdexHistoryDialog")
+    dialog.setWindowTitle("Nivo conversations")
+    dialog.setMinimumWidth(430)
+    dialog.setMinimumHeight(360)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(9)
+
+    intro = QLabel("Earlier Nivo conversations in this Mapdex project. Opening one continues it.")
+    intro.setWordWrap(True)
+    layout.addWidget(intro)
+
+    state_label = QLabel("Loading conversations…")
+    state_label.setObjectName("mapdexHistoryState")
+    state_label.setWordWrap(True)
+    layout.addWidget(state_label)
+
+    listing = QListWidget()
+    listing.setObjectName("mapdexHistoryList")
+    listing.setVisible(False)
+    layout.addWidget(listing, 1)
+
+    actions = QHBoxLayout()
+    actions.setContentsMargins(0, 0, 0, 0)
+    actions.setSpacing(8)
+    delete_button = QPushButton("Delete")
+    delete_button.setToolTip("Delete this conversation from Mapdex. This cannot be undone.")
+    delete_button.setEnabled(False)
+    retry_button = QPushButton("Try again")
+    retry_button.setVisible(False)
+    open_button = QPushButton("Open")
+    open_button.setObjectName("mapdexPrimaryButton")
+    open_button.setEnabled(False)
+    open_button.setDefault(True)
+    close_button = QPushButton("Close")
+    actions.addWidget(delete_button)
+    actions.addStretch(1)
+    actions.addWidget(retry_button)
+    actions.addWidget(open_button)
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+
+    return dialog, {
+        "dialog": dialog,
+        "state_label": state_label,
+        "list": listing,
+        "retry_button": retry_button,
+        "open_button": open_button,
+        "delete_button": delete_button,
+        "close_button": close_button,
     }

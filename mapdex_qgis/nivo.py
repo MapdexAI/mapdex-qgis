@@ -6,6 +6,7 @@ response from becoming executable Python by accident.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from .processing import safe_processing_params
@@ -276,3 +277,172 @@ def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
             "undo_token": _text(action.get("undo_token"), 128),
         })
     return result
+
+
+# --------------------------------------------------------------------------
+# Conversations
+# --------------------------------------------------------------------------
+#
+# `POST /v1/compose` has always accepted a `thread_id`, and with one it replays
+# the conversation and carries the earlier source reference forward. The plugin
+# sent none, so every QGIS turn arrived with no memory of the last one and
+# nothing was ever stored: there was no history to open because none was kept.
+#
+# These helpers are the pure half of that: which remembered id is still usable,
+# what the server's rows mean, and how a stored message becomes a transcript
+# turn. They are here rather than in plugin.py because plugin.py imports `qgis`
+# at module scope and cannot be imported in CI.
+
+THREAD_ID_SETTING = "mapdex/nivo/thread_id"
+THREAD_PROJECT_SETTING = "mapdex/nivo/thread_project_id"
+
+MAX_THREAD_TITLE = 60
+DEFAULT_THREAD_TITLE = "QGIS conversation"
+
+
+def thread_title(message: str) -> str:
+    """A History title taken from the user's own first words.
+
+    Mechanical: whitespace collapsed, then truncated. Nothing here inspects
+    what the words mean, in any language - the server's own fallback title is
+    a timestamp, which tells a reader nothing about which conversation this was.
+    """
+    text = " ".join(str(message or "").split())
+    if not text:
+        return DEFAULT_THREAD_TITLE
+    if len(text) <= MAX_THREAD_TITLE:
+        return text
+    return text[: MAX_THREAD_TITLE - 1].rstrip() + "…"
+
+
+def thread_is_gone(status: Any) -> bool:
+    """True when the API says the conversation we named does not exist.
+
+    `prepareCompose` answers 404 for an unknown or stale thread id and for
+    nothing else on that path, so this is the signal to open a fresh
+    conversation rather than to show the user an error about a thread they
+    never knew they had.
+    """
+    try:
+        return int(status) == 404
+    except (TypeError, ValueError):
+        return False
+
+
+def remembered_thread(stored_id: Any, stored_project: Any, active_project: Any) -> str:
+    """The stored thread id, but only for the project it was opened in.
+
+    Threads are project-scoped on the server. Carrying one into another project
+    would ask the API to continue a conversation that project cannot see, so a
+    mismatch (or a stored id with no recorded project) simply starts fresh.
+    """
+    thread_id = str(stored_id or "").strip()
+    project = str(stored_project or "").strip()
+    active = str(active_project or "").strip()
+    if not thread_id or not project or not active or project != active:
+        return ""
+    return thread_id
+
+
+def _rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    """The list in an API payload, whether bare or wrapped in an envelope."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys + ("items", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+    return []
+
+
+def _optional_count(value: Any):
+    """A non-negative integer, or None when the payload did not carry one.
+
+    None and 0 are different claims: "the server does not report this" must not
+    render as "this conversation has no messages".
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
+def thread_list_items(payload: Any) -> list[dict[str, Any]]:
+    """Normalize `GET /v1/threads` into rows the History dialog can render.
+
+    Server order is preserved. The API already returns newest-updated first,
+    and re-sorting RFC 3339 strings that may carry different UTC offsets would
+    reorder them wrongly rather than defensively.
+    """
+    rows = []
+    for item in _rows(payload, "threads"):
+        thread_id = _text(item.get("id"), 128)
+        if not thread_id:
+            continue
+        rows.append({
+            "id": thread_id,
+            "title": _text(item.get("title")) or DEFAULT_THREAD_TITLE,
+            "updated_at": _text(item.get("updated_at"), 64),
+            "created_at": _text(item.get("created_at"), 64),
+            "message_count": _optional_count(item.get("message_count")),
+        })
+    return rows
+
+
+def thread_turns(payload: Any) -> list[tuple[str, str]]:
+    """Stored messages as the transcript's own (sender, text) pairs.
+
+    Only user and assistant turns, and only their text. Tool calls, references
+    and model metadata are record-keeping, not conversation. The text stays a
+    plain string and is never marked up: the transcript is native Qt widgets on
+    purpose, because assistant text is data.
+    """
+    turns = []
+    for item in _rows(payload, "messages"):
+        role = _text(item.get("role"), 32).lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append((role, content))
+    return turns
+
+
+def format_timestamp(value: Any) -> str:
+    """`2026-08-17 14:32` in local time, or "" when the value cannot be read.
+
+    An unreadable timestamp yields nothing rather than the raw string: a row
+    reading "Parcel areas - 2026-08-17T11:32:04Z" is worse than one that simply
+    does not say when.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    text = raw[:-1] + "+00:00" if raw[-1:] in ("Z", "z") else raw
+    try:
+        moment = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return ""
+    if moment.tzinfo is not None:
+        try:
+            moment = moment.astimezone()
+        except (ValueError, OSError, OverflowError):
+            pass
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def describe_thread(item: dict[str, Any]) -> str:
+    """One History row: what it was about, when, and how long it ran."""
+    parts = [str((item or {}).get("title") or DEFAULT_THREAD_TITLE)]
+    when = format_timestamp((item or {}).get("updated_at") or (item or {}).get("created_at"))
+    if when:
+        parts.append(when)
+    count = (item or {}).get("message_count")
+    if isinstance(count, int) and count > 0:
+        parts.append("1 message" if count == 1 else "{} messages".format(count))
+    return " · ".join(parts)

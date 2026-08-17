@@ -73,13 +73,21 @@ from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import (
     GEOMETRY_CHOICES,
+    THREAD_ID_SETTING,
+    THREAD_PROJECT_SETTING,
     allowed_actions,
     companion_context,
     confirmation_actions,
+    describe_thread,
     geometry_from_choice,
+    remembered_thread,
+    thread_is_gone,
+    thread_list_items,
+    thread_title,
+    thread_turns,
     transition,
 )
-from .panel import build_companion_panel
+from .panel import build_companion_panel, build_thread_history_dialog
 from .processing import (
     build_algorithm_parameters,
     describe_empty_input,
@@ -169,6 +177,7 @@ PANEL_WIDGET_REFS = (
     "tabs",
     "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
     "nivo_stop_button", "nivo_status",
+    "nivo_new_button", "nivo_history_button",
 )
 
 
@@ -537,11 +546,28 @@ class MapdexPlugin:
         self.nivo_input = None
         self.nivo_send_button = None
         self.nivo_stop_button = None
+        self.nivo_new_button = None
+        self.nivo_history_button = None
         self._nivo_turns = []
         self._nivo_state = "idle"
         self._executed_nivo_actions = set()
         self._nivo_compose_task = None
         self._nivo_request_id = 0
+        # The conversation this panel is continuing. Restored only when it was
+        # opened in the project we are about to talk to; threads are
+        # project-scoped on the server, so carrying one across would ask the
+        # API to continue something that project cannot see.
+        self._nivo_thread_id = remembered_thread(
+            settings.value(THREAD_ID_SETTING, ""),
+            settings.value(THREAD_PROJECT_SETTING, ""),
+            self.project_id,
+        )
+        self._nivo_thread_project = self.project_id if self._nivo_thread_id else ""
+        # The History dialog's widget handles while it is open, and the thread
+        # rows currently listed in it, in the order they are displayed.
+        self._history_refs = None
+        self._history_rows = []
+        self._history_request_id = 0
 
     @guarded
     def initGui(self):
@@ -695,6 +721,8 @@ class MapdexPlugin:
         self.nivo_send_button.clicked.connect(self.ask_nivo)
         self.nivo_stop_button.clicked.connect(self.stop_nivo)
         self.nivo_input.returnPressed.connect(self.ask_nivo)
+        self.nivo_new_button.clicked.connect(self.new_nivo_task)
+        self.nivo_history_button.clicked.connect(self.open_nivo_history)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
         # A bound method, never a lambda: unload() has to be able to take this
@@ -1049,6 +1077,13 @@ class MapdexPlugin:
         self.workspace.setEnabled(connected and not self._busy)
         self.run_button.setEnabled(connected and not self._busy and not active)
 
+        # History needs a session and a project to list anything; New chat is
+        # local and stays available so a transcript can always be cleared.
+        if self.nivo_history_button is not None:
+            self.nivo_history_button.setEnabled(connected and bool(self.project_id))
+        if self.nivo_new_button is not None:
+            self.nivo_new_button.setEnabled(True)
+
         self.batch_group.setVisible(connected and has_batch)
         self.cancel_button.setVisible(active)
         self.cancel_button.setEnabled(active and not self._busy)
@@ -1340,12 +1375,68 @@ class MapdexPlugin:
         # snapshot, so Nivo answered "no layer is active yet" while a layer was
         # plainly open. Only the HTTP call belongs in the background.
         context = companion_context(self._nivo_snapshot())
+        project_id = self.project_id
+        # The active project can have moved since the conversation was opened
+        # (starting a task switches it). A thread from another project cannot
+        # be continued here, so it is dropped rather than sent.
+        thread_id = remembered_thread(self._nivo_thread_id, self._nivo_thread_project, project_id)
+        title = thread_title(message)
         self._nivo_compose_task = self._task(
             "Nivo compose",
-            lambda: self.api.compose(self.project_id, message, context),
-            lambda exception, response: self._nivo_composed(request_id, exception, response),
+            lambda: self._compose_in_thread(project_id, message, context, thread_id, title),
+            lambda exception, outcome: self._nivo_composed(request_id, exception, outcome),
             busy=False,
         )
+
+    def _compose_in_thread(self, project_id, message, context, thread_id, title):
+        """One conversational turn. Network only — runs on a worker thread.
+
+        Both calls belong here rather than in the caller: opening a
+        conversation is an HTTP round trip, and doing it on the main thread
+        would freeze QGIS before the question was even sent.
+
+        A remembered thread the server no longer has answers 404. That is not
+        an error the user can act on — they never knew the conversation had an
+        id — so it opens a fresh one and asks the question again. The turn
+        succeeds; only the memory of earlier turns is lost, which is already
+        true whatever we do.
+        """
+        notice = ""
+        if not thread_id:
+            thread_id, notice = self._open_conversation(project_id, title)
+        try:
+            response = self.api.compose(project_id, message, context, thread_id=thread_id)
+        except MapdexAPIError as exc:
+            if not thread_id or not thread_is_gone(exc.status):
+                # A conversation we just opened is still ours even though this
+                # turn failed. Carrying it back on the exception keeps the next
+                # attempt in the same thread instead of leaving an orphan
+                # behind and opening another one.
+                exc.mapdex_thread_id = thread_id
+                raise
+            thread_id, notice = self._open_conversation(project_id, title)
+            try:
+                response = self.api.compose(project_id, message, context, thread_id=thread_id)
+            except MapdexAPIError as retry_error:
+                retry_error.mapdex_thread_id = thread_id
+                raise
+        return {"thread_id": thread_id, "response": response, "notice": notice}
+
+    def _open_conversation(self, project_id, title):
+        """Open a thread, or report why this turn has no memory. Worker thread.
+
+        A deployment whose thread store is unavailable must still be able to
+        answer a question. Continuity degrades, and the panel says so rather
+        than leaving the user to discover that follow-ups stopped working.
+        """
+        try:
+            created = self.api.create_thread(project_id, title)
+        except MapdexAPIError:
+            return "", "Answered without conversation history: Mapdex did not open a conversation."
+        thread_id = str((created or {}).get("id") or "")
+        if not thread_id:
+            return "", "Answered without conversation history: Mapdex did not open a conversation."
+        return thread_id, ""
 
     @guarded
     def stop_nivo(self, *args):
@@ -1367,13 +1458,19 @@ class MapdexPlugin:
         self._set_status("Nivo request stopped.")
 
     @guarded
-    def _nivo_composed(self, request_id, exception, response):
+    def _nivo_composed(self, request_id, exception, outcome):
         if request_id != self._nivo_request_id:
             return
         self._nivo_compose_task = None
         self._set_nivo_compose_busy(False)
         if exception:
             self._nivo_state = transition(self._nivo_state, "error")
+            # Adopt only a conversation this turn actually opened. Re-stamping
+            # the remembered one would bind it to whatever project is active
+            # now, which is not necessarily the project it belongs to.
+            carried = getattr(exception, "mapdex_thread_id", "")
+            if carried:
+                self._adopt_conversation(carried)
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
                 self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.")
             self._render_nivo_turns()
@@ -1381,6 +1478,12 @@ class MapdexPlugin:
                 self.nivo_status.setText("Request failed")
             self._show_error("Nivo could not compose a response", exception)
             return
+        outcome = outcome if isinstance(outcome, dict) else {}
+        response = outcome.get("response")
+        # Adopt whichever conversation actually carried this turn: the
+        # remembered one, or the replacement opened after the remembered one
+        # turned out to be gone.
+        self._adopt_conversation(outcome.get("thread_id") or "")
         if not isinstance(response, dict):
             self._nivo_state = transition(self._nivo_state, "error")
             self._show_error("Nivo could not compose a response", RuntimeError("Invalid compose response"))
@@ -1393,13 +1496,26 @@ class MapdexPlugin:
                 self._nivo_turns.append(("assistant", reply))
             self._render_nivo_turns()
         if self.nivo_status is not None:
-            self.nivo_status.setText("Ready")
+            self.nivo_status.setText(str(outcome.get("notice") or "") or "Ready")
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
         for action in confirmation_actions(response):
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
+
+    @staticmethod
+    def _plain(label, text):
+        """Put text into a QLabel as text, not as markup.
+
+        QLabel defaults to Qt::AutoText, which sniffs the string and renders
+        anything that looks like HTML as HTML. Assistant replies and stored
+        history are data: a `<b>` in a layer name, or an `<img>` in a message
+        replayed from the server, must appear as those characters.
+        """
+        label.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        label.setText(str(text))
+        return label
 
     @guarded
     def _render_nivo_turns(self):
@@ -1420,7 +1536,7 @@ class MapdexPlugin:
             is_thinking = sender != "user" and str(text).startswith("Thinking")
             if is_thinking:
                 row.setContentsMargins(2, 2, 2, 2)
-                body = QLabel(str(text))
+                body = self._plain(QLabel(), text)
                 body.setWordWrap(True)
                 body.setStyleSheet("color:#8F96A8; background:transparent; border:0;")
                 row.addWidget(body)
@@ -1436,7 +1552,7 @@ class MapdexPlugin:
             label = QLabel("You" if sender == "user" else "Nivo")
             label.setStyleSheet("color:#8F96A8; font-weight:600;" if sender != "user" else "color:#ffffff; font-weight:600;")
             header_row.addWidget(label)
-            body = QLabel(str(text))
+            body = self._plain(QLabel(), text)
             body.setWordWrap(True)
             row.addWidget(header)
             row.addWidget(body)
@@ -1450,6 +1566,258 @@ class MapdexPlugin:
         layout.addStretch(1)
         bar = self.nivo_reply.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    # ----------------------------------------------------------------------
+    # Conversations: New chat, History, and the thread the panel is continuing
+    # ----------------------------------------------------------------------
+
+    def _adopt_conversation(self, thread_id, project_id=None):
+        """Make this the conversation the next question continues.
+
+        Persisted with the project it belongs to, so a QGIS restart resumes it
+        and a different project does not.
+        """
+        project = self.project_id if project_id is None else project_id
+        thread_id = str(thread_id or "")
+        self._nivo_thread_id = thread_id
+        self._nivo_thread_project = project if thread_id else ""
+        settings = QSettings()
+        if thread_id:
+            settings.setValue(THREAD_ID_SETTING, thread_id)
+            settings.setValue(THREAD_PROJECT_SETTING, self._nivo_thread_project)
+        else:
+            settings.remove(THREAD_ID_SETTING)
+            settings.remove(THREAD_PROJECT_SETTING)
+
+    @guarded
+    def new_nivo_task(self, *args):
+        """Clear the transcript and start a fresh conversation on the next turn.
+
+        Deliberately local: nothing is deleted on the server, so the
+        conversation being cleared away is still in History. The thread is
+        dropped rather than replaced because an empty conversation nobody ever
+        used is noise in that list - the next question opens one.
+        """
+        if self._nivo_compose_task is not None:
+            self._set_status("Nivo is still working. Use Stop before starting a new chat.")
+            return
+        self._nivo_turns = []
+        self._render_nivo_turns()
+        self._adopt_conversation("")
+        if self.nivo_status is not None:
+            self.nivo_status.setText("New chat. The previous conversation is in History.")
+        self._refresh_nivo_context()
+
+    @guarded
+    def open_nivo_history(self, *args):
+        """Open the History dialog for this project's conversations."""
+        if not self.api.token or not self.project_id:
+            self._set_status("Connect Mapdex and choose a project to see earlier conversations.")
+            return
+        if self._history_refs is not None:
+            return
+        dialog, refs = build_thread_history_dialog(self.iface.mainWindow())
+        self._history_refs = refs
+        self._history_rows = []
+        refs["retry_button"].clicked.connect(self._load_thread_history)
+        refs["open_button"].clicked.connect(self._open_selected_thread)
+        refs["delete_button"].clicked.connect(self._delete_selected_thread)
+        refs["close_button"].clicked.connect(dialog.reject)
+        # Lambdas are safe here in a way they are not on `iface`: these
+        # connections die with the dialog, which this method owns end to end.
+        refs["list"].itemDoubleClicked.connect(lambda _item: self._open_selected_thread())
+        refs["list"].currentRowChanged.connect(lambda _row: self._refresh_history_buttons())
+        self._load_thread_history()
+        # PyQt6 dropped `exec_`; PyQt5 (QGIS 3) has both. Resolved by name so
+        # the dialog opens on either binding rather than raising the first time
+        # a user clicks History.
+        run_modal = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        try:
+            run_modal()
+        finally:
+            self._history_refs = None
+            self._history_rows = []
+            dialog.deleteLater()
+
+    @guarded
+    def _load_thread_history(self, *args):
+        """Fetch this project's conversations and show the loading state."""
+        refs = self._history_refs
+        if refs is None:
+            return
+        project_id = self.project_id
+        self._history_request_id += 1
+        request_id = self._history_request_id
+        refs["state_label"].setVisible(True)
+        refs["state_label"].setText("Loading conversations…")
+        refs["list"].setVisible(False)
+        # Empty the row model BEFORE the widget: clear() emits
+        # currentRowChanged, and the handler that fires would otherwise read
+        # the rows of the listing that has just gone.
+        self._history_rows = []
+        refs["list"].clear()
+        refs["retry_button"].setVisible(False)
+        self._refresh_history_buttons()
+        self._task(
+            "Load Nivo conversations",
+            lambda: self.api.list_threads(project_id),
+            lambda exception, payload: self._thread_history_loaded(request_id, exception, payload),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_history_loaded(self, request_id, exception, payload):
+        refs = self._history_refs
+        if refs is None or request_id != self._history_request_id:
+            # The dialog was closed, or a reload has already superseded this.
+            return
+        if exception:
+            refs["state_label"].setVisible(True)
+            refs["state_label"].setText(
+                "Could not load conversations. {}".format(describe_exception(exception))
+            )
+            refs["retry_button"].setVisible(True)
+            self._refresh_history_buttons()
+            return
+        refs["retry_button"].setVisible(False)
+        self._history_rows = thread_list_items(payload)
+        if not self._history_rows:
+            refs["state_label"].setVisible(True)
+            refs["state_label"].setText(
+                "No earlier conversations in this project yet. Ask Nivo something and it will "
+                "appear here."
+            )
+            refs["list"].setVisible(False)
+            self._refresh_history_buttons()
+            return
+        refs["state_label"].setVisible(False)
+        refs["list"].setVisible(True)
+        for row in self._history_rows:
+            # Plain list text. A title is the user's own words returned by the
+            # server, and this transcript never renders such text as markup.
+            refs["list"].addItem(describe_thread(row))
+        current = 0
+        for index, row in enumerate(self._history_rows):
+            if row["id"] == self._nivo_thread_id:
+                current = index
+                break
+        refs["list"].setCurrentRow(current)
+        self._refresh_history_buttons()
+
+    def _refresh_history_buttons(self):
+        refs = self._history_refs
+        if refs is None:
+            return
+        try:
+            selected = 0 <= refs["list"].currentRow() < len(self._history_rows)
+        except RuntimeError:
+            return
+        refs["open_button"].setEnabled(selected)
+        refs["delete_button"].setEnabled(selected)
+
+    def _selected_thread(self):
+        refs = self._history_refs
+        if refs is None:
+            return None
+        row = refs["list"].currentRow()
+        if 0 <= row < len(self._history_rows):
+            return self._history_rows[row]
+        return None
+
+    @guarded
+    def _open_selected_thread(self, *args):
+        thread = self._selected_thread()
+        refs = self._history_refs
+        if thread is None or refs is None:
+            return
+        refs["dialog"].accept()
+        project_id = self.project_id
+        thread_id = thread["id"]
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Loading that conversation…")
+        self._task(
+            "Load Nivo conversation",
+            lambda: self.api.thread_messages(thread_id, project_id),
+            lambda exception, payload: self._thread_opened(
+                thread_id, project_id, exception, payload
+            ),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_opened(self, thread_id, project_id, exception, payload):
+        if exception:
+            if isinstance(exception, MapdexAPIError) and thread_is_gone(exception.status):
+                # Deleted between listing it and opening it. Say so; do not
+                # adopt a conversation the server does not have.
+                if self.nivo_status is not None:
+                    self.nivo_status.setText("That conversation is no longer available.")
+                self._set_status("That Nivo conversation is no longer available.")
+                return
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Could not open that conversation.")
+            self._show_error("Could not open that conversation", exception)
+            return
+        turns = thread_turns(payload)
+        self._nivo_turns = list(turns)
+        self._render_nivo_turns()
+        self._adopt_conversation(thread_id, project_id)
+        if self.nivo_status is not None:
+            if turns:
+                self.nivo_status.setText(
+                    "Continuing this conversation ({} messages).".format(len(turns))
+                )
+            else:
+                self.nivo_status.setText("That conversation has no messages yet.")
+
+    @guarded
+    def _delete_selected_thread(self, *args):
+        thread = self._selected_thread()
+        refs = self._history_refs
+        if thread is None or refs is None:
+            return
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            refs["dialog"],
+            "Delete conversation",
+            "Delete “{}” from Mapdex?\n\nThis cannot be undone.".format(thread["title"]),
+            yes | no,
+            no,
+        )
+        if answer != yes:
+            return
+        project_id = self.project_id
+        thread_id = thread["id"]
+        refs["state_label"].setVisible(True)
+        refs["state_label"].setText("Deleting…")
+        self._task(
+            "Delete Nivo conversation",
+            lambda: self.api.delete_thread(thread_id, project_id),
+            lambda exception, _result: self._thread_deleted(thread_id, exception),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_deleted(self, thread_id, exception):
+        refs = self._history_refs
+        if exception:
+            if refs is not None:
+                refs["state_label"].setVisible(True)
+                refs["state_label"].setText(
+                    "Could not delete that conversation. {}".format(describe_exception(exception))
+                )
+                refs["retry_button"].setVisible(True)
+            return
+        if thread_id == self._nivo_thread_id:
+            # The conversation the panel was continuing no longer exists. The
+            # transcript stays readable; only the memory is dropped, so the
+            # next question opens a new conversation instead of a 404.
+            self._adopt_conversation("")
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Conversation deleted. The next question starts a new one.")
+        if refs is not None:
+            self._load_thread_history()
 
     @guarded
     def _apply_nivo_action(self, action):
@@ -2069,6 +2437,12 @@ class MapdexPlugin:
         else:
             settings.remove(LEGACY_TOKEN_SETTING)
         settings.remove("mapdex/project_id")
+        # The conversation belonged to the session that just ended. Keeping its
+        # id would send the next connection's first question into a thread the
+        # new token may not be able to see.
+        self._adopt_conversation("", "")
+        self._nivo_turns = []
+        self._render_nivo_turns()
         self.project_box.clear()
         self._set_status("Disconnected.")
         self._refresh_ui()
