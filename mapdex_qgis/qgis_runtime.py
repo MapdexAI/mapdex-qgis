@@ -484,17 +484,24 @@ class QGISRuntime:
         import os
         import tempfile
 
-        from qgis.core import QgsVectorFileWriter
-
-        from .qt_compat import enum_member
-
-        layer = self._require_layer(layer_id)
+        # Validate the format before importing anything or resolving a layer.
+        # Refusing an unwritable format is a decision this function can make on
+        # its own, and making it first means the refusal does not depend on
+        # QGIS being importable.
         drivers = {"geojson": ("GeoJSON", "geojson"), "gpkg": ("GPKG", "gpkg"),
                    "shp": ("ESRI Shapefile", "shp"), "csv": ("CSV", "csv")}
         chosen = drivers.get(str(output_format).lower())
         if chosen is None:
             raise CapabilityError("{} is not a format this build can write".format(output_format))
         driver, extension = chosen
+
+        from qgis.core import QgsVectorFileWriter
+
+        from .qt_compat import enum_member
+
+        # self.vector, not a _require_layer that was never written. Export is a
+        # vector operation and the raster path has no writer here.
+        layer = self.vector(layer_id)
 
         directory = os.path.join(tempfile.gettempdir(), "mapdex-exports")
         os.makedirs(directory, exist_ok=True)

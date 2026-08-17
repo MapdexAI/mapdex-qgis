@@ -101,3 +101,67 @@ def test_export_does_not_accept_an_output_path():
     with pytest.raises(CapabilityError):
         validate_request("export.layer@1", {
             "layer_id": "layer_a", "format": "gpkg", "path": "/etc/passwd"})
+
+
+# --------------------------------------------------------------------------
+# The executor body, not just its declaration
+# --------------------------------------------------------------------------
+#
+# Every test above this line calls validate_request, which checks the capability
+# declaration and the parameters. None of them ever ran export_layer. So a call
+# to `self._require_layer(...)`, a method that was never written, sat in the
+# body and the suite stayed green: export raised AttributeError the first time
+# a real QGIS reached it. These tests run the body.
+
+class _ExportLayer:
+    def __init__(self, name="parcels", count=24):
+        self._name = name
+        self._count = count
+
+    def name(self):
+        return self._name
+
+    def featureCount(self):  # noqa: N802 - QGIS naming
+        return self._count
+
+
+class _ExportRuntime:
+    """Only what export_layer touches."""
+
+    def __init__(self, layer=None, raise_for=None):
+        self._layer = layer or _ExportLayer()
+        self._raise_for = raise_for
+
+    def vector(self, layer_id):
+        if self._raise_for:
+            raise self._raise_for
+        return self._layer
+
+
+def test_export_rejects_a_format_before_touching_qgis():
+    """A bad format must be refused by name, and must not reach the writer."""
+    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis.qgis_runtime import QGISRuntime
+
+    with pytest.raises(CapabilityError) as error:
+        QGISRuntime.export_layer(_ExportRuntime(), "layer_a", "dwg")
+    assert "dwg" in str(error.value)
+
+
+def test_export_resolves_its_layer_through_a_method_that_exists():
+    """The regression itself.
+
+    export_layer called `self._require_layer`, which is defined nowhere. This
+    reaches the layer lookup and fails on anything later (no real QGIS here),
+    but an AttributeError naming a missing method is a different failure and
+    the one this guards.
+    """
+    from mapdex_qgis.qgis_runtime import QGISRuntime
+
+    try:
+        QGISRuntime.export_layer(_ExportRuntime(), "layer_a", "geojson")
+    except AttributeError as error:
+        if "_require_layer" in str(error):
+            raise AssertionError("export_layer calls a method that does not exist: " + str(error))
+    except Exception:  # noqa: BLE001 - anything else means the lookup succeeded
+        pass

@@ -64,3 +64,33 @@ P-013. Then try these, which must all be **refused**:
 - `__import__('os')` — not a field of this layer
 - `nufus * 2` written into a field named with Turkish characters — this one must
   *work*, and the column name must survive intact
+
+## Running the runtime against a real QGIS
+
+`verify_in_qgis.py` loads the plugin against the actual QGIS libraries and
+checks each answer against the table above. Unit tests here run against stubs,
+and a stub cannot reproduce the failure that matters most: PyQt6 removed the
+flat enum forms PyQt5 accepted, so a wrong one raises `AttributeError` the first
+time a code path runs and never before.
+
+On Windows:
+
+```
+set QT_QPA_PLATFORM=offscreen
+"C:/Program Files/QGIS 4.0.2/bin/python-qgis.bat" verify_in_qgis.py
+```
+
+Point `sys.path` at the plugin source you want to test; copying
+`mapdex_qgis/` next to the script is the simplest way. Run it from a native
+path: `cmd.exe` refuses a UNC working directory, so a WSL share silently
+resolves to the Windows directory instead.
+
+The script copies the fixture before touching it. The field calculator writes
+real columns into a real GeoPackage, so without that a second run trips its own
+refuse-to-overwrite guard and reports a working refusal as a failure.
+
+**Measured 2026-08-17, QGIS 4.0.2 / Qt 6.11 / PyQt6: 16 of 16 checks pass.**
+That run found one defect no unit test could: `export_layer` called
+`self._require_layer`, a method defined nowhere, so export raised
+`AttributeError` on first real use. Every export test asserted against
+`validate_request` and none ran the executor body.
