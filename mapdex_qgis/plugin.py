@@ -533,6 +533,9 @@ class MapdexPlugin:
         self.project_box = None
         self.workflow_box = None
         self._layer_menu_actions = []
+        self._measure_action = None
+        self._measure_tool = None
+        self._previous_map_tool = None
         self.input_box = None
         self.source_summary = None
         self.run_button = None
@@ -580,11 +583,78 @@ class MapdexPlugin:
         self.action.triggered.connect(self.show)
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
         self.iface.addToolBarIcon(self.action)
+        self._install_measure_action()
         self._install_layer_menu_actions()
         # Register the dock immediately so QGIS places it in the right rail,
         # not as a floating overlay over the menu bar.
         self._ensure_dock()
         self.dock.hide()
+
+    def _install_measure_action(self):
+        """Let a person point at two places, rather than already know them.
+
+        `measure.distance@1` takes a pair of coordinates, so until this action
+        existed the capability could be invoked by an agent holding numbers and
+        by nobody else. `MeasureMapTool` was written for exactly this and was
+        never connected to anything: measuring by pointing is how measuring is
+        done, and it was the one canvas-native interaction the plugin had.
+
+        The tool is checkable and puts the previous tool back when the
+        measurement finishes, because a modal state the user has to remember to
+        leave is a trap: the next click on the map would otherwise start a
+        measurement they did not ask for.
+        """
+        self._measure_action = QAction(plugin_icon(), "Measure with Mapdex", self.iface.mainWindow())
+        self._measure_action.setToolTip("Click two points on the map to measure the distance between them")
+        self._measure_action.setCheckable(True)
+        self._measure_action.triggered.connect(self._toggle_measure_tool)
+        self.iface.addPluginToWebMenu("&Mapdex", self._measure_action)
+
+    @guarded
+    def _toggle_measure_tool(self, checked=True):
+        canvas = self.iface.mapCanvas()
+        if not checked:
+            self._restore_map_tool()
+            return
+        from .maptools import MeasureMapTool  # noqa: PLC0415 - Qt-only import
+
+        self._previous_map_tool = canvas.mapTool()
+        self._measure_tool = MeasureMapTool(canvas, self._measured_two_points, self._set_status)
+        canvas.setMapTool(self._measure_tool)
+        self._set_status("Click the first point to measure from.")
+
+    @guarded
+    def _measured_two_points(self, from_lon, from_lat, to_lon, to_lat):
+        """Hand the two clicked positions to the registry-validated capability.
+
+        Deliberately routed through `_run_capability` rather than calling the
+        runtime directly: a measurement started from the canvas and one asked
+        for in words must produce the same validated request, the same ellipsoid
+        decision and the same transcript line.
+        """
+        self._restore_map_tool()
+        self._run_capability(
+            "measure.distance@1",
+            {"from_lon": from_lon, "from_lat": from_lat, "to_lon": to_lon, "to_lat": to_lat},
+            "Measure between two clicked points",
+        )
+
+    def _restore_map_tool(self):
+        canvas = self.iface.mapCanvas()
+        if self._measure_tool is not None:
+            try:
+                canvas.unsetMapTool(self._measure_tool)
+            except (AttributeError, RuntimeError):
+                pass
+            self._measure_tool = None
+        if self._previous_map_tool is not None:
+            try:
+                canvas.setMapTool(self._previous_map_tool)
+            except (AttributeError, RuntimeError):
+                pass
+            self._previous_map_tool = None
+        if self._measure_action is not None:
+            self._measure_action.setChecked(False)
 
     def _install_layer_menu_actions(self):
         """Offer the paid work where the user already is: the layer tree.
@@ -697,6 +767,12 @@ class MapdexPlugin:
                 except (AttributeError, TypeError, RuntimeError):
                     pass
         self._layer_menu_actions.clear()
+        # A map tool outlives the plugin that set it: leaving it active means
+        # clicking the canvas after an unload calls into a dead plugin.
+        self._restore_map_tool()
+        if self._measure_action is not None:
+            self.iface.removePluginWebMenu("&Mapdex", self._measure_action)
+            self._measure_action = None
         self.poll_timer.stop()
         self.progress_timer.stop()
         for task in list(self._tasks):
