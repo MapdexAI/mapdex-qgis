@@ -28,6 +28,11 @@ from .guard import log_debug
 # answer states that it was truncated.
 MAX_ANALYTIC_FEATURES = 200_000
 MAX_UNDO_DEPTH = 20
+# A pair operation compares every candidate against every reference geometry.
+# Bounding the PRODUCT rather than either side is what stops two individually
+# reasonable layers from multiplying into a frozen host application; the result
+# reports the truncation instead of describing a partial answer as the whole.
+MAX_PAIR_TESTS = 5_000_000
 
 
 class RuntimeUnavailable(Exception):
@@ -466,6 +471,436 @@ class QGISRuntime:
             units = "degrees" if crs.isGeographic() else "m"
         return spatial.plan_distance(bool(crs.isGeographic()), units, distance, unit)
 
+    # -- spatial relationships between two layers --------------------------
+    #
+    # Two engines, on purpose. GEOS (through QgsGeometry) decides whether two
+    # shapes intersect, because a hand-written predicate would be a second and
+    # worse implementation of a solved problem. `spatial.py` decides what a
+    # distance or an area MEANS, because that is where the mistakes actually
+    # live: a 2 km search radius on a layer in degrees is not a small error, it
+    # is a number with no meaning, and QGIS will compute it without complaint.
+    #
+    # Two layers in one project rarely share a CRS, so every pair operation
+    # transforms the second into the first and reports which frame it used. The
+    # transform is applied to the geometries being compared rather than to the
+    # layer being scanned, so a feature request can still be pre-filtered.
+
+    _PREDICATES = ("intersects", "within", "contains", "overlaps", "touches", "crosses", "disjoint")
+
+    def _crs_transform(self, source: Any, target: Any) -> Any:
+        """Transform from `source` to `target`, or None when they already agree."""
+        if source is None or target is None:
+            return None
+        if not source.isValid() or not target.isValid() or source == target:
+            return None
+        from qgis.core import QgsCoordinateTransform  # noqa: PLC0415
+
+        return QgsCoordinateTransform(source, target, self.project)
+
+    def _geometries_in_crs(self, layer: Any, target_crs: Any, scope: str = "all") -> list[Any]:
+        """Every geometry of `layer`, reprojected into `target_crs`.
+
+        Bounded by the same cap as the attribute analytics. An unbounded pair
+        operation over two large layers is not slow, it is a hung QGIS, and this
+        runs inside the host application.
+        """
+        from qgis.core import QgsCsException, QgsGeometry  # noqa: PLC0415
+
+        transform = self._crs_transform(layer.crs(), target_crs)
+        out: list[Any] = []
+        for feature in self._geometry_features(layer, "", scope):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            if transform is not None:
+                geometry = QgsGeometry(geometry)
+                try:
+                    if geometry.transform(transform) != 0:
+                        continue
+                except QgsCsException:
+                    # One untransformable feature is dropped; a whole layer that
+                    # cannot be transformed produces an empty list, which the
+                    # callers below refuse rather than answer.
+                    continue
+            out.append(geometry)
+            if len(out) >= MAX_ANALYTIC_FEATURES:
+                break
+        return out
+
+    @staticmethod
+    def _combined_bbox(geometries: list[Any]) -> Any:
+        from qgis.core import QgsRectangle  # noqa: PLC0415
+
+        box = QgsRectangle()
+        box.setMinimal()
+        for geometry in geometries:
+            box.combineExtentWith(geometry.boundingBox())
+        return box
+
+    def _relate_pair(self, geometry: Any, others: list[Any], predicate: str) -> bool:
+        """Does `geometry` stand in `predicate` to ANY of `others`?
+
+        Any, not all: "the parcels that intersect the flood layer" means any
+        polygon of it, which is also what QGIS's own select-by-location means.
+        `disjoint` is the negation of that and so is the one predicate that must
+        test every candidate before it can answer.
+        """
+        box = geometry.boundingBox()
+        if predicate == "disjoint":
+            for other in others:
+                if box.intersects(other.boundingBox()) and geometry.intersects(other):
+                    return False
+            return True
+        for other in others:
+            if not box.intersects(other.boundingBox()):
+                continue
+            if getattr(geometry, predicate)(other):
+                return True
+        return False
+
+    def relate(
+        self,
+        layer_id: str,
+        other_layer_id: str,
+        predicate: str = "intersects",
+        use_selection: bool = False,
+    ) -> dict[str, Any]:
+        """Select features of one layer by their relationship to another."""
+        layer = self.vector(layer_id)
+        other = self.vector(other_layer_id)
+        _require(layer.id() != other.id(), "a spatial relationship needs two different layers")
+        name = str(predicate or "intersects").strip().lower()
+        if name not in self._PREDICATES:
+            raise CapabilityError("{} is not a spatial relationship this build tests".format(name))
+        others = self._geometries_in_crs(other, layer.crs(), "selection" if use_selection else "all")
+        _require(
+            others,
+            "{} has no geometry that can be compared in {}'s coordinate system".format(other.name(), layer.name()),
+        )
+        matched: list[Any] = []
+        tested = 0
+        truncated = False
+        for feature in self._geometry_features(layer, "", "all"):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            tested += 1
+            if tested * len(others) > MAX_PAIR_TESTS:
+                truncated = True
+                break
+            if self._relate_pair(geometry, others, name):
+                matched.append(feature.id())
+        applied = self.select_features(layer_id, matched, zoom=bool(matched))
+        return {
+            "kind": "spatial_selection",
+            "predicate": name,
+            "layer": layer.name(),
+            "other_layer": other.name(),
+            "compared_in": layer.crs().authid(),
+            "reference_features": len(others),
+            "tested": tested,
+            "matched": len(matched),
+            "truncated": truncated,
+            "selection": applied,
+        }
+
+    def near(
+        self,
+        layer_id: str,
+        other_layer_id: str,
+        distance: float,
+        unit: str = "m",
+    ) -> dict[str, Any]:
+        """Select features within a real-world distance of another layer."""
+        layer = self.vector(layer_id)
+        other = self.vector(other_layer_id)
+        _require(layer.id() != other.id(), "a distance search needs two different layers")
+        plan = self.distance_plan(layer_id, distance, unit)
+        strategy = str(plan.get("strategy") or "")
+        if strategy == "reproject":
+            # Deliberately a refusal rather than a degree approximation. There
+            # is no single degrees-per-metre factor: it is latitude-dependent
+            # and anisotropic, so any answer here would be wrong everywhere
+            # except one parallel, and would look exactly like a right one.
+            raise RuntimeUnavailable(
+                "{} is in degrees, so {} {} cannot be measured on it. Reproject it to a projected "
+                "CRS and ask again.".format(layer.name(), distance, spatial.normalize_unit(unit))
+            )
+        if strategy != "map_units":
+            raise RuntimeUnavailable(
+                "that distance cannot be applied to {}: {}".format(layer.name(), plan.get("reason") or "unknown")
+            )
+        radius = float(plan["map_units"])
+        others = self._geometries_in_crs(other, layer.crs(), "all")
+        _require(
+            others,
+            "{} has no geometry that can be compared in {}'s coordinate system".format(other.name(), layer.name()),
+        )
+        search = self._combined_bbox(others)
+        search.grow(radius)
+        matched: list[Any] = []
+        tested = 0
+        truncated = False
+        for feature in self._geometry_features(layer, "", "all"):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            if not search.intersects(geometry.boundingBox()):
+                continue
+            tested += 1
+            if tested * len(others) > MAX_PAIR_TESTS:
+                truncated = True
+                break
+            box = geometry.boundingBox()
+            for reference in others:
+                probe = reference.boundingBox()
+                probe.grow(radius)
+                if not probe.intersects(box):
+                    continue
+                if geometry.distance(reference) <= radius:
+                    matched.append(feature.id())
+                    break
+        applied = self.select_features(layer_id, matched, zoom=bool(matched))
+        return {
+            "kind": "spatial_selection",
+            "predicate": "within_distance",
+            "layer": layer.name(),
+            "other_layer": other.name(),
+            "distance": plan.get("requested"),
+            "unit": plan.get("unit"),
+            "metres": plan.get("metres"),
+            "map_units": radius,
+            "crs_unit": plan.get("crs_unit"),
+            "compared_in": layer.crs().authid(),
+            "reference_features": len(others),
+            "tested": tested,
+            "matched": len(matched),
+            "truncated": truncated,
+            "selection": applied,
+        }
+
+    def _nearest_reference(self, layer: Any) -> tuple[Any, str]:
+        """What "nearest" is measured from, and a phrase naming it.
+
+        A selection on exactly one other layer is unambiguous and is preferred.
+        Otherwise the map centre is used, and the result says so, because an
+        answer whose origin the reader cannot see is not an answer.
+        """
+        from qgis.core import QgsGeometry  # noqa: PLC0415
+
+        candidates = []
+        for other in self.project.mapLayers().values():
+            if other.id() == layer.id() or not self._is_vector(other):
+                continue
+            if not other.selectedFeatureIds():
+                continue
+            candidates.append(other)
+        if len(candidates) == 1:
+            source = candidates[0]
+            geometries = self._geometries_in_crs(source, layer.crs(), "selection")
+            if geometries:
+                return (
+                    QgsGeometry.collectGeometry(geometries),
+                    "the {} feature(s) selected on {}".format(len(geometries), source.name()),
+                )
+        # `center()` already returns a QgsPointXY; re-wrapping it would rely on
+        # a copy constructor for no gain.
+        point = QgsGeometry.fromPointXY(self.iface.mapCanvas().center())
+        transform = self._crs_transform(self.iface.mapCanvas().mapSettings().destinationCrs(), layer.crs())
+        if transform is not None:
+            point.transform(transform)
+        return point, "the centre of the current map view"
+
+    def nearest(self, layer_id: str, limit: int = 10) -> dict[str, Any]:
+        """Find and select the N nearest features to a stated reference."""
+        layer = self.vector(layer_id)
+        reference, described = self._nearest_reference(layer)
+        _require(reference is not None and not reference.isEmpty(), "there is nothing to measure distance from")
+        count = max(1, min(500, int(limit or 10)))
+        ranked: list[tuple[float, Any]] = []
+        for feature in self._geometry_features(layer, "", "all"):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            ranked.append((float(geometry.distance(reference)), feature.id()))
+        _require(ranked, "{} has no geometry to rank".format(layer.name()))
+        ranked.sort(key=lambda item: item[0])
+        chosen = ranked[:count]
+        applied = self.select_features(layer_id, [identifier for _distance, identifier in chosen], zoom=True)
+        units = self._crs_map_units(layer.crs())
+        return {
+            "kind": "nearest",
+            "layer": layer.name(),
+            "reference": described,
+            "measured_in": units,
+            "requested": count,
+            "returned": len(chosen),
+            "considered": len(ranked),
+            "nearest_distance": chosen[0][0] if chosen else None,
+            "farthest_distance": chosen[-1][0] if chosen else None,
+            "selection": applied,
+        }
+
+    # -- counting one layer into another -----------------------------------
+
+    def _polygon_parts(self, layer: Any, label_field: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, float]]:
+        """Polygon parts as ring lists, with their label and their area.
+
+        One entry per PART rather than per feature, because flattening a
+        multipolygon's rings into one list destroys the shell/hole distinction
+        and would count points that fall in a hole. Parts are aggregated back to
+        their feature's label by the caller.
+        """
+        parts: list[dict[str, Any]] = []
+        labels: dict[str, str] = {}
+        areas: dict[str, float] = {}
+        for feature in self._geometry_features(layer, label_field, "all"):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            label = str(feature[label_field]) if label_field else "feature {}".format(feature.id())
+            try:
+                polygons = geometry.asMultiPolygon() if geometry.isMultipart() else [geometry.asPolygon()]
+            except Exception:  # noqa: BLE001 - a non-polygon geometry is skipped, not fatal
+                continue
+            for index, polygon in enumerate(polygons):
+                rings = [[(float(point.x()), float(point.y())) for point in ring] for ring in polygon if ring]
+                if not rings:
+                    continue
+                part_id = "{}#{}".format(feature.id(), index)
+                parts.append({"id": part_id, "rings": rings})
+                labels[part_id] = label
+                areas[part_id] = spatial.polygon_area(rings)
+            if len(parts) >= MAX_ANALYTIC_FEATURES:
+                break
+        return parts, labels, areas
+
+    def _representative_points(self, layer: Any, target_crs: Any) -> tuple[list[dict[str, Any]], bool]:
+        """One point per feature, in `target_crs`, and whether any was derived.
+
+        A non-point layer is not refused: "how many parcels are in each
+        district" is the same question as "how many buildings", and a point on
+        the surface is the honest reduction. The result says it happened.
+        """
+        from qgis.core import QgsCsException, QgsGeometry  # noqa: PLC0415
+
+        transform = self._crs_transform(layer.crs(), target_crs)
+        records: list[dict[str, Any]] = []
+        derived = False
+        for feature in self._geometry_features(layer, "", "all"):
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            if transform is not None:
+                geometry = QgsGeometry(geometry)
+                try:
+                    if geometry.transform(transform) != 0:
+                        continue
+                except QgsCsException:
+                    continue
+            if geometry.type() == 0 and not geometry.isMultipart():
+                point = geometry.asPoint()
+            else:
+                derived = True
+                surface = geometry.pointOnSurface()
+                if surface is None or surface.isEmpty():
+                    continue
+                point = surface.asPoint()
+            records.append({"id": feature.id(), "point": (float(point.x()), float(point.y()))})
+            if len(records) >= MAX_ANALYTIC_FEATURES:
+                break
+        return records, derived
+
+    def _counted_into_polygons(
+        self,
+        polygon_layer_id: str,
+        point_layer_id: str,
+        group_field: str = "",
+    ) -> dict[str, Any]:
+        polygons = self.vector(polygon_layer_id)
+        points = self.vector(point_layer_id)
+        _require(polygons.id() != points.id(), "counting one layer into another needs two different layers")
+        label_field = group_field or self._display_field(polygons)
+        parts, labels, part_areas = self._polygon_parts(polygons, label_field)
+        _require(parts, "{} has no polygons to count into".format(polygons.name()))
+        records, derived = self._representative_points(points, polygons.crs())
+        _require(
+            records,
+            "{} has no features that can be placed in {}'s coordinate system".format(points.name(), polygons.name()),
+        )
+        raw = spatial.count_points_in_polygons(parts, records)
+        counts: dict[str, int] = {}
+        areas: dict[str, float] = {}
+        for part_id, value in (raw.get("counts") or {}).items():
+            label = labels.get(part_id, part_id)
+            counts[label] = counts.get(label, 0) + int(value)
+            areas[label] = areas.get(label, 0.0) + float(part_areas.get(part_id, 0.0))
+        return {
+            "counts": counts,
+            "areas": areas,
+            "raw": raw,
+            "polygons": polygons,
+            "points": points,
+            "label_field": label_field,
+            "derived_points": derived,
+        }
+
+    def count_in_polygons(
+        self,
+        polygon_layer_id: str,
+        point_layer_id: str,
+        group_field: str = "",
+    ) -> dict[str, Any]:
+        """Count features of one layer inside each polygon of another."""
+        computed = self._counted_into_polygons(polygon_layer_id, point_layer_id, group_field)
+        raw = computed["raw"]
+        return {
+            "kind": "group_aggregate",
+            "measured": "points_in_polygons",
+            "group_field": computed["label_field"],
+            "statistic": "count",
+            "polygon_layer": computed["polygons"].name(),
+            "point_layer": computed["points"].name(),
+            "compared_in": computed["polygons"].crs().authid(),
+            "features": raw.get("points"),
+            "matched": raw.get("matched"),
+            "unmatched": raw.get("unmatched"),
+            "used_representative_point": computed["derived_points"],
+            "groups": [
+                {"group": label, "value": value}
+                for label, value in sorted(computed["counts"].items(), key=lambda item: -item[1])
+            ],
+        }
+
+    def density(
+        self,
+        polygon_layer_id: str,
+        point_layer_id: str,
+        group_field: str = "",
+    ) -> dict[str, Any]:
+        """Normalise those counts by polygon area, stating the unit."""
+        computed = self._counted_into_polygons(polygon_layer_id, point_layer_id, group_field)
+        polygons = computed["polygons"]
+        result = spatial.density_per_area(
+            computed["counts"], computed["areas"], self._crs_map_units(polygons.crs())
+        )
+        if result.get("reason") == "unknown_crs_unit":
+            raise RuntimeUnavailable(
+                "{} is not in a linear coordinate system, so an area, and therefore a density, cannot be "
+                "measured on it. Reproject it and ask again.".format(polygons.name())
+            )
+        result = dict(result)
+        result.update({
+            "group_field": computed["label_field"],
+            "polygon_layer": polygons.name(),
+            "point_layer": computed["points"].name(),
+            "compared_in": polygons.crs().authid(),
+            "counts": computed["counts"],
+            "used_representative_point": computed["derived_points"],
+            "unmatched": computed["raw"].get("unmatched"),
+        })
+        return result
+
     # -- map effects (reversible) -----------------------------------------
 
     def _push_undo(self, entry: Mapping[str, Any]) -> None:
@@ -521,12 +956,14 @@ class QGISRuntime:
             renderer = self._categorized_renderer(layer, spec)
         elif kind == "graduated":
             renderer = self._graduated_renderer(layer, spec)
+        elif kind == "group_choropleth":
+            renderer = self._choropleth_renderer(layer, spec)
         else:
             return {"kind": "no_map_change", "reason": "unsupported_visualization"}
         layer.setRenderer(renderer)
         layer.triggerRepaint()
         self.iface.layerTreeView().refreshLayerSymbology(layer.id())
-        entries = spec.get("classes") or spec.get("categories") or []
+        entries = spec.get("classes") or spec.get("categories") or spec.get("groups") or []
         return {"kind": "style_applied", "style": kind, "classes": len(entries)}
 
     def _symbol_for(self, layer: Any, color: str) -> Any:
@@ -544,6 +981,33 @@ class QGISRuntime:
         for entry in spec.get("categories") or []:
             symbol = self._symbol_for(layer, str(entry.get("color") or "#888888"))
             categories.append(QgsRendererCategory(entry.get("value"), symbol, str(entry.get("label") or "")))
+        return QgsCategorizedSymbolRenderer(str(spec.get("field") or ""), categories)
+
+    def _choropleth_renderer(self, layer: Any, spec: Mapping[str, Any]) -> Any:
+        """Colour each group by its measured value.
+
+        A group-by and a density both produce one number per named group, and
+        the number lives in the analysis rather than in a column on the layer.
+        A graduated renderer cannot read it, so the map is drawn as categories
+        over the grouping field with each category's colour taken from where its
+        value sits in the measured range. Groups are ordered by value so the
+        legend reads as a scale rather than as an alphabet.
+        """
+        from qgis.core import QgsCategorizedSymbolRenderer, QgsRendererCategory  # noqa: PLC0415
+
+        entries = [
+            (str(entry.get("group")), float(entry.get("value")))
+            for entry in spec.get("groups") or []
+            if entry.get("group") is not None and entry.get("value") is not None
+        ]
+        entries.sort(key=lambda item: item[1])
+        colors = presentation.ramp_colors(presentation.DEFAULT_SEQUENTIAL, max(len(entries), 2))
+        unit = str(spec.get("unit") or "")
+        categories = []
+        for index, (group, value) in enumerate(entries):
+            symbol = self._symbol_for(layer, colors[min(index, len(colors) - 1)])
+            label = "{} ({:g}{})".format(group, value, " " + unit if unit else "")
+            categories.append(QgsRendererCategory(group, symbol, label))
         return QgsCategorizedSymbolRenderer(str(spec.get("field") or ""), categories)
 
     def _graduated_renderer(self, layer: Any, spec: Mapping[str, Any]) -> Any:
@@ -963,6 +1427,20 @@ def _measured_geometry(runtime: QGISRuntime, analysis: Mapping[str, Any], layer_
     return {"analysis": dict(analysis), "map": applied}
 
 
+def _visualized_groups(runtime: QGISRuntime, analysis: Mapping[str, Any], layer_id: str) -> dict[str, Any]:
+    """Draw a per-group measurement on the polygons it was measured over.
+
+    Separate from the executor's generic `visualize` because the grouping field
+    lives in the analysis, not in the request: the caller named two layers, not
+    a column, and passing the wrong field here silently produces a legend of
+    one grey class.
+    """
+    field = str(analysis.get("group_field") or "")
+    spec = presentation.visualization_for(analysis, layer_id, field)
+    applied = runtime.apply_visualization(spec) if spec.get("kind") != "none" else {"kind": "no_map_change"}
+    return {"analysis": analysis, "map": applied}
+
+
 def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
     """Map validated capability requests onto runtime methods.
 
@@ -1031,6 +1509,27 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             "layer": runtime.profile_layer(p["layer_id"]),
             "fields": runtime.field_profile(p["layer_id"]),
         },
+        # Spatial questions about two layers. Each one that can be shown on the
+        # map shows itself in the same step: "how many buildings per district"
+        # and "draw me that" are one ask, not two.
+        "spatial.relate@1": lambda p: runtime.relate(
+            p["layer_id"], p["other_layer_id"], p.get("predicate", "intersects"),
+            bool(p.get("use_selection")),
+        ),
+        "spatial.near@1": lambda p: runtime.near(
+            p["layer_id"], p["other_layer_id"], p["distance"], p.get("unit", "m"),
+        ),
+        "spatial.nearest@1": lambda p: runtime.nearest(p["layer_id"], p.get("limit", 10)),
+        "spatial.count_in_polygons@1": lambda p: _visualized_groups(
+            runtime,
+            runtime.count_in_polygons(p["polygon_layer_id"], p["point_layer_id"], p.get("group_field", "")),
+            p["polygon_layer_id"],
+        ),
+        "spatial.density@1": lambda p: _visualized_groups(
+            runtime,
+            runtime.density(p["polygon_layer_id"], p["point_layer_id"], p.get("group_field", "")),
+            p["polygon_layer_id"],
+        ),
         "map.zoom_layer@1": lambda p: runtime.zoom_to_layer(p["layer_id"]),
         "map.zoom_selection@1": lambda p: runtime.zoom_to_selection(_active_layer_id(runtime)),
         "map.refresh@1": lambda p: (runtime.iface.mapCanvas().refresh(), {"kind": "refreshed"})[1],
