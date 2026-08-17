@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import traceback
+from functools import partial
 from typing import Callable, Optional
 
 from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
@@ -28,6 +29,7 @@ from qgis.core import (
     QgsFeature,
     QgsCsException,
     Qgis,
+    QgsMapLayer,
     QgsMessageLog,
     QgsProcessingAlgRunnerTask,
     QgsProcessingContext,
@@ -529,6 +531,7 @@ class MapdexPlugin:
         self.guidance_label = None
         self.project_box = None
         self.workflow_box = None
+        self._layer_menu_actions = []
         self.input_box = None
         self.source_summary = None
         self.run_button = None
@@ -576,10 +579,74 @@ class MapdexPlugin:
         self.action.triggered.connect(self.show)
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
         self.iface.addToolBarIcon(self.action)
+        self._install_layer_menu_actions()
         # Register the dock immediately so QGIS places it in the right rail,
         # not as a floating overlay over the menu bar.
         self._ensure_dock()
         self.dock.hide()
+
+    def _install_layer_menu_actions(self):
+        """Offer the paid work where the user already is: the layer tree.
+
+        Georeferencing a scan by hand in QGIS is control-point placement, tens
+        of minutes a sheet. That is the work worth paying to skip, and until now
+        the only way to reach it was to open a panel, pick a workflow from a
+        combo box and pick a source. Three steps between the user and the thing
+        they came for, none of which they were thinking about: they were
+        right-clicking the scan.
+
+        The action prepares the panel and stops. It does NOT start the run.
+        Starting paid work from a context menu would take the moment of consent
+        away from the person paying, and the Run button is that moment.
+        """
+        add = getattr(self.iface, "addCustomActionForLayerType", None)
+        if add is None:
+            # An older or stubbed interface. The panel is still the way in.
+            return
+        window = self.iface.mainWindow()
+        for title, kind, layer_type in self._layer_menu_entries():
+            if layer_type is None:
+                continue
+            action = QAction(plugin_icon(), title, window)
+            action.triggered.connect(partial(self._prepare_from_layer_menu, kind))
+            try:
+                add(action, "Mapdex", layer_type, True)
+            except (AttributeError, TypeError):
+                continue
+            self._layer_menu_actions.append(action)
+
+    def _layer_menu_entries(self):
+        """The workflows worth a right-click, against the layer type each needs.
+
+        Deliberately not all four. A context menu earns its place by being
+        short, and offering a raster workflow on a vector layer teaches the user
+        that the menu does not know what they clicked.
+        """
+        raster = getattr(QgsMapLayer, "RasterLayer", None)
+        vector = getattr(QgsMapLayer, "VectorLayer", None)
+        return (
+            ("Georeference with Mapdex", BatchKind.GEOREFERENCE, raster),
+            ("Digitize parcels with Mapdex", BatchKind.DIGITIZE_PARCELS, raster),
+            ("Validate and deliver with Mapdex", BatchKind.VALIDATE_DELIVER, vector),
+        )
+
+    @guarded
+    def _prepare_from_layer_menu(self, kind, *_args):
+        """Open the panel with the clicked layer and workflow already chosen."""
+        layer = self.iface.activeLayer()
+        self.show()
+        if self.workflow_box is not None:
+            index = self.workflow_box.findData(kind)
+            if index >= 0:
+                self.workflow_box.setCurrentIndex(index)
+        if self.input_box is not None:
+            index = self.input_box.findData("active_layer")
+            if index >= 0:
+                self.input_box.setCurrentIndex(index)
+        if layer is not None:
+            self._set_status(
+                "{} is ready to send. Press Start when you want to.".format(layer.name())
+            )
 
     @guarded
     def _on_current_layer_changed(self, _layer=None):
@@ -601,6 +668,17 @@ class MapdexPlugin:
 
     @guarded
     def unload(self):
+        # Take the context-menu entries back off first. QGIS keeps them on the
+        # interface, not on the plugin, so a reload without this leaves a second
+        # "Georeference with Mapdex" behind on every reload.
+        remove = getattr(self.iface, "removeCustomActionForLayerType", None)
+        if remove is not None:
+            for action in self._layer_menu_actions:
+                try:
+                    remove(action)
+                except (AttributeError, TypeError, RuntimeError):
+                    pass
+        self._layer_menu_actions.clear()
         self.poll_timer.stop()
         self.progress_timer.stop()
         for task in list(self._tasks):
