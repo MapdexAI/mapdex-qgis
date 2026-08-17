@@ -22,6 +22,7 @@ from typing import Any, Callable, Mapping
 
 from . import analytics, presentation, spatial
 from .capabilities import CapabilityError
+from .guard import log_debug
 
 # Attribute analytics stream this many features at most. Above the cap the
 # answer states that it was truncated.
@@ -269,7 +270,11 @@ class QGISRuntime:
             inner = geometry.get()
             if inner is not None:
                 return int(inner.dimension())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # nosec B110
+            # Deliberately silent: this runs once per feature while filtering a
+            # layer, and the second route below is the expected answer on builds
+            # where the abstract geometry is not reachable. Logging a normal
+            # fallback per feature would bury the log it belongs in.
             pass
         try:
             return int(geometry.type())
@@ -678,8 +683,11 @@ class QGISRuntime:
                     "kind": "measurement", "metres": float(metres),
                     "method": "ellipsoidal", "ellipsoid": ellipsoid,
                 }
-        except Exception:  # noqa: BLE001 - fall back rather than fail the turn
-            pass
+        except Exception as exc:  # noqa: BLE001 - fall back rather than fail the turn
+            # Worth recording: the fallback below measures on the sphere rather
+            # than the project ellipsoid, so the answer the user receives is not
+            # the one they would have got. Silence here makes that undetectable.
+            log_debug("ellipsoidal distance unavailable, measuring spherically", exc)
         result = spatial.measure_distance(point_a, point_b, True, "degrees")
         result["kind"] = "measurement"
         return result

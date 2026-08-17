@@ -12,7 +12,8 @@ from typing import Optional
 
 
 AUTH_CONFIG_SETTING = "mapdex/auth_config_id"
-LEGACY_TOKEN_SETTING = "mapdex/token"  # nosec B105 - settings key, removed on sight
+# The name of a QSettings key, not a token. It is deleted wherever it is found.
+LEGACY_TOKEN_SETTING = "mapdex/token"  # nosec B105
 
 
 class SecureTokenStore:

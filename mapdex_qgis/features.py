@@ -73,7 +73,7 @@ def plan_points(params: Mapping[str, Any], seed: str = "") -> dict[str, Any]:
 
     Returns ``{"points": [(lon, lat), …], "crs": "EPSG:4326", "source": …}`` or
     a reason when nothing can be placed. ``source`` records how the location was
-    決 decided so the reply can say it plainly.
+    decided so the reply can say it plainly.
     """
     count = params.get("count")
     try:
@@ -91,7 +91,10 @@ def plan_points(params: Mapping[str, Any], seed: str = "") -> dict[str, Any]:
             points.append(explicit[len(points) % len(explicit)])
         return {"points": points[:count], "crs": "EPSG:4326", "source": "coordinates"}
 
-    generator = random.Random(seed or "mapdex")
+    # Deterministic sample geometry: the caller's seed must reproduce the same
+    # points, so a cryptographic generator would be the wrong tool here. Nothing
+    # about this placement is a security decision. (B311 below.)
+    generator = random.Random(seed or "mapdex")  # nosec B311
     box = _bbox(params.get("bbox"))
     if box is None:
         centre = valid_pair(params.get("center"))
@@ -132,7 +135,10 @@ def scatter_in_rectangle(
     minx, miny, maxx, maxy = box
     if (maxx - minx) < MIN_SPAN_DEGREES or (maxy - miny) < MIN_SPAN_DEGREES:
         return [((minx + maxx) / 2.0, (miny + maxy) / 2.0)] * count
-    generator = random.Random(seed or "mapdex")
+    # Deterministic sample geometry: the caller's seed must reproduce the same
+    # points, so a cryptographic generator would be the wrong tool here. Nothing
+    # about this placement is a security decision. (B311 below.)
+    generator = random.Random(seed or "mapdex")  # nosec B311
     return [(generator.uniform(minx, maxx), generator.uniform(miny, maxy)) for _index in range(count)]
 
 

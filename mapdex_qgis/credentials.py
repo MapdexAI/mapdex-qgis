@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .guard import log_debug
+
 # Non-secret preferences live in QSettings; the secret itself never does.
 SETTINGS_PREFIX = "mapdex/nivo"
 AUTH_CONFIG_NAME = "Mapdex Nivo provider key"
@@ -139,8 +141,14 @@ class ProviderCredentialStore:
         if identifier and self.is_secure_storage_available():
             try:
                 self._auth.removeAuthenticationConfig(identifier)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - the auth database may raise anything
+                # The in-memory key is already gone, so the user is not left
+                # holding a live session either way; the stored entry may not be.
+                # Only the config id is involved in this call, never the secret,
+                # so the reason is safe to record and worth recording: a key that
+                # silently refuses to be deleted is exactly the failure a user
+                # needs to be able to find.
+                log_debug("removing the stored provider key", exc)
 
 
 def _scrub(value: Any, secret: str) -> str:

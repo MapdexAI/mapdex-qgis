@@ -145,7 +145,7 @@ from mapdex_qgis import nivo as nivo_module  # noqa: E402
 from mapdex_qgis import plugin as plugin_module  # noqa: E402
 from mapdex_qgis.api_client import MapdexAPIError  # noqa: E402
 from mapdex_qgis.generated_contracts import BatchKind  # noqa: E402
-from mapdex_qgis.panel import build_companion_panel, build_thread_history_dialog  # noqa: E402
+from mapdex_qgis.panel import build_companion_panel  # noqa: E402
 from mapdex_qgis.qgis_runtime import QGISRuntime, bound_capability_ids  # noqa: E402
 from mapdex_qgis.qt_compat import enum_member  # noqa: E402
 

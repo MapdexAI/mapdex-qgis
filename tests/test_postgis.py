@@ -13,6 +13,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.postgis import (  # noqa: E402
+    SQL,
+    Composed,
+    Identifier,
     ReadOnlyViolation,
     build_bbox_count,
     build_categorical,
@@ -114,6 +117,52 @@ def test_a_forbidden_word_hidden_in_a_comment_is_still_caught_or_stripped():
 def test_median_percentile_within_group_is_not_mistaken_for_select_into():
     sql, _params = build_numeric_stats(PARCELS, "area")
     assert "within group" in sql
+
+
+def test_a_statement_cannot_be_built_from_a_plain_string():
+    """The composition boundary: only a Composable may enter a statement.
+
+    This is what makes "no caller text reaches the SQL" a property of the code
+    rather than a convention that the next builder has to remember.
+    """
+    template = SQL("select * from {table}")
+    for smuggled in ('parcels; drop table x --', "parcels", '"public"."parcels"', 1, None):
+        with pytest.raises(ReadOnlyViolation):
+            template.format(table=smuggled)
+    assert template.format(table=Identifier("public", "parcels")).as_string() == (
+        'select * from "public"."parcels"'
+    )
+
+
+def test_an_identifier_is_validated_where_it_is_named():
+    assert Identifier("area").as_string() == '"area"'
+    assert Identifier("public", "parcels").as_string() == '"public"."parcels"'
+    for bad in ('a"; drop table x --', "a b", "1abc", "", "x" * 64, "área"):
+        with pytest.raises(ReadOnlyViolation):
+            Identifier(bad)
+    with pytest.raises(ReadOnlyViolation):
+        Identifier()
+
+
+def test_a_composed_fragment_nests_without_being_re_interpreted():
+    # A rendered fragment carrying %s placeholders or braces must survive being
+    # formatted into an outer template unchanged.
+    inner = SQL("{col} && ST_MakeEnvelope(%s, %s, %s, %s, %s)").format(col=Identifier("geom"))
+    assert isinstance(inner, Composed)
+    outer = SQL("select 1 from t where {clause}").format(clause=inner)
+    assert outer.as_string() == (
+        'select 1 from t where "geom" && ST_MakeEnvelope(%s, %s, %s, %s, %s)'
+    )
+
+
+def test_sql_text_must_be_a_literal_string():
+    class Sneaky(str):
+        pass
+
+    with pytest.raises(ReadOnlyViolation):
+        SQL(Sneaky("select 1"))
+    with pytest.raises(ReadOnlyViolation):
+        SQL(None)
 
 
 def test_identifier_quoting_rejects_injection_attempts():

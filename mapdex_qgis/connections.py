@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
+from .guard import log_debug
+
 MAX_CONNECTIONS = 25
 MAX_NAME = 120
 
@@ -60,9 +62,11 @@ def discover_connections(
     for provider in providers:
         try:
             names = list(names_for(provider) or ())
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - a provider lookup may raise anything
             # A broken provider registry must not cost the user every other
-            # connection, and must never surface as a Nivo error.
+            # connection, and must never surface as a Nivo error. It is logged
+            # so "my PostGIS connection is missing" is answerable.
+            log_debug("reading saved {} connections".format(provider), exc)
             continue
         for name in names:
             reference = connection_reference(provider, name)
@@ -89,8 +93,10 @@ def qgis_connection_names(provider: str) -> list[str]:
         metadata = QgsProviderRegistry.instance().providerMetadata(provider)
         if metadata is not None:
             return [str(name) for name in metadata.connections(False).keys()]
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - provider metadata may raise anything
+        # The supported route is unavailable on this build or this provider;
+        # the settings-group fallback below still finds the names.
+        log_debug("provider metadata for {} unavailable".format(provider), exc)
     group = PROVIDER_SETTINGS_GROUPS.get(provider)
     if not group:
         return []

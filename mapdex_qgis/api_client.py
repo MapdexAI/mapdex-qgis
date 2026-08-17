@@ -145,7 +145,8 @@ def device_verification_url(response_url: str, web_base: str, api_base: str) -> 
 
 
 class MapdexAPI:
-    def __init__(self, base_url: str, token: str = ""):  # nosec B107 - no token yet
+    # The empty default is "not signed in yet", not a hardcoded credential.
+    def __init__(self, base_url: str, token: str = ""):  # nosec B107
         self.base_url = normalize_api_base(base_url)
         self.token = token
 

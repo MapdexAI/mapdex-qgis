@@ -12,7 +12,6 @@ directly, and the wiring in `plugin.py` at source level - plugin.py imports
 """
 import ast
 import pathlib
-import re
 import sys
 from urllib import error
 

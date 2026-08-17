@@ -70,7 +70,7 @@ from .features import (
     plan_points,
     scatter_in_rectangle,
 )
-from .guard import describe_exception, format_traceback, guarded
+from .guard import describe_exception, format_traceback, guarded, log_debug
 from .guidance import ACTIVE_STATES, run_has_started, task_guidance
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import (
@@ -483,7 +483,8 @@ class MapdexPlugin:
         )
         if stale_endpoint:
             # The stored session belongs to another deployment.
-            persisted_token = ""  # nosec B105 - clears the stored session
+            # Clearing the stored session, not assigning a password.
+            persisted_token = ""  # nosec B105
             if self.token_store is not None:
                 self.token_store.clear()
             settings.setValue("mapdex/base_url", api_base)
@@ -736,7 +737,9 @@ class MapdexPlugin:
                 "Mapdex",
                 enum_member(Qgis, "MessageLevel", "Critical"),
             )
-        except Exception:
+        except Exception:  # nosec B110
+            # The log is where a failure would be recorded, so there is nowhere
+            # left to record this one. The user channels below still run.
             pass
         # Reporting must not depend on our own panel. When the panel is what
         # failed, telling the user through it silently reports nothing - which
@@ -767,7 +770,10 @@ class MapdexPlugin:
                     "Mapdex",
                     summary + "\n\nQGIS is unaffected. The full details are in the Mapdex log panel.",
                 )
-            except Exception:
+            except Exception:  # nosec B110
+                # The last of three independent channels has failed, and this is
+                # already the handler for a failure. There is nothing further to
+                # try and nothing that may be allowed to escape from here.
                 pass
 
     def _ensure_dock(self):
@@ -865,15 +871,19 @@ class MapdexPlugin:
     def show(self, _checked: bool = False):
         self._ensure_dock()
         if hasattr(self.dock, "setUserVisible"):
+            # Same narrow set as resizeDocks above: a missing or re-signatured
+            # method, or a wrapper whose C++ dock has already gone. `show` is
+            # guarded, so anything else still reaches the error boundary instead
+            # of being swallowed here.
             try:
                 self.dock.setUserVisible(True)
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError):
                 pass
         self.dock.show()
         self.dock.raise_()
         try:
             self.dock.activateWindow()
-        except Exception:
+        except (AttributeError, RuntimeError):
             pass
         # If QGIS restored it as floating over the chrome, re-dock on the right.
         if self.dock.isFloating():
@@ -1135,7 +1145,8 @@ class MapdexPlugin:
                 )
             detail = "".join(bits)
             if exc.status == 401:
-                self.api.token = ""  # nosec B105 - clears the rejected session
+                # Clearing the rejected session, not assigning a password.
+                self.api.token = ""  # nosec B105
                 if self.token_store is not None:
                     self.token_store.clear()
                 detail += "\n\nYour Mapdex session expired. Connect again to continue."
@@ -1356,7 +1367,11 @@ class MapdexPlugin:
             active = {
                 "id": layer.id(),
                 "name": layer.name(),
-                "kind": "raster" if isinstance(layer, QgsRasterLayer) else "vector" if isinstance(layer, QgsVectorLayer) else "other",
+                "kind": (
+                    "raster" if isinstance(layer, QgsRasterLayer)
+                    else "vector" if isinstance(layer, QgsVectorLayer)
+                    else "other"
+                ),
                 "crs": layer.crs().authid() if layer.crs().isValid() else "",
                 "feature_count": layer.featureCount() if isinstance(layer, QgsVectorLayer) else 0,
                 "geometry_type": layer.wkbType() if isinstance(layer, QgsVectorLayer) else "raster",
@@ -1386,7 +1401,9 @@ class MapdexPlugin:
         context = companion_context(self._nivo_snapshot())
         layer = context.get("active_layer") or {}
         label = layer.get("name") or layer.get("id") or "No active QGIS layer"
-        self.nivo_context.setText("{} · {} selected · {}".format(label, context.get("selection_count", 0), context.get("crs", "No CRS")))
+        self.nivo_context.setText("{} · {} selected · {}".format(
+            label, context.get("selection_count", 0), context.get("crs", "No CRS")
+        ))
 
     def _active_qgis_layer(self):
         layer = self.iface.activeLayer()
@@ -1396,26 +1413,30 @@ class MapdexPlugin:
             view = self.iface.layerTreeView()
         except Exception:
             view = None
+        # Four independent routes to "the layer the user means". Each may be
+        # absent or broken on a given QGIS build, so a failure moves to the next
+        # one - but it is recorded, because "Nivo says no layer is active" with
+        # a layer plainly selected is otherwise unanswerable.
         if view is not None:
             try:
                 layer = view.currentLayer()
                 if layer is not None and layer.isValid():
                     return layer
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the current layer from the layer tree", exc)
             try:
                 for candidate in view.selectedLayers():
                     if candidate is not None and candidate.isValid():
                         return candidate
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the selected layers from the layer tree", exc)
             try:
                 node = view.currentNode()
                 layer = node.layer() if node is not None and hasattr(node, "layer") else None
                 if layer is not None and layer.isValid():
                     return layer
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the current layer tree node", exc)
         try:
             project = QgsProject.instance()
             root = project.layerTreeRoot()
@@ -1425,8 +1446,8 @@ class MapdexPlugin:
                 layer = node.layer()
                 if layer is not None and layer.isValid():
                     return layer
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the project tree may raise anything
+            log_debug("scanning the project for a visible layer", exc)
         return None
 
     def _nivo_layer_for_action(self, target):
@@ -1645,7 +1666,9 @@ class MapdexPlugin:
             header_row.setContentsMargins(0, 0, 0, 0)
             header_row.setSpacing(0)
             label = QLabel("You" if sender == "user" else "Nivo")
-            label.setStyleSheet("color:#8F96A8; font-weight:600;" if sender != "user" else "color:#ffffff; font-weight:600;")
+            label.setStyleSheet(
+                "color:#ffffff; font-weight:600;" if sender == "user" else "color:#8F96A8; font-weight:600;"
+            )
             header_row.addWidget(label)
             body = self._plain(QLabel(), text)
             body.setWordWrap(True)
@@ -2446,16 +2469,20 @@ class MapdexPlugin:
                                 output_layer = context.takeResultLayer(val)
                                 if output_layer is not None and output_layer.isValid():
                                     break
-                            except Exception:
-                                pass
+                            except Exception as exc:  # noqa: BLE001 - Processing may raise anything
+                                # The second route below still resolves most
+                                # outputs. Recorded because the visible symptom
+                                # of losing both is "the algorithm ran and
+                                # nothing appeared", with no other trace.
+                                log_debug("taking the Processing result layer for {}".format(key), exc)
                         if isinstance(val, str):
                             try:
                                 from qgis.core import QgsProcessingUtils
                                 output_layer = QgsProcessingUtils.mapLayerFromString(val, context, True)
                                 if output_layer is not None and output_layer.isValid():
                                     break
-                            except Exception:
-                                pass
+                            except Exception as exc:  # noqa: BLE001 - Processing may raise anything
+                                log_debug("resolving the Processing output {}".format(key), exc)
             output_name = ""
             produced = None
             if output_layer is not None and output_layer.isValid():
@@ -2520,7 +2547,8 @@ class MapdexPlugin:
     def disconnect(self, *args):
         self.poll_timer.stop()
         self.progress_timer.stop()
-        self.api.token = ""  # nosec B105 - disconnect clears the session
+        # Disconnecting clears the session, it does not assign a password.
+        self.api.token = ""  # nosec B105
         self.device_code = ""
         self.batch_id = ""
         self.project_id = ""

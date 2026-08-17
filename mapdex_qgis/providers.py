@@ -155,7 +155,12 @@ def _http_post(url: str, headers: Mapping[str, str], payload: Mapping[str, Any],
     request.add_header("Content-Type", "application/json")
     for key, value in headers.items():
         request.add_header(key, value)
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed vendor hosts
+    # The scheme audit this warns about is the `_transport_is_safe` check above:
+    # https anywhere, http only on loopback, and every other scheme - file:,
+    # ftp:, custom handlers - refused before a Request is built. The host is not
+    # fixed, because a user may point the plugin at their own OpenAI-compatible
+    # gateway or a local Ollama; the scheme is what is constrained.
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310  # nosec B310
         return response.read()
 
 

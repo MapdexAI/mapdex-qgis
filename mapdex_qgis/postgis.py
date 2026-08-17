@@ -11,11 +11,13 @@ module turns that spec into parameterised SQL. Three independent layers keep it
 read-only, so a defect in any one of them is not sufficient to write:
 
 1. **Construction.** Only the builders below can emit SQL, and every one of them
-   emits a single ``SELECT``. There is no code path that renders a user string
-   into a statement.
+   emits a single ``SELECT``. Statements are *composed*, never concatenated: a
+   fixed :class:`SQL` template accepts only :class:`Composable` parts, so there
+   is no code path that renders a caller string into a statement.
 2. **Identifier validation.** Schema/table/column names are matched against the
-   catalogue discovered from the live connection and then quoted. An identifier
-   that was not discovered is rejected, so a forged name cannot reach the server.
+   catalogue discovered from the live connection and then quoted by
+   :class:`Identifier`. An identifier that was not discovered is rejected, so a
+   forged name cannot reach the server.
 3. **Execution.** :func:`guard_statement` re-inspects the finished SQL, and the
    executor opens a ``READ ONLY`` transaction with a statement timeout and row
    cap. This is belt-and-braces on purpose: the guard exists to catch a future
@@ -191,6 +193,102 @@ def quote_identifier(name: str) -> str:
     return '"{}"'.format(text)
 
 
+class Composable:
+    """A piece of SQL that knows how to render itself safely.
+
+    This mirrors ``psycopg2.sql`` deliberately, because that is the API a
+    PostgreSQL reviewer already trusts. It is reimplemented here rather than
+    imported for one concrete reason: ``psycopg2.sql.Identifier.as_string``
+    requires a live connection or cursor (it delegates to
+    ``psycopg2.extensions.quote_ident``), and this module is a pure builder. It
+    has no connection, holds no credentials, and must render a statement so
+    that :func:`guard_statement` can inspect the finished text before anything
+    is executed. Composing against a connection would move the guard behind the
+    very boundary it protects.
+
+    The safety property is the same one psycopg2 provides: a caller cannot
+    interpolate its own text into a statement. Only a ``Composable`` may be
+    formatted into :class:`SQL`, and the only ``Composable`` that carries a
+    caller-derived name is :class:`Identifier`, which validates and quotes it.
+    """
+
+    __slots__ = ()
+
+    def as_string(self) -> str:
+        raise NotImplementedError
+
+
+class SQL(Composable):
+    """Fixed SQL written in this module - never a caller-supplied string.
+
+    Every instance in this file is constructed from a literal or from one of
+    the closed :data:`AGGREGATES` / :data:`PREDICATES` fragments.
+    """
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text: str):
+        # Exactly `str`, not a subclass: a subclass can override the behaviour
+        # the rest of this class relies on, and every template here is a literal.
+        if type(text) is not str:
+            raise ReadOnlyViolation("SQL text must be a plain string")
+        self._text = text
+
+    def as_string(self) -> str:
+        return self._text
+
+    def format(self, **parts: Composable) -> "Composed":
+        """Substitute composed parts into this template.
+
+        Passing a bare ``str`` raises: that rejection is the whole mechanism,
+        and it is what makes "a caller cannot reach the statement text" a
+        property of the code rather than a convention.
+        """
+        rendered: dict[str, str] = {}
+        for name, part in parts.items():
+            if not isinstance(part, Composable):
+                raise ReadOnlyViolation("only composed SQL may be formatted into a statement")
+            rendered[name] = part.as_string()
+        return Composed(self._text.format(**rendered))
+
+
+class Identifier(Composable):
+    """One or more identifiers, validated and quoted before they reach SQL.
+
+    Construction validates eagerly, so an identifier that was not discovered in
+    the live catalogue fails where it is named rather than inside a statement.
+    """
+
+    __slots__ = ("_parts",)
+
+    def __init__(self, *parts: str):
+        if not parts:
+            raise ReadOnlyViolation("invalid identifier")
+        self._parts = tuple(quote_identifier(part) for part in parts)
+
+    def as_string(self) -> str:
+        return ".".join(self._parts)
+
+
+class Composed(Composable):
+    """The rendered result of :meth:`SQL.format`, reusable as a nested part."""
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def as_string(self) -> str:
+        return self._text
+
+
+def _where(statement: Composable, clause: Composable | None) -> Composable:
+    """Append a WHERE clause, or return the statement unchanged."""
+    if clause is None:
+        return statement
+    return SQL("{statement} where {clause}").format(statement=statement, clause=clause)
+
+
 class TableCatalog:
     """The discovered shape of one PostGIS table.
 
@@ -216,13 +314,13 @@ class TableCatalog:
         self.connection_id = connection_id
 
     @property
-    def qualified(self) -> str:
-        return "{}.{}".format(quote_identifier(self.schema), quote_identifier(self.table))
+    def qualified(self) -> Identifier:
+        return Identifier(self.schema, self.table)
 
-    def column(self, name: str) -> str:
+    def column(self, name: str) -> Identifier:
         if name not in self.columns:
             raise ReadOnlyViolation("unknown column")
-        return quote_identifier(name)
+        return Identifier(name)
 
     def numeric_columns(self) -> list[str]:
         numeric = ("int", "float", "double", "numeric", "decimal", "real", "serial", "money")
@@ -232,7 +330,7 @@ class TableCatalog:
         textual = ("char", "text", "uuid", "bool", "enum", "name")
         return [name for name, kind in self.columns.items() if any(item in str(kind).lower() for item in textual)]
 
-    def geometry(self) -> str:
+    def geometry(self) -> Identifier:
         if not self.geometry_column:
             raise ReadOnlyViolation("table has no geometry column")
         return self.column(self.geometry_column)
@@ -246,23 +344,27 @@ def _limit(value: Any, default: int, maximum: int) -> int:
     return max(1, min(number, maximum))
 
 
-def _bbox_filter(catalog: TableCatalog, bbox: Sequence[float] | None, srid: int) -> tuple[str, list[Any]]:
+def _bbox_filter(
+    catalog: TableCatalog,
+    bbox: Sequence[float] | None,
+    srid: int,
+) -> tuple[Composable | None, list[Any]]:
     """Build an index-usable bbox predicate, or nothing when no bbox is given."""
     if not bbox or len(bbox) != 4:
-        return "", []
+        return None, []
     values = [float(item) for item in bbox]
     if values[0] > values[2] or values[1] > values[3]:
         raise ReadOnlyViolation("invalid bounding box")
     # && is the bbox operator backed by the GiST index; ST_Intersects on the
     # envelope keeps the semantics exact for non-rectangular geometry.
-    clause = "{geom} && ST_MakeEnvelope(%s, %s, %s, %s, %s)".format(geom=catalog.geometry())
+    clause = SQL("{geom} && ST_MakeEnvelope(%s, %s, %s, %s, %s)").format(geom=catalog.geometry())
     return clause, values + [int(srid or catalog.srid or 4326)]
 
 
 def build_profile(catalog: TableCatalog) -> tuple[str, list[Any]]:
     """Feature count, extent and SRID in one pass - the "profile this" answer."""
     if catalog.geometry_column:
-        sql = (
+        statement = SQL(
             "select count(*) as feature_count, "
             "ST_XMin(ST_Extent({geom}))::float8 as minx, ST_YMin(ST_Extent({geom}))::float8 as miny, "
             "ST_XMax(ST_Extent({geom}))::float8 as maxx, ST_YMax(ST_Extent({geom}))::float8 as maxy, "
@@ -272,8 +374,8 @@ def build_profile(catalog: TableCatalog) -> tuple[str, list[Any]]:
             "from {table}"
         ).format(geom=catalog.geometry(), table=catalog.qualified)
     else:
-        sql = "select count(*) as feature_count from {table}".format(table=catalog.qualified)
-    return guard_statement(sql), []
+        statement = SQL("select count(*) as feature_count from {table}").format(table=catalog.qualified)
+    return guard_statement(statement.as_string()), []
 
 
 def build_numeric_stats(
@@ -284,7 +386,7 @@ def build_numeric_stats(
     """Descriptive statistics computed in the database, not in the client."""
     target = catalog.column(column)
     where, params = _bbox_filter(catalog, bbox, catalog.srid)
-    sql = (
+    statement = SQL(
         "select count(*) as total, count({col}) as usable, "
         "count(*) - count({col}) as nulls, "
         "min({col})::float8 as minimum, max({col})::float8 as maximum, "
@@ -295,9 +397,7 @@ def build_numeric_stats(
         "percentile_cont(0.75) within group (order by {col})::float8 as p75 "
         "from {table}"
     ).format(col=target, table=catalog.qualified)
-    if where:
-        sql += " where " + where
-    return guard_statement(sql), params
+    return guard_statement(_where(statement, where).as_string()), params
 
 
 def build_categorical(
@@ -309,14 +409,14 @@ def build_categorical(
     """Category frequencies, ordered and bounded."""
     target = catalog.column(column)
     where, params = _bbox_filter(catalog, bbox, catalog.srid)
-    sql = "select {col}::text as value, count(*) as feature_count from {table}".format(
+    statement = SQL("select {col}::text as value, count(*) as feature_count from {table}").format(
         col=target, table=catalog.qualified
     )
-    if where:
-        sql += " where " + where
-    sql += " group by 1 order by feature_count desc, value asc limit %s"
+    statement = SQL(
+        "{statement} group by 1 order by feature_count desc, value asc limit %s"
+    ).format(statement=_where(statement, where))
     params = params + [_limit(limit, 25, MAX_GROUPS)]
-    return guard_statement(sql), params
+    return guard_statement(statement.as_string()), params
 
 
 def build_group_aggregate(
@@ -333,20 +433,20 @@ def build_group_aggregate(
         raise ReadOnlyViolation("unsupported statistic")
     group = catalog.column(group_column)
     if statistic == "count":
-        expression = AGGREGATES["count"]
+        expression: Composable = SQL(AGGREGATES["count"])
     else:
         if not value_column:
             raise ReadOnlyViolation("statistic requires a value column")
-        expression = AGGREGATES[statistic].format(column=catalog.column(value_column))
+        expression = SQL(AGGREGATES[statistic]).format(column=catalog.column(value_column))
     where, params = _bbox_filter(catalog, bbox, catalog.srid)
-    sql = (
+    statement = SQL(
         "select {group}::text as group_value, ({expr})::float8 as value, "
         "count(*) as feature_count from {table}"
     ).format(group=group, expr=expression, table=catalog.qualified)
-    if where:
-        sql += " where " + where
-    sql += " group by 1 order by value desc nulls last, group_value asc limit %s"
-    return guard_statement(sql), params + [_limit(limit, 50, MAX_GROUPS)]
+    statement = SQL(
+        "{statement} group by 1 order by value desc nulls last, group_value asc limit %s"
+    ).format(statement=_where(statement, where))
+    return guard_statement(statement.as_string()), params + [_limit(limit, 50, MAX_GROUPS)]
 
 
 def build_top_n(
@@ -361,15 +461,18 @@ def build_top_n(
     target = catalog.column(column)
     identifier = catalog.column(id_column)
     where, params = _bbox_filter(catalog, bbox, catalog.srid)
-    sql = "select {id} as feature_id, {col}::float8 as value from {table}".format(
+    statement = SQL("select {id} as feature_id, {col}::float8 as value from {table}").format(
         id=identifier, col=target, table=catalog.qualified
     )
-    clauses = ["{col} is not null".format(col=target)]
-    if where:
-        clauses.append(where)
-    sql += " where " + " and ".join(clauses)
-    sql += " order by value {} limit %s".format("asc" if ascending else "desc")
-    return guard_statement(sql), params + [_limit(limit, 10, MAX_ROWS)]
+    clause: Composable = SQL("{col} is not null").format(col=target)
+    if where is not None:
+        clause = SQL("{first} and {second}").format(first=clause, second=where)
+    # The direction is one of two fixed fragments, never a caller string.
+    direction = SQL("asc") if ascending else SQL("desc")
+    statement = SQL("{statement} order by value {direction} limit %s").format(
+        statement=_where(statement, clause), direction=direction
+    )
+    return guard_statement(statement.as_string()), params + [_limit(limit, 10, MAX_ROWS)]
 
 
 def build_spatial_relationship_count(
@@ -388,17 +491,17 @@ def build_spatial_relationship_count(
         raise ReadOnlyViolation("unsupported spatial predicate")
     if left.connection_id and right.connection_id and left.connection_id != right.connection_id:
         raise ReadOnlyViolation("cross-connection spatial joins are not supported")
-    sql = (
+    statement = SQL(
         "select count(*) as feature_count from {left_table} as l where exists ("
         "select 1 from {right_table} as r where {fn}(l.{left_geom}, ST_Transform(r.{right_geom}, %s)))"
     ).format(
         left_table=left.qualified,
         right_table=right.qualified,
-        fn=function,
+        fn=SQL(function),
         left_geom=left.geometry(),
         right_geom=right.geometry(),
     )
-    return guard_statement(sql), [int(left.srid or 4326)]
+    return guard_statement(statement.as_string()), [int(left.srid or 4326)]
 
 
 def build_spatial_join_counts(
@@ -414,19 +517,19 @@ def build_spatial_join_counts(
     every geometry into the client.
     """
     group = polygons.column(group_column)
-    sql = (
+    statement = SQL(
         "select {group}::text as group_value, count(r.*) as value, 1 as feature_count "
         "from {poly} as l left join {pts} as r "
         "on ST_Intersects(l.{poly_geom}, ST_Transform(r.{pt_geom}, %s)) "
         "group by 1 order by value desc, group_value asc limit %s"
     ).format(
-        group="l." + group,
+        group=SQL("l.{column}").format(column=group),
         poly=polygons.qualified,
         pts=points.qualified,
         poly_geom=polygons.geometry(),
         pt_geom=points.geometry(),
     )
-    return guard_statement(sql), [int(polygons.srid or 4326), _limit(limit, 50, MAX_GROUPS)]
+    return guard_statement(statement.as_string()), [int(polygons.srid or 4326), _limit(limit, 50, MAX_GROUPS)]
 
 
 def build_nearest(
@@ -445,25 +548,25 @@ def build_nearest(
     """
     identifier = catalog.column(id_column)
     geom = catalog.geometry()
-    sql = (
+    statement = SQL(
         "select {id} as feature_id, "
         "ST_Distance({geom}::geography, ST_SetSRID(ST_MakePoint(%s, %s), %s)::geography)::float8 as distance_m "
         "from {table} where {geom} is not null "
         "order by {geom} <-> ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), %s), ST_SRID({geom})) limit %s"
     ).format(id=identifier, geom=geom, table=catalog.qualified)
     point = [float(x), float(y), int(srid or 4326)]
-    return guard_statement(sql), point + point + [_limit(limit, 10, MAX_ROWS)]
+    return guard_statement(statement.as_string()), point + point + [_limit(limit, 10, MAX_ROWS)]
 
 
 def build_bbox_count(catalog: TableCatalog, bbox: Sequence[float], srid: int = 4326) -> tuple[str, list[Any]]:
     """Count features in the current viewport."""
     where, params = _bbox_filter(catalog, bbox, srid)
-    if not where:
+    if where is None:
         raise ReadOnlyViolation("invalid bounding box")
-    sql = "select count(*) as feature_count from {table} where {where}".format(
+    statement = SQL("select count(*) as feature_count from {table} where {where}").format(
         table=catalog.qualified, where=where
     )
-    return guard_statement(sql), params
+    return guard_statement(statement.as_string()), params
 
 
 def session_setup(timeout_ms: int = DEFAULT_TIMEOUT_MS) -> list[str]:
