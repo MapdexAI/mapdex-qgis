@@ -595,9 +595,16 @@ class MapdexPlugin:
         they came for, none of which they were thinking about: they were
         right-clicking the scan.
 
-        The action prepares the panel and stops. It does NOT start the run.
-        Starting paid work from a context menu would take the moment of consent
-        away from the person paying, and the Run button is that moment.
+        The action starts the work. Clicking a menu item that says
+        "Georeference with Mapdex" on a named layer IS the consent: the panel it
+        used to open only restated what the menu item already said, so the
+        second click bought no information and cost the user a step. Cancel
+        after the fact is the safeguard, not confirm before it, because cancel
+        does not tax the case that goes right.
+
+        It falls back to preparing and stopping when the run genuinely cannot
+        start — no session, no project, something already running — because
+        those need a decision the menu cannot make.
         """
         add = getattr(self.iface, "addCustomActionForLayerType", None)
         if add is None:
@@ -643,10 +650,20 @@ class MapdexPlugin:
             index = self.input_box.findData("active_layer")
             if index >= 0:
                 self.input_box.setCurrentIndex(index)
-        if layer is not None:
+        name = layer.name() if layer is not None else ""
+        # Only start when the Start button itself would have been available.
+        # That check already knows about the session, the busy flag and a run
+        # in flight, so reusing it keeps one answer to "can this go now".
+        can_start = self.run_button is not None and self.run_button.isEnabled()
+        if not can_start:
             self._set_status(
-                "{} is ready to send. Press Start when you want to.".format(layer.name())
+                "{} is ready to send. Press Start when you want to.".format(name)
+                if name else "Ready to send. Press Start when you want to."
             )
+            return
+        if name:
+            self._set_status("Sending {}. Press Cancel to stop it.".format(name))
+        self.run_input()
 
     @guarded
     def _on_current_layer_changed(self, _layer=None):
