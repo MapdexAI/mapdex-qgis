@@ -1249,6 +1249,106 @@ class QGISRuntime:
             ))
         return QgsGraduatedSymbolRenderer(str(spec.get("field") or ""), ranges)
 
+    def style_single(
+        self,
+        layer_id: str,
+        color: str = "",
+        stroke_width: Any = None,
+        size: Any = None,
+        opacity: Any = None,
+    ) -> dict[str, Any]:
+        """One symbol for the whole layer: the "make these stand out" request.
+
+        Registered and unbound, so the most ordinary styling ask in GIS - a flat
+        colour on one layer - fell through to a refusal while categorised and
+        graduated both worked. Every property is optional and an omitted one is
+        left alone rather than reset to a default, because "make them red"
+        should not also change the outline width the user set by hand.
+        """
+        from qgis.core import QgsSingleSymbolRenderer  # noqa: PLC0415
+
+        layer = self.vector(layer_id)
+        self._push_undo({"kind": "renderer", "layer_id": layer.id(), "renderer": layer.renderer().clone()})
+        symbol = self._symbol_for(layer, str(color) if color else "#5B5BD6")
+        applied = {"color": color or "#5B5BD6"}
+        if stroke_width is not None and hasattr(symbol, "symbolLayer"):
+            try:
+                symbol.symbolLayer(0).setStrokeWidth(float(stroke_width))
+                applied["stroke_width"] = float(stroke_width)
+            except (AttributeError, TypeError, ValueError):
+                # A symbol layer without a stroke (a fill, a marker) is not an
+                # error: the rest of the request still applies.
+                log_debug("setting a stroke width on a symbol that has none", None)
+        if size is not None and hasattr(symbol, "setSize"):
+            try:
+                symbol.setSize(float(size))
+                applied["size"] = float(size)
+            except (AttributeError, TypeError, ValueError):
+                log_debug("setting a size on a symbol that has none", None)
+        if opacity is not None and hasattr(symbol, "setOpacity"):
+            symbol.setOpacity(max(0.0, min(100.0, float(opacity))) / 100.0)
+            applied["opacity"] = float(opacity)
+        layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+        layer.triggerRepaint()
+        self.iface.layerTreeView().refreshLayerSymbology(layer.id())
+        return {"kind": "style_applied", "style": "single", "layer": layer.name(), "applied": applied}
+
+    def style_raster(
+        self,
+        layer_id: str,
+        band: Any = None,
+        ramp: str = "",
+        opacity: Any = None,
+    ) -> dict[str, Any]:
+        """Band, stretch and opacity on a raster.
+
+        Deliberately narrow. Rendering a raster well is a large surface and this
+        covers the three things a person asks for out loud: show me a different
+        band, colour it, and let me see through it.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsColorRampShader,
+            QgsRasterShader,
+            QgsSingleBandPseudoColorRenderer,
+        )
+
+        layer = self.layer(layer_id)
+        _require(hasattr(layer, "dataProvider") and hasattr(layer, "renderer"),
+                 "that layer is not a raster")
+        provider = layer.dataProvider()
+        count = provider.bandCount() if hasattr(provider, "bandCount") else 1
+        selected = int(band or 1)
+        _require(1 <= selected <= count, "that raster has {} band(s)".format(count))
+        self._push_undo({"kind": "renderer", "layer_id": layer.id(), "renderer": layer.renderer().clone()})
+        applied: dict[str, Any] = {"band": selected}
+        if ramp:
+            statistics = provider.bandStatistics(selected)
+            shader = QgsRasterShader()
+            colors = presentation.ramp_colors(ramp, 5)
+            ramp_shader = QgsColorRampShader(statistics.minimumValue, statistics.maximumValue)
+            ramp_shader.setColorRampItemList([
+                self._ramp_item(statistics, index, len(colors), colors[index])
+                for index in range(len(colors))
+            ])
+            shader.setRasterShaderFunction(ramp_shader)
+            layer.setRenderer(QgsSingleBandPseudoColorRenderer(provider, selected, shader))
+            applied["ramp"] = ramp
+            applied["range"] = [statistics.minimumValue, statistics.maximumValue]
+        if opacity is not None:
+            layer.setOpacity(max(0.0, min(100.0, float(opacity))) / 100.0)
+            applied["opacity"] = float(opacity)
+        layer.triggerRepaint()
+        return {"kind": "style_applied", "style": "raster", "layer": layer.name(), "applied": applied}
+
+    @staticmethod
+    def _ramp_item(statistics: Any, index: int, count: int, color: str) -> Any:
+        from qgis.core import QgsColorRampShader  # noqa: PLC0415
+        from qgis.PyQt.QtGui import QColor  # noqa: PLC0415
+
+        low, high = statistics.minimumValue, statistics.maximumValue
+        value = low + (high - low) * (index / float(max(count - 1, 1)))
+        return QgsColorRampShader.ColorRampItem(value, QColor(color), "{:g}".format(value))
+
     def set_labels(self, layer_id: str, field: str, size: float = 9.0, enabled: bool = True) -> dict[str, Any]:
         from qgis.core import QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling  # noqa: PLC0415
 
@@ -1814,6 +1914,12 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "style.labels@1": lambda p: runtime.set_labels(
             p["layer_id"], p["field"], p.get("size", 9), p.get("enabled", True),
         ),
+        "style.single@1": lambda p: runtime.style_single(
+            p["layer_id"], p.get("color", ""), p.get("stroke_width"), p.get("size"), p.get("opacity"),
+        ),
+        "style.raster@1": lambda p: runtime.style_raster(
+            p["layer_id"], p.get("band"), p.get("ramp", ""), p.get("opacity"),
+        ),
         "style.undo@1": lambda p: runtime.undo(),
     }
 
@@ -1832,15 +1938,34 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
     return execute
 
 
-def bound_capability_ids() -> frozenset:
-    """The capability ids this build implements.
+# Capabilities the PLUGIN binds rather than the runtime, because they need the
+# plugin's own async task runner, its viewport resolution or its layer loading.
+# Declared here so the advertised set is one list with two consumers: the plugin
+# builds its handler table from it, and `bound_capability_ids` includes it. Kept
+# apart from the runtime table and not implemented here, because a runtime that
+# reached back into the plugin would be the coupling this separation avoids.
+PLUGIN_BOUND_CAPABILITIES = frozenset({
+    "map.basemap@1",
+    "map.zoom_extent@1",
+    "processing.run@1",
+    "processing.discover@1",
+})
 
-    Built with no runtime because only the handler *keys* are wanted; the
-    lambdas close over the argument and are never called here. That keeps the
-    advertised set derivable without a live QGIS, which is what lets the parity
-    test run in CI.
+
+def bound_capability_ids() -> frozenset:
+    """Every capability id this build implements, from either half.
+
+    The runtime table is built with no runtime because only the handler *keys*
+    are wanted; the lambdas close over the argument and are never called here.
+    That keeps the advertised set derivable without a live QGIS, which is what
+    lets the parity test run in CI.
+
+    The plugin-bound ids are unioned in rather than listed separately, because
+    the one question every caller is asking is "can this build perform it", and
+    answering that with two sets is how `processing.run@1` ended up refused
+    while `qgis:processing_operation@1`, the same operation, ran.
     """
-    return build_executor(None).capabilities
+    return build_executor(None).capabilities | PLUGIN_BOUND_CAPABILITIES
 
 
 def _active_layer_id(runtime: QGISRuntime) -> str:

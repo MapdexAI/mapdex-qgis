@@ -62,7 +62,12 @@ from .credentials import ProviderCredentialStore, describe_privacy, public_setti
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
 from .capabilities import CapabilityError, get as get_capability, validate_request
-from .qgis_runtime import QGISRuntime, RuntimeUnavailable, build_executor
+from .qgis_runtime import (
+    PLUGIN_BOUND_CAPABILITIES,
+    QGISRuntime,
+    RuntimeUnavailable,
+    build_executor,
+)
 from .features import (
     can_place,
     describe_placement,
@@ -91,6 +96,7 @@ from .nivo import (
 )
 from .panel import build_companion_panel, build_thread_history_dialog
 from .processing import (
+    PROCESSING_OPERATION_CATALOG,
     build_algorithm_parameters,
     describe_empty_input,
     describe_processing_outcome,
@@ -2120,9 +2126,63 @@ class MapdexPlugin:
         own viewport resolution, so they are chained onto the runtime table
         rather than duplicated inside it.
         """
-        return {
+        handlers = {
             "map.basemap@1": self._add_osm_basemap,
             "map.zoom_extent@1": self._apply_server_extent,
+            # Processing needs this plugin's async task runner and its output
+            # loading, so it cannot live in the runtime. It was reachable only
+            # through the legacy `qgis:processing_operation@1` id, which left
+            # the canonical capability refusing an operation its own legacy
+            # spelling performed.
+            "processing.run@1": self._run_processing_capability,
+            "processing.discover@1": self._discover_processing,
+        }
+        # The declaration and the table must not drift: an id advertised here
+        # and missing from the table is the "Nivo prepared an action" and a
+        # canvas that never moves failure this whole surface exists to avoid.
+        assert set(handlers) == set(PLUGIN_BOUND_CAPABILITIES), (
+            "the plugin-bound declaration and its handler table disagree"
+        )
+        return handlers
+
+    def _run_processing_capability(self, params):
+        """Start a validated Processing operation.
+
+        Confirmation already happened: the registry marks this consequential and
+        `_run_capability` asks before it calls anything here. Asking twice for
+        one action buys no information and costs the user a step.
+        """
+        operation = str(params.get("operation") or "")
+        action = {
+            "target": params.get("layer_id") or "",
+            "params": dict(params),
+            "summary": "Run the {}".format(operation_label(operation)),
+        }
+        self._run_processing_operation(action)
+        # Deliberately not a result. The algorithm runs as a QGIS task and
+        # reports when it finishes; claiming an outcome here would describe work
+        # that has not happened yet.
+        return {"kind": "processing_started", "operation": operation}
+
+    def _discover_processing(self, params):
+        """Which of the allowlisted operations this QGIS can actually run.
+
+        Answers from the live registry rather than from the catalog, because an
+        operation whose algorithm is not installed is not available however
+        confidently the allowlist names it.
+        """
+        available = []
+        for operation in PROCESSING_OPERATION_CATALOG:
+            _identifier, algorithm = resolve_processing_algorithm(
+                QgsApplication.processingRegistry(), operation
+            )
+            if algorithm is not None:
+                available.append({"operation": operation, "label": operation_label(operation)})
+        return {
+            "kind": "processing_catalog",
+            "objective": str(params.get("objective") or ""),
+            "available": available,
+            "unavailable": len(PROCESSING_OPERATION_CATALOG) - len(available),
         }
 
     def _add_osm_basemap(self, params):

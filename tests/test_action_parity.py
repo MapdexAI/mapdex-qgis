@@ -72,9 +72,11 @@ def test_a_translated_legacy_id_has_a_bound_executor():
     # A registered capability with no executor raises "not available in this
     # QGIS build yet" - correct, but for a legacy action it would be a
     # regression, because the old if/elif chain could perform it.
-    plugin_bound = frozenset({"map.basemap@1", "map.zoom_extent@1"})
+    # No second list here on purpose. `bound_capability_ids()` now unions the
+    # runtime table with PLUGIN_BOUND_CAPABILITIES, so a plugin-bound id kept
+    # separately in this test would be a third place to forget.
     for legacy, canonical in LEGACY_CAPABILITY_IDS.items():
-        assert canonical in (bound_capability_ids() | plugin_bound), (
+        assert canonical in bound_capability_ids(), (
             "{} translates to {}, which nothing executes".format(legacy, canonical)
         )
 
