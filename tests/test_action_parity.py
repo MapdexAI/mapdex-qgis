@@ -8,13 +8,14 @@ assistant looked broken rather than incomplete.
 These tests read the dispatcher source and fail when the advertised set and the
 implemented set drift apart, in either direction.
 """
+import ast
 import pathlib
-import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from mapdex_qgis.capabilities import get as get_capability  # noqa: E402
 from mapdex_qgis.nivo import (  # noqa: E402
     ALLOWED_ACTIONS,
     IMPLEMENTED_ACTIONS,
@@ -24,17 +25,73 @@ from mapdex_qgis.nivo import (  # noqa: E402
 from mapdex_qgis.qgis_runtime import bound_capability_ids  # noqa: E402
 
 PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+PLUGIN_TREE = ast.parse(PLUGIN)
 
 # Handled through the confirmation flow (_confirm_nivo_action ->
-# _run_processing_operation) rather than the direct dispatcher, so it has no
-# `tool == "..."` branch to find.
+# _run_processing_operation) rather than the direct dispatcher, so it appears in
+# neither dispatch table.
 CONFIRMATION_PATH = frozenset({"qgis:processing_operation@1"})
 
 
+def _plugin_table(name: str) -> dict:
+    """Read a module-level dict literal out of plugin.py.
+
+    The dispatcher used to be an if/elif chain, so this test read its
+    `tool == "..."` comparisons. It is now two tables - one translating the
+    legacy vocabulary to registered capabilities, one naming the handlers for
+    the legacy ids no capability covers - so the same question is asked of them.
+    """
+    for node in PLUGIN_TREE.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("plugin.py has no {} table".format(name))
+
+
+LEGACY_CAPABILITY_IDS = _plugin_table("LEGACY_CAPABILITY_IDS")
+PLUGIN_NATIVE_ACTIONS = _plugin_table("PLUGIN_NATIVE_ACTIONS")
+
+
 def _dispatcher_branches() -> set[str]:
-    start = PLUGIN.index("def _apply_nivo_action")
-    end = PLUGIN.index("def _zoom_to_server_extent")
-    return set(re.findall(r"tool == \"([^\"]+)\"", PLUGIN[start:end]))
+    """Every legacy id the dispatcher can actually route somewhere."""
+    return set(LEGACY_CAPABILITY_IDS) | set(PLUGIN_NATIVE_ACTIONS)
+
+
+def test_a_translated_legacy_id_names_a_registered_capability():
+    # Translating to an id the registry does not hold would fail validation at
+    # the moment the user asked, which is the failure mode this whole table
+    # exists to remove.
+    for legacy, canonical in LEGACY_CAPABILITY_IDS.items():
+        assert get_capability(canonical) is not None, (
+            "{} translates to {}, which is not registered".format(legacy, canonical)
+        )
+
+
+def test_a_translated_legacy_id_has_a_bound_executor():
+    # A registered capability with no executor raises "not available in this
+    # QGIS build yet" - correct, but for a legacy action it would be a
+    # regression, because the old if/elif chain could perform it.
+    plugin_bound = frozenset({"map.basemap@1", "map.zoom_extent@1"})
+    for legacy, canonical in LEGACY_CAPABILITY_IDS.items():
+        assert canonical in (bound_capability_ids() | plugin_bound), (
+            "{} translates to {}, which nothing executes".format(legacy, canonical)
+        )
+
+
+def test_the_plugin_native_handlers_exist():
+    methods = {
+        node.name
+        for node in ast.walk(PLUGIN_TREE)
+        if isinstance(node, ast.FunctionDef)
+    }
+    for tool, handler in PLUGIN_NATIVE_ACTIONS.items():
+        assert handler in methods, "{} names a missing handler {}".format(tool, handler)
+
+
+def test_a_legacy_id_is_never_in_both_tables():
+    overlap = sorted(set(LEGACY_CAPABILITY_IDS) & set(PLUGIN_NATIVE_ACTIONS))
+    assert not overlap, "two routes for the same id: {}".format(overlap)
 
 
 def test_every_advertised_legacy_action_has_a_dispatcher_branch():

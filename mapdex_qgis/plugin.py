@@ -59,8 +59,8 @@ from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
-from .capabilities import CapabilityError, validate_request
-from .qgis_runtime import QGISRuntime, build_executor
+from .capabilities import CapabilityError, get as get_capability, validate_request
+from .qgis_runtime import QGISRuntime, RuntimeUnavailable, build_executor
 from .features import (
     can_place,
     describe_placement,
@@ -112,6 +112,44 @@ WORKFLOWS = (
     ("Full pipeline", BatchKind.FULL_PIPELINE),
 )
 
+# The legacy `qgis:*` vocabulary, translated to the capability each id has
+# always meant. There is one dispatch path: a canonical `domain.name@1` from the
+# server and a legacy id from an older server both resolve to the same
+# registered capability, are validated by the registry, and run through the same
+# executor table. Before this, the legacy half was an eighteen-branch if/elif
+# chain of hand-written QGIS calls that duplicated - and in places contradicted -
+# the runtime it sat next to: the visibility branch would raise on a layer that
+# is not in the layer tree, and nothing the chain did was recorded on the undo
+# stack, so `style.undo@1` could not reverse it.
+#
+# This table only ever shrinks. A new capability is added to the registry and
+# the executor table, never here.
+LEGACY_CAPABILITY_IDS = {
+    "qgis:zoom_to_layer@1": "map.zoom_layer@1",
+    "qgis:zoom_to_selection@1": "map.zoom_selection@1",
+    "qgis:zoom_to_extent@1": "map.zoom_extent@1",
+    "qgis:refresh_canvas@1": "map.refresh@1",
+    "qgis:previous_extent@1": "map.previous_extent@1",
+    "qgis:add_xyz_basemap@1": "map.basemap@1",
+    "qgis:inspect_layer@1": "inspect.layer@1",
+    "qgis:open_attribute_table@1": "layer.attribute_table@1",
+    "qgis:set_layer_visibility@1": "layer.visibility@1",
+    "qgis:set_layer_opacity@1": "layer.opacity@1",
+    "qgis:select_all@1": "selection.all@1",
+    "qgis:clear_selection@1": "selection.clear@1",
+    "qgis:invert_selection@1": "selection.invert@1",
+}
+
+# The legacy ids with no registered capability behind them. Each names a method
+# on the plugin rather than a branch in a conditional, so the dispatcher stays
+# one lookup whether or not the registry knows the id.
+PLUGIN_NATIVE_ACTIONS = {
+    "qgis:add_features@1": "_run_add_features",
+    "qgis:create_layer@1": "_run_create_layer",
+    "qgis:open_processing@1": "_run_open_processing",
+    "qgis:next_extent@1": "_run_next_extent",
+}
+
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://mapdex.ai"
 # While a task waits for browser review the panel keeps a slow watch, so an
@@ -138,6 +176,258 @@ def plugin_icon() -> QIcon:
     """The Mapdex mark, drawn from the packaged icon next to this module."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
     return QIcon(path) if os.path.isfile(path) else QIcon()
+
+
+# --------------------------------------------------------------------------
+# Reporting a capability result
+# --------------------------------------------------------------------------
+#
+# The analytics kernel computes a mean, a frequency table, an outlier rule and
+# its bounds - and the transcript used to print the server's one-line summary
+# followed by the result's `kind` in brackets. The numbers were measured and
+# then discarded, which is what made an assistant that can profile a cadastral
+# layer read as one that does nothing useful.
+#
+# These functions state what was measured and nothing else. Every value comes
+# out of the result object; a field the result does not carry is not mentioned
+# rather than defaulted, because a fabricated zero in a statistics line is worse
+# than a shorter line.
+
+SIMPLE_RESULT_PHRASES = {
+    "zoomed": "Zoomed to the layer.",
+    "zoomed_to_selection": "Zoomed to the selection.",
+    "zoomed_to_extent": "Moved the map to that area.",
+    "refreshed": "Redrew the map.",
+    "previous_extent": "Went back to the previous view.",
+    "table_opened": "Opened the attribute table.",
+    "layer_activated": "Made that the active layer.",
+    "selected_all": "Selected every feature in the layer.",
+    "selection_cleared": "Cleared the selection.",
+    "selection_inverted": "Inverted the selection.",
+    "filter_cleared": "Removed the filter.",
+    "no_map_change": "Nothing on the map needed to change.",
+    "nothing_to_undo": "There is nothing to undo.",
+    "reorder_unchanged": "That layer is already in that position.",
+}
+
+
+def _pretty_number(value):
+    """A readable number, or the value unchanged when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return str(value)
+    magnitude = abs(number)
+    if magnitude and (magnitude < 0.001 or magnitude >= 1e12):
+        return "{:.4g}".format(number)
+    if number.is_integer():
+        return "{:,}".format(int(number))
+    return "{:,.4f}".format(number).rstrip("0").rstrip(".")
+
+
+def _joined(parts):
+    return " · ".join(part for part in parts if part)
+
+
+def _describe_numeric(result):
+    if not result.get("usable"):
+        return "no usable numbers in that field ({} empty)".format(_pretty_number(result.get("nulls") or 0))
+    parts = [
+        "{} values".format(_pretty_number(result.get("usable"))),
+        "mean {}".format(_pretty_number(result.get("mean"))),
+        "median {}".format(_pretty_number(result.get("median"))),
+        "min {}".format(_pretty_number(result.get("min"))),
+        "max {}".format(_pretty_number(result.get("max"))),
+    ]
+    if result.get("nulls"):
+        parts.append("{} empty".format(_pretty_number(result["nulls"])))
+    if result.get("scope") and result["scope"] != "all":
+        parts.append("scope: {}".format(result["scope"]))
+    if result.get("truncated"):
+        parts.append("the read stopped at the row limit, so this describes part of the layer")
+    return _joined(parts)
+
+
+def _describe_categorical(result):
+    categories = result.get("categories") or []
+    if not categories:
+        return "no values to count in that field"
+    head = ", ".join(
+        "{} ({})".format(entry.get("value"), _pretty_number(entry.get("count")))
+        for entry in categories[:5]
+    )
+    parts = ["{} distinct values in {}".format(
+        _pretty_number(result.get("distinct")), _pretty_number(result.get("usable"))), head]
+    if result.get("truncated"):
+        parts.append("more categories not shown")
+    if result.get("nulls"):
+        parts.append("{} empty".format(_pretty_number(result["nulls"])))
+    return _joined(parts)
+
+
+def _describe_histogram(result):
+    bins = result.get("bins") or []
+    if not bins:
+        return "no numeric values to bin"
+    return "{} bins from {} to {}".format(
+        len(bins), _pretty_number(bins[0].get("min")), _pretty_number(bins[-1].get("max")))
+
+
+def _describe_top_n(result):
+    rows = result.get("rows") or []
+    parts = ["{} of {} by {}".format(
+        _pretty_number(result.get("matched")), _pretty_number(result.get("considered")), result.get("field"))]
+    if rows:
+        parts.append("top values " + ", ".join(_pretty_number(row.get("value")) for row in rows[:5]))
+    return _joined(parts)
+
+
+def _describe_outliers(result):
+    if not result.get("matched"):
+        if result.get("reason") == "not_enough_values":
+            return "too few values to judge an outlier"
+        return "no outliers under {}".format(result.get("rule") or result.get("method"))
+    return _joined([
+        "{} of {} flagged".format(
+            _pretty_number(result.get("matched")), _pretty_number(result.get("considered"))),
+        "rule: {}".format(result.get("rule") or result.get("method")),
+        "outside {} to {}".format(
+            _pretty_number(result.get("lower_bound")), _pretty_number(result.get("upper_bound"))),
+    ])
+
+
+def _describe_group(result):
+    groups = result.get("groups") or []
+    if not groups:
+        return "nothing to group"
+    head = ", ".join(
+        "{} {}".format(entry.get("group"), _pretty_number(entry.get("value"))) for entry in groups[:5])
+    label = result.get("statistic") or "count"
+    if result.get("value_field"):
+        label = "{} of {}".format(label, result["value_field"])
+    parts = ["{} by {}".format(label, result.get("group_field")),
+             "{} groups".format(_pretty_number(result.get("group_count"))), head]
+    if result.get("skipped_null_values"):
+        parts.append("{} rows had no value".format(_pretty_number(result["skipped_null_values"])))
+    return _joined(parts)
+
+
+def _describe_comparison(result):
+    left = result.get("left") or {}
+    right = result.get("right") or {}
+    delta = result.get("delta") or {}
+    parts = ["mean {} vs {}".format(_pretty_number(left.get("mean")), _pretty_number(right.get("mean")))]
+    if isinstance(delta.get("mean_percent"), (int, float)):
+        parts.append("{}% difference".format(_pretty_number(delta["mean_percent"])))
+    parts.append("{} vs {} values".format(
+        _pretty_number(left.get("usable")), _pretty_number(right.get("usable"))))
+    return _joined(parts)
+
+
+def _describe_breaks(result):
+    return "{} {} classes from {} to {}".format(
+        _pretty_number(result.get("classes")), result.get("method"),
+        _pretty_number(result.get("min")), _pretty_number(result.get("max")))
+
+
+def _describe_layer_profile(result):
+    parts = [str(result.get("name") or ""), str(result.get("type") or "")]
+    if result.get("type") == "vector":
+        parts.append("{} features".format(_pretty_number(result.get("feature_count"))))
+        parts.append("{} fields".format(len(result.get("fields") or [])))
+        if result.get("selected"):
+            parts.append("{} selected".format(_pretty_number(result["selected"])))
+    else:
+        parts.append("{}x{} px".format(_pretty_number(result.get("width")), _pretty_number(result.get("height"))))
+        parts.append("{} bands".format(_pretty_number(result.get("bands"))))
+        if result.get("georeferenced") is False:
+            parts.append("not georeferenced")
+    parts.append(result.get("crs") or "no CRS")
+    return _joined(parts)
+
+
+def _describe_field_profile(result):
+    fields = result.get("fields") or []
+    numeric = [field["name"] for field in fields if field.get("numeric")]
+    parts = ["{} fields over {} features".format(len(fields), _pretty_number(result.get("features")))]
+    if numeric:
+        parts.append("numeric: " + ", ".join(numeric[:8]))
+    return _joined(parts)
+
+
+RESULT_DESCRIBERS = {
+    "numeric": _describe_numeric,
+    "categorical": _describe_categorical,
+    "histogram": _describe_histogram,
+    "top_n": _describe_top_n,
+    "outliers": _describe_outliers,
+    "group_aggregate": _describe_group,
+    "comparison": _describe_comparison,
+    "breaks": _describe_breaks,
+    "layer_profile": _describe_layer_profile,
+    "field_profile": _describe_field_profile,
+    "project_profile": lambda result: "{} layers in the project".format(len(result.get("layers") or [])),
+    "selection_applied": lambda result: "selected {} of {} features".format(
+        _pretty_number(result.get("selected")), _pretty_number(result.get("requested"))),
+    "visibility_applied": lambda result: "layer {}".format("shown" if result.get("visible") else "hidden"),
+    "opacity_applied": lambda result: "opacity {}%".format(_pretty_number(result.get("opacity"))),
+    "style_applied": lambda result: "{} style with {} classes".format(
+        result.get("style"), _pretty_number(result.get("classes"))),
+    "labels_applied": lambda result: "labelled by {}".format(result.get("field")),
+    "filter_applied": lambda result: "{} matched {} features".format(
+        result.get("expression"), _pretty_number(result.get("matched"))),
+    "measurement": lambda result: "{} m ({})".format(
+        _pretty_number(result.get("metres")), result.get("method") or "measured"),
+    "export": lambda result: "wrote {} features to {}".format(
+        _pretty_number(result.get("features")), result.get("path")),
+    "field_calculated": lambda result: "added '{}' over {} rows, {} empty".format(
+        result.get("field"), _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
+    "field_preview": lambda result: "preview only: {} rows, {} empty".format(
+        _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
+    "reorder_applied": lambda result: "moved to {}".format(result.get("position")),
+    "basemap_added": lambda result: "added {}".format(result.get("name")),
+    "undone": lambda result: "undid the last {} change".format(result.get("change")),
+    "undo_failed": lambda result: "could not undo that: {}".format(result.get("reason")),
+}
+
+
+def describe_capability_result(summary, result):
+    """One line for the transcript, built only from what the result carries."""
+    headline = str(summary or "").strip()
+    if not isinstance(result, dict):
+        return headline or "Done."
+    # An analysis that was also drawn on the map arrives wrapped; report the
+    # measurement, which is the part the user asked about.
+    if "analysis" in result and isinstance(result["analysis"], dict):
+        detail = describe_capability_result("", result["analysis"])
+        applied = result.get("map") if isinstance(result.get("map"), dict) else {}
+        if applied.get("kind") == "style_applied":
+            detail = _joined([detail, "shown on the map"])
+        elif applied.get("kind") == "selection_applied":
+            detail = _joined([detail, "selected on the map"])
+        return _joined([headline, detail]) if headline else detail
+    if "layer" in result and "fields" in result and isinstance(result["layer"], dict):
+        detail = _joined([
+            describe_capability_result("", result["layer"]),
+            describe_capability_result("", result["fields"]),
+        ])
+        return _joined([headline, detail]) if headline else detail
+    kind = str(result.get("kind") or "")
+    phrase = SIMPLE_RESULT_PHRASES.get(kind)
+    if phrase:
+        return phrase
+    describer = RESULT_DESCRIBERS.get(kind)
+    if describer is None:
+        # An unrecognised kind must not be dressed up as a measurement.
+        return headline or (kind.replace("_", " ") if kind else "Done.")
+    try:
+        detail = describer(result)
+    except Exception:  # noqa: BLE001 - a transcript line must never break a turn
+        detail = ""
+    if not detail:
+        return headline or kind.replace("_", " ")
+    return "{}: {}".format(headline, detail) if headline else detail
 
 
 class _WorkTask(QgsTask):
@@ -1163,7 +1453,18 @@ class MapdexPlugin:
 
     @guarded
     def _apply_nivo_action(self, action):
-        """Apply only the fixed QGIS presentation action allowlist."""
+        """Dispatch one compose action through the capability registry.
+
+        There is a single path. A canonical `domain.name@1` id and the legacy
+        `qgis:*` id that means the same thing both resolve to one registered
+        capability, are validated by the registry, and are executed by the same
+        executor table - so an action behaves identically however the server
+        chose to spell it, and a consequential one is gated by the registry's own
+        risk metadata rather than by whichever branch happened to handle it.
+
+        Only the four legacy ids with no registered capability keep a
+        plugin-native handler, and those are a table lookup too.
+        """
         action_id = action.get("id")
         if not action_id or action_id in self._executed_nivo_actions:
             self._set_status("Nivo ignored a duplicate or malformed action.")
@@ -1176,154 +1477,196 @@ class MapdexPlugin:
         if target and (layer is None or not layer.isValid()):
             self._set_status("Nivo did not run the action because its target layer is no longer available.")
             return
-        canvas = self.iface.mapCanvas()
 
-        # A canonical capability id runs through the registry and the executor
-        # table. That is the same path the bounded agent loop uses, so analytics,
-        # styling, PostGIS and spatial relations behave identically however the
-        # turn was routed. The legacy `qgis:*` branches below remain for servers
-        # and installs that still speak the older vocabulary.
-        if "." in tool.split("@")[0] and self._run_capability(tool, action, target):
-            self._nivo_state = transition(self._nivo_state, "done")
+        try:
+            resolved = self._capability_request(tool, action, layer)
+        except CapabilityError as error:
+            self._set_status("Nivo could not run that: {}".format(error))
             return
-        if tool == "qgis:zoom_to_layer@1" and layer is not None:
-            self._zoom_to_layers([layer])
-            canvas.refresh()
-        elif tool == "qgis:zoom_to_selection@1" and isinstance(layer, QgsVectorLayer) and layer.selectedFeatureCount():
-            extent = layer.boundingBoxOfSelected()
-            source_crs = layer.crs()
-            target_crs = canvas.mapSettings().destinationCrs()
-            if source_crs.isValid() and target_crs.isValid() and source_crs != target_crs:
-                try:
-                    extent = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance()).transformBoundingBox(extent)
-                except QgsCsException:
-                    return
-            canvas.setExtent(extent); canvas.refresh()
-        elif tool == "qgis:add_features@1":
-            if not self._add_features(action.get("params") or {}, action.get("id") or ""):
-                return
-        elif tool == "qgis:create_layer@1":
-            if not self._create_scratch_layer(action.get("params") or {}):
-                return
-        elif tool == "qgis:zoom_to_extent@1":
-            if not self._zoom_to_server_extent(action.get("params") or {}):
-                return
-        elif tool == "qgis:open_attribute_table@1" and layer is not None:
-            self.iface.showAttributeTable(layer)
-        elif tool == "qgis:inspect_layer@1" and layer is not None:
-            kind = "vector" if isinstance(layer, QgsVectorLayer) else "raster"
-            self._nivo_turns.append(("assistant", "{} · {} · {}".format(layer.name(), kind, layer.crs().authid())))
-            self._render_nivo_turns()
-        elif tool == "qgis:set_layer_visibility@1" and layer is not None:
-            visible = action["params"].get("visible")
-            if not isinstance(visible, bool):
-                self._set_status("Nivo requires a validated visibility value.")
-                return
-            QgsProject.instance().layerTreeRoot().findLayer(layer.id()).setItemVisibilityChecked(visible)
-            canvas.refresh()
-        elif tool == "qgis:set_layer_opacity@1" and layer is not None:
-            try:
-                opacity = float(action["params"].get("opacity"))
-            except (TypeError, ValueError):
-                self._set_status("Nivo requires a valid opacity percentage.")
-                return
-            if opacity < 0 or opacity > 100:
-                self._set_status("Nivo rejected an out-of-range opacity.")
-                return
-            layer.setOpacity(opacity / 100.0)
-            canvas.refresh()
-        elif tool == "qgis:add_xyz_basemap@1":
-            if action["params"].get("provider") != "osm":
-                self._set_status("Nivo rejected an unsupported XYZ basemap provider.")
-                return
-            uri = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmin=0&zmax=19"
-            basemap = QgsRasterLayer(uri, "OpenStreetMap", "wms")
-            if not basemap.isValid():
-                self._set_status("QGIS could not create the OpenStreetMap XYZ layer.")
-                self._nivo_state = transition(self._nivo_state, "error")
-                return
-            QgsProject.instance().addMapLayer(basemap)
-            canvas.refresh()
-            self._nivo_turns.append(("assistant", "Added OpenStreetMap XYZ basemap."))
-            self._render_nivo_turns()
-        elif tool == "qgis:select_all@1" and isinstance(layer, QgsVectorLayer):
-            layer.selectAll()
-            canvas.refresh()
-        elif tool == "qgis:clear_selection@1" and isinstance(layer, QgsVectorLayer):
-            layer.removeSelection()
-            canvas.refresh()
-        elif tool == "qgis:invert_selection@1" and isinstance(layer, QgsVectorLayer):
-            layer.invertSelection()
-            canvas.refresh()
-        elif tool == "qgis:refresh_canvas@1":
-            canvas.refresh()
-        elif tool == "qgis:previous_extent@1":
-            canvas.zoomToPreviousExtent()
-        elif tool == "qgis:next_extent@1":
-            canvas.zoomToNextExtent()
-        elif tool == "qgis:open_processing@1":
-            self.iface.showProcessingAlgorithmDialog("", {})
-        else:
-            # Filter/style/visibility/review/result commands require an explicit
-            # confirmed plan; never turn free-form model params into QGIS calls.
-            self._set_status("Nivo prepared a confirmation-required action: {}".format(action["summary"] or tool))
+        if resolved is not None:
+            capability_id, params = resolved
+            if self._run_capability(capability_id, params, action.get("summary") or tool):
+                self._nivo_state = transition(self._nivo_state, "done")
+            return
+
+        handler = PLUGIN_NATIVE_ACTIONS.get(tool)
+        if handler is None:
+            # Filter/style/review/result commands the server can name but this
+            # build has no capability for. Never turn free-form model params
+            # into QGIS calls just because the id looked familiar.
+            self._set_status("Nivo prepared a confirmation-required action: {}".format(
+                action.get("summary") or tool))
+            return
+        if not getattr(self, handler)(action):
             return
         self._nivo_state = transition(self._nivo_state, "done")
+
+    def _capability_request(self, tool, action, layer):
+        """Resolve an action to a validated-capability request, or None.
+
+        Translation happens here and execution does not: a legacy id names the
+        same operation as its canonical capability, and routing both through the
+        registry is precisely what makes them behave the same. Returns None when
+        no registered capability covers the id, so the caller can fall back to
+        the plugin-native table.
+        """
+        capability_id = LEGACY_CAPABILITY_IDS.get(tool, tool)
+        capability = get_capability(capability_id)
+        if capability is None:
+            return None
+        params = dict(action.get("params") or {})
+        if capability_id == "map.zoom_extent@1":
+            # The legacy payload may carry a centre and a zoom level rather than
+            # a box. Resolving it here is what lets one registry-validated
+            # capability serve both shapes.
+            resolved = resolve_extent(params)
+            if resolved is None:
+                raise CapabilityError("that map extent had no usable bounding box or centre")
+            params = {"bbox": resolved["bbox"], "crs": resolved["crs"]}
+        if "layer_id" in capability.params and "layer_id" not in params:
+            layer_id = str(action.get("target") or "") or (layer.id() if layer is not None else "")
+            if layer_id:
+                params["layer_id"] = layer_id
+        return capability_id, params
+
+    def _confirm_capability(self, capability_id, summary=""):
+        """Ask before running a capability the registry marks consequential.
+
+        The registry decides this, not the model and not the server. A compose
+        response that simply omits `requires_confirmation` must not be able to
+        make `field.calculate@1` write a column into the user's own data
+        silently - that write cannot be undone from here.
+        """
+        capability = get_capability(capability_id)
+        question = summary or (capability.summary if capability is not None else capability_id)
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Confirm Nivo action",
+            "{}\n\nThis changes your data and cannot be undone from Mapdex. Run it?".format(question),
+            yes | no,
+            no,
+        )
+        return answer == yes
+
+    def _plugin_capability_handlers(self):
+        """Capabilities the QGIS runtime cannot own because they need the plugin.
+
+        `qgis_runtime` binds the effects that need only the project and the
+        canvas. A basemap layer and a server-supplied extent need this plugin's
+        own viewport resolution, so they are chained onto the runtime table
+        rather than duplicated inside it.
+        """
+        return {
+            "map.basemap@1": self._add_osm_basemap,
+            "map.zoom_extent@1": self._apply_server_extent,
+        }
+
+    def _add_osm_basemap(self, params):
+        provider = str(params.get("provider") or "osm")
+        if provider != "osm":
+            raise CapabilityError("{} is not a basemap this build can add".format(provider))
+        uri = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmin=0&zmax=19"
+        basemap = QgsRasterLayer(uri, "OpenStreetMap", "wms")
+        if not basemap.isValid():
+            raise CapabilityError("QGIS could not create the OpenStreetMap XYZ layer")
+        QgsProject.instance().addMapLayer(basemap)
+        return {"kind": "basemap_added", "name": basemap.name()}
+
+    def _apply_server_extent(self, params):
+        if not self._zoom_to_server_extent(params):
+            raise CapabilityError("that location could not be placed on the current map")
+        return {"kind": "zoomed_to_extent"}
+
+    def _run_add_features(self, action):
+        return bool(self._add_features(action.get("params") or {}, action.get("id") or ""))
+
+    def _run_create_layer(self, action):
+        return bool(self._create_scratch_layer(action.get("params") or {}))
+
+    def _run_open_processing(self, _action):
+        self.iface.showProcessingAlgorithmDialog("", {})
+        return True
+
+    def _run_next_extent(self, _action):
+        self.iface.mapCanvas().zoomToNextExtent()
+        return True
 
     def _capability_executor(self):
         """The executor table, built on first use.
 
         Built lazily because it binds to the live project, and a plugin that
         constructs it at load time fails to load at all when anything in that
-        chain raises.
+        chain raises. The plugin's own handlers are chained in front of the
+        runtime table so both halves answer to one `execute(request)` call.
         """
         executor = getattr(self, "_nivo_executor", None)
         if executor is None:
             from qgis.core import QgsProject
 
-            executor = build_executor(QGISRuntime(self.iface, QgsProject.instance(), self._set_status))
-            self._nivo_executor = executor
+            runtime = build_executor(QGISRuntime(self.iface, QgsProject.instance(), self._set_status))
+            local = self._plugin_capability_handlers()
+
+            def execute(request):
+                handler = local.get(str(request.get("capability") or ""))
+                if handler is not None:
+                    return handler(dict(request.get("params") or {}))
+                return runtime(request)
+
+            execute.capabilities = frozenset(runtime.capabilities) | frozenset(local)
+            self._nivo_executor = execute
+            executor = execute
         return executor
 
-    def _run_capability(self, tool, action, target):
-        """Run a registry capability. Returns False to fall through.
+    def _run_capability(self, capability_id, params, summary=""):
+        """Validate a capability request and run it through the executor table.
 
         Every failure becomes a status message. This runs inside QGIS, where an
         escaping exception is not a stack trace in a log but a broken host
         application, which is why the plugin grew an error boundary in the first
-        place.
+        place. Returns True when the capability actually ran.
         """
-        params = dict(action.get("params") or {})
-        if target and "layer_id" not in params:
-            params["layer_id"] = target
         try:
-            request = validate_request(tool, params)
+            request = validate_request(capability_id, params)
+        except CapabilityError as error:
+            return self._capability_refused(error)
+        if request.get("requires_confirmation") and not self._confirm_capability(capability_id, summary):
+            self._set_status("Nivo did not run {}.".format(summary or capability_id))
+            self._nivo_state = transition(self._nivo_state, "done")
+            return False
+        try:
             result = self._capability_executor()(request)
         except CapabilityError as error:
-            self._set_status("Nivo could not run that: {}".format(error))
-            return True
+            return self._capability_refused(error)
+        except RuntimeUnavailable as error:
+            # A missing precondition ("nothing is selected on that layer") is a
+            # refusal the user can act on, not a malfunction.
+            return self._capability_refused(error)
         except Exception as error:  # noqa: BLE001 - the host must survive anything
-            self._set_status("Nivo failed to run {}: {}".format(tool, describe_exception(error)))
-            return True
-        summary = action.get("summary") or tool
-        self._nivo_turns.append(("assistant", self._describe_capability_result(summary, result)))
+            self._set_status("Nivo failed to run {}: {}".format(capability_id, describe_exception(error)))
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        self._nivo_turns.append(("assistant", self._describe_capability_result(summary or capability_id, result)))
         self._render_nivo_turns()
         self.iface.mapCanvas().refresh()
         return True
 
+    def _capability_refused(self, error):
+        """A refusal is a finished turn, not a wedged one.
+
+        The turn state machine has no transition out of `executing` except done
+        or error, so returning early without one leaves every later turn stuck
+        in `executing`.
+        """
+        self._set_status("Nivo could not run that: {}".format(error))
+        self._nivo_state = transition(self._nivo_state, "done")
+        return False
+
     @staticmethod
     def _describe_capability_result(summary, result):
-        """One line for the transcript.
-
-        Deliberately not a rendering of the whole result: the numbers belong to
-        the analytics module and are already carried in the result object, and
-        restating them here would be a second place they could be wrong.
-        """
-        if isinstance(result, dict):
-            kind = result.get("kind") or result.get("analysis", {}).get("kind") if isinstance(result.get("analysis"), dict) else result.get("kind")
-            if kind:
-                return "{} ({})".format(summary, kind)
-        return str(summary)
+        """One line for the transcript, stating what the capability measured."""
+        return describe_capability_result(summary, result)
 
     GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
 
