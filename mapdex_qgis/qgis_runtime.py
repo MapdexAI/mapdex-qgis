@@ -1949,6 +1949,12 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     "map.zoom_extent@1",
     "processing.run@1",
     "processing.discover@1",
+    # The two server-side surfaces a desktop user otherwise had to leave QGIS to
+    # reach: which runs exist and why one failed, and the review of a run that is
+    # waiting on a person. Both need the plugin's API client, its project scope
+    # and its task runner, none of which the runtime has.
+    "mapdex.jobs@1",
+    "mapdex.open_review@1",
 })
 
 

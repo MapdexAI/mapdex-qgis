@@ -113,12 +113,15 @@ from .results import (
     first_batch_error,
     geojson_truncation_notice,
     review_run_ids,
+    run_state,
+    select_review_run,
     split_review_buckets,
     succeeded_run_ids,
+    summarize_runs,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
 from .source_info import inspect_paths
-from .workspace import task_workspace_path
+from .workspace import review_workspace_path, task_workspace_path
 
 
 WORKFLOWS = (
@@ -225,6 +228,9 @@ SIMPLE_RESULT_PHRASES = {
     "no_map_change": "Nothing on the map needed to change.",
     "nothing_to_undo": "There is nothing to undo.",
     "reorder_unchanged": "That layer is already in that position.",
+    # Started, not finished. The run list has to be fetched before it can be
+    # reported, and naming a run to review is not the same as having opened it.
+    "review_requested": "Looking for the run to review…",
 }
 
 
@@ -373,6 +379,43 @@ def _describe_field_profile(result):
     return _joined(parts)
 
 
+def _describe_jobs(result):
+    """The run list, stating both what matched and what the project holds.
+
+    "3 runs" and "3 of 47 runs" answer different questions, and the second is
+    the one a user filtering by state asked. A listing truncated to fit the
+    transcript says so, because a silently cut list reads as a complete one.
+    """
+    matched = int(result.get("matched") or 0)
+    total = int(result.get("total") or 0)
+    state = str(result.get("state") or "all")
+    if not total:
+        return "this project has no Mapdex runs yet"
+    if not matched:
+        return "none of the {} runs in this project are {}".format(_pretty_number(total), state)
+    rows = result.get("runs") or []
+    head = ("{} of {} runs".format(_pretty_number(matched), _pretty_number(total))
+            if state != "all" else "{} runs".format(_pretty_number(total)))
+    parts = [head]
+    for row in rows:
+        line = "{} {}".format(row.get("state") or "unknown", row.get("title") or row.get("run_id") or "")
+        failure = str(row.get("error") or "")
+        parts.append("{} - {}".format(line.strip(), failure) if failure else line.strip())
+    if matched > len(rows):
+        parts.append("{} more not listed".format(_pretty_number(matched - len(rows))))
+    return _joined(parts)
+
+
+def _describe_jobs_requested(result):
+    state = str(result.get("state") or "all")
+    return "reading the run list" if state == "all" else "reading the {} runs".format(state)
+
+
+def _describe_review_opened(result):
+    return "opened the review for {} ({})".format(
+        result.get("run_id") or "that run", result.get("state") or "unknown")
+
+
 RESULT_DESCRIBERS = {
     "numeric": _describe_numeric,
     "categorical": _describe_categorical,
@@ -402,6 +445,9 @@ RESULT_DESCRIBERS = {
         result.get("field"), _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
     "field_preview": lambda result: "preview only: {} rows, {} empty".format(
         _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
+    "jobs": _describe_jobs,
+    "jobs_requested": _describe_jobs_requested,
+    "review_opened": _describe_review_opened,
     "reorder_applied": lambda result: "moved to {}".format(result.get("position")),
     "basemap_added": lambda result: "added {}".format(result.get("name")),
     "undone": lambda result: "undid the last {} change".format(result.get("change")),
@@ -2136,6 +2182,13 @@ class MapdexPlugin:
             # spelling performed.
             "processing.run@1": self._run_processing_capability,
             "processing.discover@1": self._discover_processing,
+            # Both read the project's runs through this plugin's API client, so
+            # neither can live in the runtime, which has no session and no
+            # project. Until they were bound, seeing a job list or opening a
+            # review meant leaving QGIS for a browser and finding the run again
+            # by hand.
+            "mapdex.jobs@1": self._list_mapdex_runs,
+            "mapdex.open_review@1": self._open_mapdex_review,
         }
         # The declaration and the table must not drift: an id advertised here
         # and missing from the table is the "Nivo prepared an action" and a
@@ -2184,6 +2237,100 @@ class MapdexPlugin:
             "available": available,
             "unavailable": len(PROCESSING_OPERATION_CATALOG) - len(available),
         }
+
+    def _require_mapdex_session(self):
+        """The project the server-side capabilities act on, or a refusal.
+
+        Refusing here names the missing precondition. Calling `/v1/runs` without
+        a session answers 401, which reaches the user as an HTTP failure for a
+        question whose real answer is "connect first".
+        """
+        if not self.api.token:
+            raise CapabilityError("connect to Mapdex first - these runs live in your workspace")
+        project_id = self._active_project_id()
+        if not project_id:
+            raise CapabilityError("choose a Mapdex project first")
+        return project_id
+
+    def _list_mapdex_runs(self, params):
+        """Start the run listing. The answer arrives in the transcript.
+
+        `/v1/runs` is a network round trip and this executes on the Qt main
+        thread, so the list is fetched as a task exactly the way Processing is
+        run. Returning a summary here would be a listing of runs nobody has
+        fetched yet.
+        """
+        project_id = self._require_mapdex_session()
+        state = str(params.get("state") or "all")
+        self._task(
+            "List Mapdex runs",
+            lambda: self.api.runs(project_id),
+            lambda exception, payload: self._mapdex_runs_listed(state, exception, payload),
+            busy=False,
+        )
+        return {"kind": "jobs_requested", "state": state}
+
+    @guarded
+    def _mapdex_runs_listed(self, state, exception, payload):
+        if exception:
+            self._nivo_report("Nivo could not read the run list: {}".format(describe_exception(exception)))
+            return
+        self._nivo_report(describe_capability_result("", summarize_runs(payload, state)))
+
+    def _open_mapdex_review(self, params):
+        """Start resolving which run to review, then open it in the browser.
+
+        The run has to be fetched even when its id was supplied: a review link
+        is built from the run's SOURCE file, and the id alone cannot produce
+        one. Opening `/review/<run id>` resolves no run, so the Studio closes
+        the cockpit and returns the reviewer to the project map.
+        """
+        project_id = self._require_mapdex_session()
+        run_id = str(params.get("run_id") or "").strip()
+        self._task(
+            "Open Mapdex review",
+            lambda: self.api.runs(project_id),
+            lambda exception, payload: self._mapdex_review_resolved(
+                project_id, run_id, exception, payload
+            ),
+            busy=False,
+        )
+        return {"kind": "review_requested", "run_id": run_id}
+
+    @guarded
+    def _mapdex_review_resolved(self, project_id, run_id, exception, payload):
+        if exception:
+            self._nivo_report("Nivo could not reach the run list: {}".format(describe_exception(exception)))
+            return
+        run = select_review_run(payload, run_id)
+        if run is None:
+            # Two different absences, and the user can act on each: a named run
+            # that is not in this project, or a project with nothing waiting.
+            self._nivo_report(
+                "Mapdex has no run {} in this project.".format(run_id) if run_id
+                else "Nothing in this project is waiting for review."
+            )
+            return
+        locale = QLocale.system().name().split("_")[0]
+        prefix = "" if locale == "en" else "/{}".format(locale)
+        path = review_workspace_path(project_id, run)
+        QDesktopServices.openUrl(QUrl("{}{}{}".format(self.web_base, prefix, path)))
+        self._nivo_report(describe_capability_result("", {
+            "kind": "review_opened",
+            "run_id": str(run.get("id") or ""),
+            "state": run_state(run),
+        }))
+
+    def _nivo_report(self, line):
+        """Put a line from a finished background task into the transcript.
+
+        The turn that started the task already ended, so this also closes the
+        state machine: leaving it in `executing` wedges every later turn.
+        """
+        self._nivo_turns.append(("assistant", line))
+        self._render_nivo_turns()
+        self._set_status(line)
+        self._nivo_state = transition(self._nivo_state, "done")
 
     def _add_osm_basemap(self, params):
         provider = str(params.get("provider") or "osm")

@@ -447,6 +447,16 @@ class MapdexAPI:
     def run(self, run_id: str, project_id: str = "") -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}", project_id=project_id)
 
+    def runs(self, project_id: str = "") -> list[dict[str, Any]]:
+        """The project's runs, newest first, as `GET /v1/runs` returns them.
+
+        The server scopes the list by the `X-Project-ID` header rather than a
+        path segment, and answers with a bare array. `_rows` accepts the
+        envelope shape too, so a server that later wraps the list does not turn
+        into an empty job list on the desktop.
+        """
+        return _rows(self._request("GET", "/v1/runs", project_id=project_id), "runs")
+
     def layer_geojson(self, layer_id: str, project_id: str, limit: int = 5000) -> bytes:
         return self.download_bytes(f"/v1/layers/{layer_id}/geojson?limit={limit}", project_id=project_id)
 

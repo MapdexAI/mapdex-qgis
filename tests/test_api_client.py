@@ -237,6 +237,26 @@ def test_run_and_layer_geojson_paths(monkeypatch):
     assert calls[1] == ("GET_BYTES", "/v1/layers/layer_1/geojson?limit=5000", "proj_1")
 
 
+def test_run_list_is_project_scoped_by_the_header_and_survives_an_envelope(monkeypatch):
+    # The server scopes `GET /v1/runs` by `X-Project-ID` and answers with a bare
+    # array. Reading only the array shape would turn a server that later wraps
+    # the list into an empty job list on the desktop, which reads as "you have
+    # no runs" rather than as a shape this client cannot parse.
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    calls = []
+
+    def bare(method, path, payload=None, project_id=""):
+        calls.append((method, path, project_id))
+        return [{"id": "run_1"}, "not a run"]
+
+    monkeypatch.setattr(api, "_request", bare)
+    assert api.runs("proj_1") == [{"id": "run_1"}]
+    assert calls[0] == ("GET", "/v1/runs", "proj_1")
+
+    monkeypatch.setattr(api, "_request", lambda *a, **k: {"runs": [{"id": "run_2"}]})
+    assert api.runs("proj_1") == [{"id": "run_2"}]
+
+
 def test_api_error_parses_nested_envelope(monkeypatch):
     api = MapdexAPI("https://api.mapdex.ai", "token")
 

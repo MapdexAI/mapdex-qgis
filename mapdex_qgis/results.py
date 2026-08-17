@@ -57,6 +57,132 @@ def review_run_ids(detail: dict[str, Any]) -> list[str]:
     return runs
 
 
+# `GET /v1/runs` reports the task status and, when a job exists, the job state on
+# top of it. The two vocabularies overlap but are not identical, so both are
+# folded into the four buckets `mapdex.jobs@1` offers rather than asking the user
+# to know which surface produced the word they are reading.
+FAILED_RUN_STATES = frozenset({"failed", "cancelled"})
+COMPLETED_RUN_STATES = frozenset({"completed", "succeeded"})
+
+# The listing is bounded because it lands in a chat transcript, not a table. A
+# project with three hundred sheets would otherwise print three hundred lines.
+MAX_LISTED_RUNS = 10
+
+
+def run_state(run: dict[str, Any]) -> str:
+    """The state to report for one run.
+
+    The job state wins when there is a job: the task row can still read
+    `dispatched` while its job has already failed, and reporting the older of
+    two known facts is how a failure stays invisible.
+    """
+    job = run.get("job")
+    if isinstance(job, dict):
+        state = str(job.get("state") or "").strip().lower()
+        if state:
+            return "needs_review" if state == "review_required" else state
+    return str(run.get("status") or run.get("state") or "").strip().lower()
+
+
+def run_matches_state(run: dict[str, Any], wanted: str) -> bool:
+    """Whether a run belongs in the requested bucket."""
+    state = run_state(run)
+    if wanted in ("", "all"):
+        return True
+    if wanted == "review_required":
+        return state in REVIEW_ITEM_STATES
+    if wanted == "failed":
+        return state in FAILED_RUN_STATES
+    if wanted == "completed":
+        return state in COMPLETED_RUN_STATES
+    if wanted == "active":
+        # Active is everything that has not stopped. Defined as the complement
+        # of the terminal sets rather than as its own list, so a state this
+        # build has never seen is reported as still running instead of being
+        # dropped from every bucket and vanishing from the answer.
+        return state not in FAILED_RUN_STATES | COMPLETED_RUN_STATES | REVIEW_ITEM_STATES
+    return False
+
+
+def run_failure(run: dict[str, Any]) -> str:
+    """The failure the server reported for this run, or "" when it reported none.
+
+    A run listed as failed with no reason is the case the capability's own
+    summary promises to explain, so the message is carried through rather than
+    reduced to the state word.
+    """
+    job = run.get("job") if isinstance(run.get("job"), dict) else {}
+    error = job.get("error") if isinstance(job, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        correlation_id = str(error.get("correlation_id") or "").strip()
+        if message and correlation_id:
+            return "{} (reference {})".format(message, correlation_id)
+        if message:
+            return message
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return ""
+
+
+def summarize_runs(
+    runs: Any, state: str = "all", limit: int = MAX_LISTED_RUNS
+) -> dict[str, Any]:
+    """Turn a `GET /v1/runs` payload into a bounded, structured answer.
+
+    Counts are taken over every run the project has, not over the truncated
+    list: "3 of 47 runs" is a different fact from "3 runs", and reporting the
+    page size as the total would be a number the product invented.
+    """
+    rows = [run for run in (runs if isinstance(runs, list) else []) if isinstance(run, dict)]
+    wanted = str(state or "all").strip().lower()
+    counts: dict[str, int] = {}
+    for run in rows:
+        key = run_state(run) or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    matched = [run for run in rows if run_matches_state(run, wanted)]
+    listed = []
+    for run in matched[: max(1, int(limit))]:
+        listed.append(
+            {
+                "run_id": str(run.get("id") or ""),
+                "state": run_state(run) or "unknown",
+                "title": str(run.get("prompt") or "").strip()[:120],
+                "created_at": str(run.get("created_at") or ""),
+                "error": run_failure(run),
+            }
+        )
+    return {
+        "kind": "jobs",
+        "state": wanted,
+        "total": len(rows),
+        "matched": len(matched),
+        "counts": counts,
+        "runs": listed,
+    }
+
+
+def select_review_run(runs: Any, run_id: str = "") -> dict[str, Any] | None:
+    """The run a review should open, or None when there is nothing to review.
+
+    Without an explicit id this picks the most recent run that needs review.
+    `GET /v1/runs` returns newest first, so the first match is that run; sorting
+    on `created_at` here would re-derive an order the server already decided and
+    would silently reorder runs whose timestamps are missing.
+    """
+    rows = [run for run in (runs if isinstance(runs, list) else []) if isinstance(run, dict)]
+    wanted = str(run_id or "").strip()
+    if wanted:
+        for run in rows:
+            if str(run.get("id") or "") == wanted:
+                return run
+        return None
+    for run in rows:
+        if run_state(run) in REVIEW_ITEM_STATES:
+            return run
+    return None
+
+
 def _iter_result_refs(run: dict[str, Any]) -> Iterable[dict[str, Any]]:
     refs = run.get("result_references")
     if isinstance(refs, list) and refs:
