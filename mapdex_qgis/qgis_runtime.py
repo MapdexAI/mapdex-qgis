@@ -236,6 +236,216 @@ class QGISRuntime:
             })
         return {"kind": "field_profile", "fields": columns, "features": len(data["rows"])}
 
+    # -- measuring the geometry -------------------------------------------
+
+    def _crs_map_units(self, crs: Any) -> str:
+        """The layer's map unit as a plain string spatial.py can reason about."""
+        try:
+            from qgis.core import QgsUnitTypes  # noqa: PLC0415 - QGIS-only import
+
+            return QgsUnitTypes.toString(crs.mapUnits())
+        except Exception:  # noqa: BLE001 - a missing accessor must not lose the answer
+            return "degrees" if crs.isGeographic() else "m"
+
+    def _extent_in_wgs84(self, layer: Any) -> list[float] | None:
+        """The layer extent as WGS84 bounds, used only to choose a projection."""
+        extent = layer.extent()
+        if extent is None or extent.isEmpty():
+            return None
+        bounds = [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()]
+        crs = layer.crs()
+        if crs.isValid() and not crs.isGeographic():
+            return None
+        return bounds
+
+    def _geometry_dimension(self, geometry: Any) -> int:
+        """0 for a point, 1 for a line, 2 for a polygon.
+
+        Read from the abstract geometry rather than from a GeometryType enum
+        member: that enum moved between QGIS 3 and QGIS 4 and the flat spelling
+        raises AttributeError on PyQt6, in a path no unit test would open.
+        """
+        try:
+            inner = geometry.get()
+            if inner is not None:
+                return int(inner.dimension())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return int(geometry.type())
+        except Exception:  # noqa: BLE001
+            return -1
+
+    def measure_geometry(
+        self,
+        layer_id: str,
+        metric: str = "area",
+        statistic: str = "sum",
+        limit: int = 5,
+        scope: str = "all",
+    ) -> dict[str, Any]:
+        """Measure the shapes, and say in what frame.
+
+        Every number here comes off the geometry. Nothing consults a column,
+        which is the whole point: a layer's attribute named `real` or `alan_m2`
+        may or may not be its area, and the geometry always is.
+
+        Features whose geometry cannot carry the measure - a point has no area -
+        are counted as skipped rather than measured as zero, so a mixed layer
+        reports "3 of 10 measured" instead of a total that quietly treats seven
+        points as polygons.
+        """
+        metric = spatial.normalize_measure(metric)
+        if not metric:
+            raise CapabilityError("I can measure area, length or perimeter.")
+        layer = self.vector(layer_id)
+        crs = layer.crs()
+        plan = spatial.plan_geometry_measurement(
+            bool(crs.isGeographic()) if crs.isValid() else False,
+            self._crs_map_units(crs) if crs.isValid() else "",
+            metric,
+            self._extent_in_wgs84(layer),
+        )
+        if plan.get("strategy") == "unsupported":
+            # Refuse and say why. A figure in an unknown scale is worse than no
+            # figure, because it cannot be recognised as wrong.
+            raise CapabilityError(
+                "I can't state a {} for this layer: its CRS units are {}, which I cannot "
+                "convert to metres.".format(metric, plan.get("crs_unit") or "unknown"))
+
+        transform, calculator = self._measurement_frame(layer, plan)
+        wanted = spatial.MEASURE_DIMENSION[metric]
+        label_field = self._display_field(layer)
+
+        measurements: list[dict[str, Any]] = []
+        truncated = False
+        for feature in self._geometry_features(layer, label_field, scope):
+            if len(measurements) >= MAX_ANALYTIC_FEATURES:
+                truncated = True
+                break
+            geometry = feature.geometry()
+            value = None
+            if geometry is not None and not geometry.isEmpty() \
+                    and self._geometry_dimension(geometry) == wanted:
+                value = self._measure_one(geometry, metric, plan, transform, calculator)
+            measurements.append({
+                "id": feature.id(),
+                "name": str(feature[label_field]) if label_field else "",
+                "value": value,
+            })
+
+        result = spatial.summarize_geometry(measurements, statistic, limit)
+        result["metric"] = metric
+        result["unit"] = plan["unit"]
+        result["layer"] = layer.name()
+        result["scope"] = scope
+        result["truncated"] = truncated
+        result["method"] = "ellipsoidal" if plan["strategy"] == "ellipsoidal" else "planar"
+        result["measured_in"] = plan.get("crs") or (crs.authid() if crs.isValid() else "")
+        result["frame"] = self._frame_note(plan, crs)
+        if result["skipped"]:
+            result["skipped_reason"] = "no_{}".format(metric)
+        return result
+
+    def _frame_note(self, plan: Mapping[str, Any], crs: Any) -> str:
+        """One sentence naming how the figure was obtained.
+
+        Not decoration. The same polygon measured planar in UTM and on the
+        ellipsoid differs by about a tenth of a percent, and a reader cannot
+        tell the two apart from the number alone.
+        """
+        authid = crs.authid() if crs.isValid() else "an unknown CRS"
+        if plan["strategy"] == "project":
+            return ("measured in {} because {} is a geographic CRS, where the figure would "
+                    "otherwise be in degrees".format(plan["crs"], authid))
+        if plan["strategy"] == "ellipsoidal":
+            return ("measured on the ellipsoid because {} is a geographic CRS and the layer is "
+                    "too wide for one projection".format(authid))
+        return "measured in the layer's own projection, {}".format(authid)
+
+    def _measurement_frame(self, layer: Any, plan: Mapping[str, Any]):
+        """The transform and/or calculator the chosen strategy needs."""
+        if plan["strategy"] == "project":
+            from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform  # noqa: PLC0415
+
+            target = QgsCoordinateReferenceSystem(plan["crs"])
+            _require(target.isValid(), "this build cannot use {}".format(plan["crs"]))
+            return QgsCoordinateTransform(layer.crs(), target, self.project), None
+        if plan["strategy"] == "ellipsoidal":
+            from qgis.core import QgsDistanceArea  # noqa: PLC0415
+
+            calculator = QgsDistanceArea()
+            calculator.setSourceCrs(layer.crs(), self.project.transformContext())
+            calculator.setEllipsoid(self.project.ellipsoid() or "WGS84")
+            return None, calculator
+        return None, None
+
+    def _measure_one(
+        self,
+        geometry: Any,
+        metric: str,
+        plan: Mapping[str, Any],
+        transform: Any,
+        calculator: Any,
+    ) -> float | None:
+        if plan["strategy"] == "ellipsoidal":
+            if metric == "area":
+                return float(calculator.measureArea(geometry))
+            if metric == "perimeter":
+                return float(calculator.measurePerimeter(geometry))
+            return float(calculator.measureLength(geometry))
+        if transform is not None:
+            # Clone before transforming: QgsGeometry.transform mutates in place
+            # and the feature's own geometry must not be left reprojected.
+            from qgis.core import QgsCsException, QgsGeometry  # noqa: PLC0415
+
+            geometry = QgsGeometry(geometry)
+            try:
+                if geometry.transform(transform) != 0:
+                    return None
+            except QgsCsException:
+                # One untransformable feature is skipped and counted, not
+                # allowed to abandon the whole measurement.
+                return None
+        raw = geometry.area() if metric == "area" else geometry.length()
+        return float(raw) * float(plan.get("factor", 1.0))
+
+    def _display_field(self, layer: Any) -> str:
+        """The layer's own display field, so a ranked feature has a name.
+
+        Taken from the layer rather than chosen here or supplied by a model:
+        naming the largest polygon "BIT Systems" instead of "feature 1" is worth
+        having, and guessing which column is the name is not.
+        """
+        try:
+            name = str(layer.displayField() or "")
+        except Exception:  # noqa: BLE001
+            return ""
+        return name if name in self.field_names(layer) else ""
+
+    def _geometry_features(self, layer: Any, label_field: str, scope: str):
+        """Features WITH geometry, bounded and scoped like records()."""
+        from qgis.core import QgsFeatureRequest  # noqa: PLC0415
+
+        request = QgsFeatureRequest()
+        if label_field:
+            request.setSubsetOfAttributes([self._field_index(layer, label_field)])
+        elif hasattr(request, "setNoAttributes"):
+            request.setNoAttributes()
+        if scope == "viewport":
+            extent = self._viewport_in_layer_crs(layer)
+            if extent is not None:
+                request.setFilterRect(extent)
+        selected_ids = None
+        if scope == "selection":
+            selected_ids = set(layer.selectedFeatureIds())
+            if not selected_ids:
+                raise RuntimeUnavailable("nothing is selected on that layer")
+        for feature in layer.getFeatures(request):
+            if selected_ids is not None and feature.id() not in selected_ids:
+                continue
+            yield feature
+
     # -- distance correctness ---------------------------------------------
 
     def distance_plan(self, layer_id: str, distance: float, unit: str = "m") -> dict[str, Any]:
@@ -731,6 +941,20 @@ def _literal(value: Any) -> str:
 # Capability dispatch
 # --------------------------------------------------------------------------
 
+def _measured_geometry(runtime: QGISRuntime, analysis: Mapping[str, Any], layer_id: str) -> dict[str, Any]:
+    """Show a geometry ranking on the map; leave an aggregate alone.
+
+    Kept here rather than in presentation.visualization_for because the spec
+    builder keys off analytical result kinds and a ranking by shape is already
+    a list of feature ids - there is nothing to infer.
+    """
+    ranked = analysis.get("ranked") or []
+    if not ranked:
+        return {"analysis": dict(analysis), "map": {"kind": "no_map_change"}}
+    applied = runtime.select_features(layer_id, [entry["id"] for entry in ranked], zoom=False)
+    return {"analysis": dict(analysis), "map": applied}
+
+
 def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
     """Map validated capability requests onto runtime methods.
 
@@ -776,6 +1000,18 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         ),
         "analytics.outliers@1": lambda p: visualize(
             runtime.outliers(p["layer_id"], p["field"], p.get("method", "iqr")), p["layer_id"], p["field"],
+        ),
+        # A ranking by geometry lands on the map as a selection, the same way a
+        # ranking by a field does: "which polygon is the largest" is a question
+        # whose answer the user wants highlighted, not just named. The
+        # aggregates (sum, mean, min, max, count) change nothing on the canvas.
+        "analytics.geometry@1": lambda p: _measured_geometry(
+            runtime,
+            runtime.measure_geometry(
+                p["layer_id"], p["metric"], p.get("statistic", "sum"),
+                p.get("limit", 5), p.get("scope", "all"),
+            ),
+            p["layer_id"],
         ),
         "analytics.group@1": lambda p: runtime.group(
             p["layer_id"], p["group_field"], p.get("value_field"), p.get("statistic", "count"),

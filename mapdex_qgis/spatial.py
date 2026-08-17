@@ -124,6 +124,199 @@ def area_conversion(crs_map_units: str) -> float | None:
 
 
 # --------------------------------------------------------------------------
+# Measuring the geometry itself
+# --------------------------------------------------------------------------
+#
+# Area, length and perimeter are properties of the shape, not of any column, and
+# the single most common way to get them wrong is to reach for the plausibly
+# named field instead. The other way is to measure a geographic layer in its own
+# units and call the result an area: 6.2e-7 square degrees is not 7,627 square
+# metres, it is not an area at all, and it looks like a number.
+#
+# The closed set of measures. Deliberately technical names, not words in any
+# language: the model maps the user's phrasing onto one of these and the code
+# never matches a word.
+GEOMETRY_MEASURES = ("area", "length", "perimeter")
+
+# What each measure needs the geometry to BE. A point has no length and a line
+# has no area, so a mixed layer measures the features that can carry the measure
+# and reports the rest as skipped rather than counting them as zero.
+MEASURE_DIMENSION = {"area": 2, "perimeter": 2, "length": 1}
+
+# UTM is the standard local metric projection, and its distortion is only small
+# near the central meridian. Beyond this span the honest answer is the
+# ellipsoidal one, which is exact everywhere and says so.
+MAX_UTM_SPAN_DEGREES = 3.0
+
+
+def normalize_measure(measure: str | None) -> str:
+    value = str(measure or "").strip().lower()
+    return value if value in GEOMETRY_MEASURES else ""
+
+
+def measure_unit(measure: str) -> str:
+    """The unit a measure is reported in. Stated with every number, never assumed."""
+    return "m²" if normalize_measure(measure) == "area" else "m"
+
+
+def utm_zone_for(bbox: Sequence[float]) -> dict[str, Any] | None:
+    """The UTM zone that can measure this WGS84 extent, or None.
+
+    Returning None is a real answer: a layer spanning half a continent has no
+    single UTM zone, and forcing one would produce a confident figure with
+    percent-level error. The caller then measures on the ellipsoid instead.
+    """
+    if bbox is None or len(bbox) != 4:
+        return None
+    try:
+        minx, miny, maxx, maxy = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    for value in (minx, miny, maxx, maxy):
+        if not math.isfinite(value):
+            return None
+    if minx > maxx or miny > maxy:
+        return None
+    if minx < -180.0 or maxx > 180.0 or miny < -90.0 or maxy > 90.0:
+        return None
+    # UTM's own domain. Outside it the projection is not defined and a polar
+    # dataset must not be silently squeezed into it.
+    if miny < -80.0 or maxy > 84.0:
+        return None
+    if (maxx - minx) > MAX_UTM_SPAN_DEGREES or (maxy - miny) > MAX_UTM_SPAN_DEGREES * 3:
+        return None
+    centre_lon = (minx + maxx) / 2.0
+    centre_lat = (miny + maxy) / 2.0
+    zone = int(math.floor((centre_lon + 180.0) / 6.0)) + 1
+    zone = min(60, max(1, zone))
+    north = centre_lat >= 0.0
+    return {
+        "zone": zone,
+        "hemisphere": "north" if north else "south",
+        "crs": "EPSG:{}".format((32600 if north else 32700) + zone),
+    }
+
+
+def plan_geometry_measurement(
+    crs_is_geographic: bool,
+    crs_map_units: str,
+    measure: str,
+    bbox_wgs84: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """Decide how a shape measure can honestly be expressed in metres.
+
+    The counterpart to :func:`plan_distance`, which converts a stated distance
+    into a layer's units. This goes the other way: it reads a measurement out of
+    the geometry and names the frame it was taken in.
+
+    Four outcomes, and every one of them says what it did:
+
+    ``map_units``
+        The layer is projected in a known linear unit. The planar measurement is
+        scaled to metres; this is what QGIS's own ``$area`` reports.
+    ``project``
+        The layer is geographic. Degrees are not a length, so the geometry is
+        measured in the named UTM projection instead and the answer says which.
+    ``ellipsoidal``
+        The layer is geographic and too wide for one UTM zone. Measured on the
+        ellipsoid, which is exact and, again, stated.
+    ``unsupported``
+        The measure or the CRS unit is unknown. Refuse with the reason rather
+        than return a plausible number in an unknown scale.
+    """
+    measure = normalize_measure(measure)
+    if not measure:
+        return {"strategy": "unsupported", "reason": "unknown_measure"}
+    unit = measure_unit(measure)
+    map_unit = normalize_unit(crs_map_units)
+    if crs_is_geographic or map_unit in ANGULAR_UNITS:
+        zone = utm_zone_for(bbox_wgs84) if bbox_wgs84 is not None else None
+        if zone is not None:
+            return {
+                "strategy": "project", "measure": measure, "unit": unit,
+                "crs": zone["crs"], "zone": zone["zone"], "hemisphere": zone["hemisphere"],
+                "reason": "geographic_crs_cannot_express_a_metric_measure",
+            }
+        return {
+            "strategy": "ellipsoidal", "measure": measure, "unit": unit,
+            "reason": "geographic_crs_too_wide_for_one_projection",
+        }
+    factor = METRES_PER_UNIT.get(map_unit)
+    if factor is None:
+        return {"strategy": "unsupported", "reason": "unknown_crs_unit", "crs_unit": map_unit}
+    return {
+        "strategy": "map_units", "measure": measure, "unit": unit,
+        "crs_unit": map_unit,
+        # Squared for an area, linear for a length: the difference between
+        # 3.28 and 10.76 when the layer is in feet.
+        "factor": factor * factor if measure == "area" else factor,
+    }
+
+
+def summarize_geometry(
+    measurements: Iterable[Mapping[str, Any]],
+    statistic: str = "sum",
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Aggregate per-feature measurements, keeping the unmeasurable ones visible.
+
+    ``measurements`` are ``{"id":…, "name":…, "value": float | None}``. A value
+    of None means the geometry cannot carry that measure - a point has no area -
+    and those features are counted and reported, never folded in as zero. Ten
+    mixed features summed as though all ten were polygons is the wrong answer
+    that survives review because it looks like a number.
+    """
+    statistic = str(statistic or "sum").strip().lower()
+    values: list[float] = []
+    ranked: list[dict[str, Any]] = []
+    total = 0
+    for record in measurements:
+        total += 1
+        raw = record.get("value")
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        values.append(value)
+        ranked.append({
+            "id": record.get("id"),
+            "name": record.get("name") or "",
+            "value": value,
+        })
+    result: dict[str, Any] = {
+        "kind": "geometry_measurement",
+        "statistic": statistic,
+        "features": total,
+        "measured": len(values),
+        "skipped": total - len(values),
+        "sum": None, "mean": None, "min": None, "max": None,
+        "value": None,
+        "ranked": [],
+    }
+    if not values:
+        result["value"] = 0 if statistic == "count" else None
+        return result
+    result["sum"] = math.fsum(values)
+    result["mean"] = result["sum"] / len(values)
+    result["min"] = min(values)
+    result["max"] = max(values)
+    if statistic in ("top", "bottom"):
+        ranked.sort(key=lambda entry: entry["value"], reverse=statistic == "top")
+        bound = max(1, min(int(limit or 1), len(ranked)))
+        result["ranked"] = ranked[:bound]
+        result["value"] = ranked[0]["value"]
+    elif statistic == "count":
+        result["value"] = len(values)
+    else:
+        result["value"] = result.get(statistic if statistic in ("sum", "mean", "min", "max") else "sum")
+    return result
+
+
+# --------------------------------------------------------------------------
 # Exact small geometry kernel
 # --------------------------------------------------------------------------
 

@@ -292,6 +292,30 @@ _c("analytics.group@1", "analytics", "Aggregate a field by group: count, sum, me
                                         "enum": ["count", "sum", "mean", "min", "max", "median", "distinct"],
                                         "default": "count"}}),
    targets=("vector",), produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+#
+# Measuring the shape rather than a column. Everything above this line answers a
+# question about an attribute; nothing answered "what is the total area?", so a
+# question about the geometry had to be declined or, worse, answered from the
+# column whose name looked closest. On the OGC conformance sample that column is
+# literally called `real`, it sums to 2,715.68 where the true area is 7,627.77,
+# and by it the largest polygon is the smallest one.
+#
+# `metric` is the same word the server's own spatial:measure@1 uses, and
+# scripts/nivo_registry_drift.py pairs the two so the shared parameters cannot
+# drift apart. The unit is never assumed: the executor states the frame the
+# figure was taken in, or refuses.
+_c("analytics.geometry@1", "analytics",
+   "Measure the geometry itself - area, length or perimeter - totalled, averaged or ranked.",
+   params=dict(_LAYER, **{"metric": {"type": "string", "required": True,
+                                     "enum": ["area", "length", "perimeter"]},
+                          "statistic": {"type": "string",
+                                        "enum": ["sum", "mean", "min", "max", "count", "top", "bottom"],
+                                        "default": "sum"},
+                          "limit": {"type": "integer", "min": 1, "max": 500, "default": 5},
+                          "scope": {"type": "string", "enum": ["all", "selection", "viewport"],
+                                    "default": "all"}}),
+   targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
+   clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("analytics.compare@1", "analytics", "Compare a numeric field between two feature sets or two layers.",
    params={"layer_id": {"type": "string", "required": True},
            "field": {"type": "string", "required": True},
