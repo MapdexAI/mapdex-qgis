@@ -76,7 +76,13 @@ from .features import (
     scatter_in_rectangle,
 )
 from .guard import describe_exception, format_traceback, guarded, log_debug
-from .guidance import ACTIVE_STATES, run_has_started, task_guidance
+from .guidance import (
+    ACTIVE_STATES,
+    failure_next_step,
+    run_has_started,
+    task_guidance,
+    with_failure_guidance,
+)
 from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import (
     GEOMETRY_CHOICES,
@@ -106,10 +112,12 @@ from .processing import (
 from .qt_compat import QAction, enum_member, qgis_version
 from .viewport import resolve_extent
 from .results import (
+    batch_failure,
     batch_is_terminal,
     batch_state,
     collect_geojson_artifact_urls,
     collect_layer_imports,
+    every_failure_needs_placement,
     first_batch_error,
     geojson_truncation_notice,
     review_run_ids,
@@ -1321,7 +1329,11 @@ class MapdexPlugin:
         self.batch_group.setVisible(connected and has_batch)
         self.cancel_button.setVisible(active)
         self.cancel_button.setEnabled(active and not self._busy)
-        self.retry_button.setVisible(has_batch and failed > 0 and not active)
+        # Retry re-sends the identical request, so it is hidden when every
+        # failure was a refusal that request cannot satisfy. The route to the
+        # prerequisite takes its place on the action button below.
+        unsatisfiable = every_failure_needs_placement(self._last_batch or {})
+        self.retry_button.setVisible(has_batch and failed > 0 and not active and not unsatisfiable)
         self.retry_button.setEnabled(not self._busy)
         self.retry_button.setText(
             "Retry failed item" if failed == 1 else "Retry {} failed items".format(failed)
@@ -1349,6 +1361,7 @@ class MapdexPlugin:
                 counts,
                 backend_started=self._backend_started,
                 waiting_seconds=self._waiting_seconds(),
+                failure_code=batch_failure(self._last_batch or {}).get("code", ""),
             )
             self.review_button.setText(guidance["action"])
             self.review_button.setVisible(bool(guidance["action"]))
@@ -2275,7 +2288,11 @@ class MapdexPlugin:
         if exception:
             self._nivo_report("Nivo could not read the run list: {}".format(describe_exception(exception)))
             return
-        self._nivo_report(describe_capability_result("", summarize_runs(payload, state)))
+        self._nivo_report(
+            describe_capability_result(
+                "", with_failure_guidance(summarize_runs(payload, state))
+            )
+        )
 
     def _open_mapdex_review(self, params):
         """Start resolving which run to review, then open it in the browser.
@@ -3155,10 +3172,20 @@ class MapdexPlugin:
         ok = int(counts.get("succeeded", 0) or 0)
         review = int(counts.get("needs_review", 0) or 0)
         failed = int(counts.get("failed", 0) or 0)
+        next_step = failure_next_step(batch_failure(response or {}).get("code"))
         if state in ("created", "queued", "pending"):
             message = "Task queued. Mapdex will start processing shortly."
         elif state == "running":
             message = "Processing in Mapdex…"
+        elif failed and not ok and not review and next_step:
+            # A refusal that names a next step is not a failure report. The scan
+            # is fine and already uploaded; saying so and offering the route is
+            # the whole difference between this and the generic sentence below,
+            # which left the user holding a rejected upload.
+            message = next_step["hint"]
+            if self._announced_state != "needs_placement":
+                self._announced_state = "needs_placement"
+                self._announce(message, level=1, duration=10)
         elif failed and not ok and not review:
             message = first_batch_error(response or {}) or "Task failed. Retry it, or open Mapdex for details."
         elif failed:
@@ -3487,7 +3514,18 @@ class MapdexPlugin:
         detail = self._last_batch
         if not detail and fallback_file_id:
             detail = {"items": [{"file_id": fallback_file_id, "state": "running"}]}
-        path = task_workspace_path(project_id, workflow, detail)
+        # A refusal that names a prerequisite outranks the workflow that was
+        # submitted: the destination is where the user satisfies it, not the desk
+        # for the work that was already refused. The file is the one Mapdex
+        # already holds, so this is a handoff and not a second upload.
+        failure = batch_failure(detail or {})
+        route = failure_next_step(failure.get("code")).get("route")
+        path = task_workspace_path(
+            project_id,
+            route or workflow,
+            detail,
+            file_id=failure.get("file_id", "") if route else "",
+        )
         QDesktopServices.openUrl(
             QUrl("{}{}{}".format(self.web_base, prefix, path))
         )

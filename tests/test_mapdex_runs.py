@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.capabilities import CapabilityError, validate_request  # noqa: E402
 from mapdex_qgis.guard import describe_exception, guarded  # noqa: E402
+from mapdex_qgis.guidance import with_failure_guidance  # noqa: E402
 from mapdex_qgis.nivo import transition  # noqa: E402
 from mapdex_qgis.qgis_runtime import PLUGIN_BOUND_CAPABILITIES, bound_capability_ids  # noqa: E402
 from mapdex_qgis.results import (  # noqa: E402
@@ -125,6 +126,7 @@ def _plugin_namespace():
         "select_review_run": select_review_run,
         "summarize_runs": summarize_runs,
         "transition": transition,
+        "with_failure_guidance": with_failure_guidance,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), "plugin-runs", "exec"), namespace)
     return namespace

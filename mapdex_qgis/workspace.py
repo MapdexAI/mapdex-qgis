@@ -5,15 +5,30 @@ from typing import Any
 from urllib.parse import quote
 
 
-def task_workspace_path(project_id: str, workflow: str, detail: dict[str, Any] | None = None) -> str:
-    """Return the most useful workspace path for a live or completed batch."""
+def task_workspace_path(
+    project_id: str,
+    workflow: str,
+    detail: dict[str, Any] | None = None,
+    file_id: str = "",
+) -> str:
+    """Return the most useful workspace path for a live or completed batch.
+
+    ``file_id`` names the file the destination is about when the caller already
+    knows it. Without it the first item carrying a file is used, which is the
+    right answer for the single-source task the companion submits and the wrong
+    one when one item of a mixed batch owns the destination.
+    """
     project = quote(str(project_id or "").strip(), safe="")
     if not project:
         return "/workspace"
 
-    items = (detail or {}).get("items") or []
-    item = next((value for value in items if isinstance(value, dict) and value.get("file_id")), {})
-    file_id = quote(str(item.get("file_id") or "").strip(), safe="")
+    items = [value for value in ((detail or {}).get("items") or []) if isinstance(value, dict)]
+    wanted = str(file_id or "").strip()
+    item = next(
+        (value for value in items if str(value.get("file_id") or "").strip() == wanted),
+        {},
+    ) if wanted else next((value for value in items if value.get("file_id")), {})
+    file_id = quote(str(item.get("file_id") or wanted).strip(), safe="")
     state = str(item.get("state") or "").lower()
 
     if not file_id:

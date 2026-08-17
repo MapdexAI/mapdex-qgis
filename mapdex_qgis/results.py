@@ -11,16 +11,35 @@ TERMINAL_BATCH_STATES = frozenset({"completed", "failed", "cancelled", "partial"
 SUCCEEDED_ITEM_STATES = frozenset({"succeeded", "completed"})
 REVIEW_ITEM_STATES = frozenset({"needs_review", "review_required"})
 
+# The canonical code extraction returns for a raster with no real-world
+# placement. Callers branch on the code and never on the message: the message is
+# human copy the server may reword or localize, and matching it would be a
+# keyword list in disguise. `tests/test_mapdex_runs.py` asserts this string is
+# still in the generated error registry, so a contract rename cannot leave the
+# plugin quietly matching a code that no longer exists.
+GEOREFERENCE_REQUIRED = "GEOREFERENCE_REQUIRED"
+
 
 def batch_state(detail: dict[str, Any]) -> str:
     return str(detail.get("state") or detail.get("status") or "").lower()
 
 
+def _failed_items(detail: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    for item in detail.get("items") or []:
+        if isinstance(item, dict) and str(item.get("state") or "").lower() == "failed":
+            yield item
+
+
+def _error_code(error: Any) -> str:
+    """The canonical code on one item's error, or "" when it carries none."""
+    if isinstance(error, dict):
+        return str(error.get("code") or "").strip().upper()
+    return ""
+
+
 def first_batch_error(detail: dict[str, Any]) -> str:
     """Return one actionable server error without exposing raw envelopes."""
-    for item in detail.get("items") or []:
-        if str(item.get("state") or "").lower() != "failed":
-            continue
+    for item in _failed_items(detail):
         error = item.get("error")
         if isinstance(error, dict):
             message = error.get("message")
@@ -31,6 +50,58 @@ def first_batch_error(detail: dict[str, Any]) -> str:
         if isinstance(error, str) and error.strip():
             return error.strip()
     return ""
+
+
+def batch_failure(detail: dict[str, Any]) -> dict[str, str]:
+    """The first failed item's typed error, kept whole.
+
+    `first_batch_error` reduces the same error to one sentence for the status
+    line. That is right for display and wrong for deciding what to do next: the
+    canonical code and the file the refusal is about are both on the wire and
+    both were being dropped, so a refusal that names a next step arrived as a
+    generic failure with nowhere to go.
+    """
+    for item in _failed_items(detail):
+        error = item.get("error")
+        code = _error_code(error)
+        message = ""
+        correlation_id = ""
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            correlation_id = str(error.get("correlation_id") or "").strip()
+        elif isinstance(error, str):
+            message = error.strip()
+        if not code and not message:
+            continue
+        return {
+            "code": code,
+            "message": message,
+            "correlation_id": correlation_id,
+            "file_id": str(item.get("file_id") or "").strip(),
+        }
+    return {"code": "", "message": "", "correlation_id": "", "file_id": ""}
+
+
+def failed_item_codes(detail: dict[str, Any]) -> list[str]:
+    """One entry per failed item: its canonical code, or "" if it reported none.
+
+    The empty entries are the point. They keep the list the same length as the
+    failures, so a caller asking whether every failure shares one code cannot
+    get a true answer out of the items that never said.
+    """
+    return [_error_code(item.get("error")) for item in _failed_items(detail)]
+
+
+def every_failure_needs_placement(detail: dict[str, Any]) -> bool:
+    """Whether every failed item was refused for want of real-world placement.
+
+    Retry re-sends all failed items, so it is worth offering while any one of
+    them could come back differently. When they were all refused for want of
+    placement, the identical request produces the identical refusal, and
+    offering it teaches the user that the button does nothing.
+    """
+    codes = failed_item_codes(detail)
+    return bool(codes) and all(code == GEOREFERENCE_REQUIRED for code in codes)
 
 
 def batch_is_terminal(detail: dict[str, Any]) -> bool:
@@ -125,6 +196,17 @@ def run_failure(run: dict[str, Any]) -> str:
     return ""
 
 
+def run_failure_code(run: dict[str, Any]) -> str:
+    """The canonical code behind this run's failure, or "" when it carries none.
+
+    Reported beside the message rather than folded into it, because the listing
+    is where a user asks what went wrong and some codes name a next step the
+    sentence alone cannot route them to.
+    """
+    job = run.get("job") if isinstance(run.get("job"), dict) else {}
+    return _error_code(job.get("error") if isinstance(job, dict) else None)
+
+
 def summarize_runs(
     runs: Any, state: str = "all", limit: int = MAX_LISTED_RUNS
 ) -> dict[str, Any]:
@@ -150,6 +232,7 @@ def summarize_runs(
                 "title": str(run.get("prompt") or "").strip()[:120],
                 "created_at": str(run.get("created_at") or ""),
                 "error": run_failure(run),
+                "code": run_failure_code(run),
             }
         )
     return {
