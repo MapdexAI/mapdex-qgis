@@ -1787,6 +1787,12 @@ ERROR_REGISTRY = [
         "template": "The workflow step {step_type} failed execution."
     },
     {
+        "code": "PROCESSING_SERVICE_UNREACHABLE",
+        "type": "system",
+        "http": 503,
+        "template": "The processing service address {address} could not be resolved. This is a deployment configuration fault and retrying will not clear it."
+    },
+    {
         "code": "UNAUTHENTICATED",
         "type": "auth",
         "http": 401,
