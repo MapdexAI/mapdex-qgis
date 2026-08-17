@@ -157,7 +157,16 @@ def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_pa
         (
             "POST",
             "/v1/files",
-            {"filename": "map.tif", "content_type": "image/tiff", "byte_size": 11},
+            {
+                "filename": "map.tif",
+                "content_type": "image/tiff",
+                "byte_size": 11,
+                # Required by every POST /v1/files. Omitting it means the API
+                # answers CONTENT_POLICY_ATTESTATION_REQUIRED and the desktop
+                # cannot upload anything at all, so this belongs in the
+                # assertion rather than being tolerated as an extra key.
+                "policy_acknowledged": True,
+            },
             "proj_1",
         ),
         ("POST", "/v1/files/file_123/complete", {}, "proj_1"),
@@ -195,6 +204,49 @@ def test_signed_upload_does_not_send_mapdex_authorization(monkeypatch, tmp_path)
     assert lowered["x-signed"] == "yes"
     assert "authorization" not in lowered
     assert hasattr(captured["data"], "read")
+
+
+def test_multipart_fallback_carries_the_policy_attestation(monkeypatch, tmp_path):
+    """The compatibility route posts the file directly, so it must attest too.
+
+    The API enforces the acknowledgement as a form field on this branch. Sending
+    it only on the signed-upload path would leave the fallback refused with
+    CONTENT_POLICY_ATTESTATION_REQUIRED on exactly the deployments that need it.
+    """
+    source = tmp_path / "plan.dxf"
+    source.write_bytes(b"DXFBODY")
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=0):
+        captured.update(data=req.data, headers=dict(req.header_items()))
+        return FakeResponse()
+
+    monkeypatch.setattr("mapdex_qgis.api_client._urlopen", fake_urlopen)
+    api._upload_file_multipart(str(source), "proj_1")
+
+    body = captured["data"]
+    boundary = dict(
+        (key.lower(), value) for key, value in captured["headers"].items()
+    )["content-type"].split("boundary=")[1]
+
+    assert b'name="policy_acknowledged"' in body
+    assert b"\r\n\r\ntrue\r\n" in body
+    # The file part must survive intact alongside the new field, and the body
+    # must still terminate with the closing boundary.
+    assert b"DXFBODY" in body
+    assert body.endswith(f"--{boundary}--\r\n".encode())
+    assert body.count(f"--{boundary}".encode()) == 3
 
 
 def test_multiple_files_create_one_real_batch(monkeypatch):

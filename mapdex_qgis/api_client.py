@@ -320,9 +320,19 @@ class MapdexAPI:
         with open(path, "rb") as handle:
             content = handle.read()
         body = (
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-            f"Content-Type: {content_type}\r\n\r\n"
-        ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode()
+            + content
+            # Same attestation the presigned path sends; the multipart branch of
+            # POST /v1/files enforces it as a form field.
+            + (
+                f"\r\n--{boundary}\r\nContent-Disposition: form-data; "
+                "name=\"policy_acknowledged\"\r\n\r\ntrue\r\n"
+                f"--{boundary}--\r\n"
+            ).encode()
+        )
         url = self.base_url + "/v1/files"
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -348,6 +358,10 @@ class MapdexAPI:
                 "filename": filename,
                 "content_type": content_type,
                 "byte_size": os.path.getsize(path),
+                # Required by every POST /v1/files (docs/API.md §Content policy
+                # acknowledgement). Without it the API refuses the registration
+                # with CONTENT_POLICY_ATTESTATION_REQUIRED and no file is created.
+                "policy_acknowledged": True,
             },
             project_id,
         )
