@@ -29,6 +29,7 @@ platform credential store and are never placed in a prompt, a log, or an error.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -586,6 +587,44 @@ def session_setup(timeout_ms: int = DEFAULT_TIMEOUT_MS) -> list[str]:
         # path on some extensions; default_transaction_read_only closes that.
         "SET LOCAL default_transaction_read_only = on",
     ]
+
+
+def bind_numeric_parameters(sql: str, params: Sequence[Any]) -> str:
+    """Substitute the `%s` placeholders, accepting numbers and nothing else.
+
+    QGIS's own database connection API executes a statement string and takes no
+    parameter list, so a statement built here has to arrive complete. That is
+    the one place where the composed-never-concatenated discipline could be
+    lost, so the binder is deliberately the narrowest thing that works.
+
+    Every parameter these builders produce is a number: an SRID from `int(...)`,
+    a row cap from :func:`_limit`, and bounding-box or point coordinates as
+    floats. Nothing user-authored and nothing textual ever reaches here, so the
+    binder refuses anything that is not a finite int or float rather than
+    trying to escape it. A string parameter is not a case to handle carefully,
+    it is a sign that a builder changed and this function must be revisited.
+
+    Booleans are refused explicitly: `bool` is a subclass of `int` in Python, so
+    accepting it would silently render `True` as `1` and hide a builder bug.
+    """
+    values = list(params or [])
+    rendered: list[str] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ReadOnlyViolation("only numeric query parameters may be bound")
+        if not math.isfinite(value):
+            raise ReadOnlyViolation("a non-finite number cannot be bound")
+        rendered.append(repr(int(value)) if isinstance(value, int) else repr(float(value)))
+    parts = sql.split("%s")
+    if len(parts) - 1 != len(rendered):
+        raise ReadOnlyViolation(
+            "statement expects {} parameters and {} were supplied".format(len(parts) - 1, len(rendered))
+        )
+    bound = parts[0]
+    for literal, tail in zip(rendered, parts[1:]):
+        bound += literal + tail
+    # Re-guarded because the bound text, not the template, is what will run.
+    return guard_statement(bound)
 
 
 def describe_refusal(request: str) -> str:

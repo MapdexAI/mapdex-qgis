@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from . import analytics, presentation, spatial
+from . import analytics, postgis, presentation, spatial
 from .capabilities import CapabilityError
 from .guard import log_debug
 
@@ -901,6 +901,234 @@ class QGISRuntime:
         })
         return result
 
+    # -- reading a PostGIS connection --------------------------------------
+    #
+    # The credentials for a QGIS saved connection never leave the machine:
+    # `connections.py` sends the server an id and a user-authored label and has
+    # no field that could carry a host, a user or a password. So the server
+    # cannot answer a question about a QGIS-local database however good its own
+    # PostGIS implementation is, and this is the local half of that design
+    # rather than a duplicate of it.
+    #
+    # `postgis.py` builds the statement; nothing here composes SQL. QGIS's
+    # connection API executes a statement string and accepts no parameter list,
+    # so the numeric parameters are bound by `bind_numeric_parameters`, which
+    # refuses anything that is not a finite number and re-guards the bound text.
+
+    def _pg_connection(self, connection_id: str) -> Any:
+        """Resolve a saved PostgreSQL connection by the name QGIS stored it under.
+
+        Addressed by name, which is what `connections.py` reported as the id.
+        The credential, the auth config and the host stay inside QGIS's own
+        connection store and are never read here.
+        """
+        from qgis.core import QgsProviderRegistry  # noqa: PLC0415
+
+        metadata = QgsProviderRegistry.instance().providerMetadata("postgres")
+        _require(metadata is not None, "this QGIS build has no PostgreSQL provider")
+        name = str(connection_id or "")
+        try:
+            connections = metadata.connections(False)
+        except Exception as error:  # noqa: BLE001 - an unreadable store is a refusal
+            raise RuntimeUnavailable("QGIS could not read its saved connections: {}".format(error))
+        connection = connections.get(name) if hasattr(connections, "get") else None
+        _require(connection is not None, "'{}' is not a saved PostgreSQL connection in this QGIS".format(name))
+        return connection
+
+    def _pg_catalog(self, connection: Any, connection_id: str, schema: str, table: str) -> Any:
+        """Discover the table's real shape, so a forged name cannot resolve."""
+        try:
+            fields = connection.fields(schema, table)
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeUnavailable(
+                "{}.{} could not be read on '{}': {}".format(schema, table, connection_id, error)
+            )
+        columns = [{"name": field.name(), "type": field.typeName()} for field in fields]
+        _require(columns, "{}.{} has no readable columns".format(schema, table))
+        geometry_column, srid = "", 0
+        try:
+            for candidate in connection.tables(schema):
+                if candidate.tableName() != table:
+                    continue
+                geometry_column = str(candidate.geometryColumn() or "")
+                crs_list = candidate.crsList() if hasattr(candidate, "crsList") else []
+                if crs_list and crs_list[0].isValid():
+                    srid = int(str(crs_list[0].authid() or "EPSG:0").split(":")[-1] or 0)
+                break
+        except Exception as error:  # noqa: BLE001 - geometry metadata is optional
+            log_debug("reading PostGIS table properties", error)
+        return postgis.catalog_from_columns(
+            schema, table, columns, geometry_column, srid, connection_id,
+        )
+
+    def _pg_execute(self, connection: Any, connection_id: str, built: tuple) -> dict[str, Any]:
+        """Run one built statement inside a read-only transaction where possible.
+
+        The transaction is attempted rather than assumed. QGIS pools its own
+        libpq connections and does not promise that two `executeSql` calls share
+        a session, so the result reports whether the server-side READ ONLY
+        guarantee was actually established. The two construction-side layers -
+        builders that emit only SELECT, identifiers validated against this live
+        connection - hold either way; saying which ones were in force is the
+        difference between a guarantee and a hope.
+        """
+        sql, params = built
+        statement = postgis.bind_numeric_parameters(sql, params)
+        enforced = True
+        for setup in postgis.session_setup():
+            try:
+                connection.executeSql(setup)
+            except Exception as error:  # noqa: BLE001
+                enforced = False
+                log_debug("establishing a read-only PostGIS transaction", error)
+                break
+        try:
+            rows = connection.executeSql(statement)
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeUnavailable("that query could not be run on '{}': {}".format(connection_id, error))
+        finally:
+            if enforced:
+                try:
+                    connection.executeSql("COMMIT")
+                except Exception as error:  # noqa: BLE001
+                    log_debug("closing the read-only PostGIS transaction", error)
+        return {
+            "rows": [list(row) for row in (rows or [])],
+            "sql": statement,
+            "enforced_read_only": enforced,
+        }
+
+    def _postgis_answer(self, connection_id: str, schema: str, table: str, built: tuple) -> dict[str, Any]:
+        connection = self._pg_connection(connection_id)
+        outcome = self._pg_execute(connection, connection_id, built)
+        return {
+            "connection": connection_id,
+            "schema": schema,
+            "table": table,
+            # The statement travels back on purpose. The claim is that the SQL
+            # selects what it says it selects, and a claim nobody can inspect is
+            # not a claim.
+            "sql": outcome["sql"],
+            "enforced_read_only": outcome["enforced_read_only"],
+            "rows": outcome["rows"],
+        }
+
+    def postgis_profile(self, connection_id: str, schema: str, table: str) -> dict[str, Any]:
+        connection = self._pg_connection(connection_id)
+        catalog = self._pg_catalog(connection, connection_id, schema, table)
+        outcome = self._pg_execute(connection, connection_id, postgis.build_profile(catalog))
+        return {
+            "kind": "postgis_profile",
+            "connection": connection_id,
+            "schema": schema,
+            "table": table,
+            "columns": dict(catalog.columns),
+            "geometry_column": catalog.geometry_column,
+            "srid": catalog.srid,
+            "sql": outcome["sql"],
+            "enforced_read_only": outcome["enforced_read_only"],
+            "rows": outcome["rows"],
+        }
+
+    def postgis_analyze(
+        self,
+        connection_id: str,
+        schema: str,
+        table: str,
+        operation: str,
+        field: str = "",
+        group_field: str = "",
+        statistic: str = "count",
+        limit: int = 0,
+        bbox: Any = None,
+        id_field: str = "",
+        ascending: bool = False,
+        x: Any = None,
+        y: Any = None,
+        srid: int = 4326,
+    ) -> dict[str, Any]:
+        connection = self._pg_connection(connection_id)
+        catalog = self._pg_catalog(connection, connection_id, schema, table)
+        name = str(operation or "").strip().lower()
+        try:
+            if name == "numeric":
+                built = postgis.build_numeric_stats(catalog, field, bbox)
+            elif name == "categories":
+                built = postgis.build_categorical(catalog, field, limit or 25, bbox)
+            elif name == "group":
+                built = postgis.build_group_aggregate(
+                    catalog, group_field, statistic, field or None, limit or 50, bbox,
+                )
+            elif name == "top_n":
+                _require(id_field, "ranking needs the column that identifies a feature")
+                built = postgis.build_top_n(catalog, field, id_field, limit or 10, bool(ascending), bbox)
+            elif name == "bbox_count":
+                _require(bbox, "a bounding box is needed to count features in an area")
+                built = postgis.build_bbox_count(catalog, bbox, int(srid or 4326))
+            elif name == "nearest":
+                _require(id_field, "a nearest search needs the column that identifies a feature")
+                _require(x is not None and y is not None, "a nearest search needs a point to measure from")
+                built = postgis.build_nearest(
+                    catalog, id_field, float(x), float(y), int(srid or 4326), limit or 10,
+                )
+            else:
+                raise CapabilityError("{} is not an analysis this build performs".format(operation))
+        except postgis.ReadOnlyViolation as error:
+            # An unknown column reaches here. Naming it is the answer: the user
+            # asked about a field this table does not have.
+            raise RuntimeUnavailable("that question cannot be asked of {}.{}: {}".format(schema, table, error))
+        outcome = self._pg_execute(connection, connection_id, built)
+        return {
+            "kind": "postgis_analysis",
+            "operation": name,
+            "connection": connection_id,
+            "schema": schema,
+            "table": table,
+            "field": field,
+            "group_field": group_field,
+            "sql": outcome["sql"],
+            "enforced_read_only": outcome["enforced_read_only"],
+            "rows": outcome["rows"],
+        }
+
+    def postgis_spatial(
+        self,
+        connection_id: str,
+        schema: str,
+        table: str,
+        other_table: str,
+        operation: str = "relationship_count",
+        other_schema: str = "",
+        predicate: str = "intersects",
+        limit: int = 0,
+        group_field: str = "",
+    ) -> dict[str, Any]:
+        connection = self._pg_connection(connection_id)
+        left = self._pg_catalog(connection, connection_id, schema, table)
+        right = self._pg_catalog(connection, connection_id, other_schema or schema, other_table)
+        name = str(operation or "relationship_count").strip().lower()
+        try:
+            if name == "join_counts":
+                _require(group_field, "counting one table into another needs the column that names each area")
+                built = postgis.build_spatial_join_counts(left, right, group_field, limit or 50)
+            else:
+                built = postgis.build_spatial_relationship_count(left, right, predicate)
+        except postgis.ReadOnlyViolation as error:
+            raise RuntimeUnavailable("that spatial question cannot be asked here: {}".format(error))
+        outcome = self._pg_execute(connection, connection_id, built)
+        return {
+            "kind": "postgis_spatial",
+            "operation": name,
+            "predicate": predicate,
+            "connection": connection_id,
+            "schema": schema,
+            "table": table,
+            "other_table": other_table,
+            "sql": outcome["sql"],
+            "enforced_read_only": outcome["enforced_read_only"],
+            "rows": outcome["rows"],
+        }
+
     # -- map effects (reversible) -----------------------------------------
 
     def _push_undo(self, entry: Mapping[str, Any]) -> None:
@@ -1529,6 +1757,22 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             runtime,
             runtime.density(p["polygon_layer_id"], p["point_layer_id"], p.get("group_field", "")),
             p["polygon_layer_id"],
+        ),
+        # Asking a database a question it can answer. The request names a table,
+        # a column and an operation; there is no field that can carry SQL.
+        "postgis.profile@1": lambda p: runtime.postgis_profile(
+            p["connection_id"], p["schema"], p["table"],
+        ),
+        "postgis.analyze@1": lambda p: runtime.postgis_analyze(
+            p["connection_id"], p["schema"], p["table"], p["operation"],
+            p.get("field", ""), p.get("group_field", ""), p.get("statistic", "count"),
+            p.get("limit", 0), p.get("bbox"), p.get("id_field", ""),
+            bool(p.get("ascending")), p.get("x"), p.get("y"), p.get("srid", 4326),
+        ),
+        "postgis.spatial@1": lambda p: runtime.postgis_spatial(
+            p["connection_id"], p["schema"], p["table"], p["other_table"],
+            p.get("operation", "relationship_count"), p.get("other_schema", ""),
+            p.get("predicate", "intersects"), p.get("limit", 0), p.get("group_field", ""),
         ),
         "map.zoom_layer@1": lambda p: runtime.zoom_to_layer(p["layer_id"]),
         "map.zoom_selection@1": lambda p: runtime.zoom_to_selection(_active_layer_id(runtime)),
