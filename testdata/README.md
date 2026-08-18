@@ -129,11 +129,18 @@ consequences worth remembering:
   forward/back navigation cannot be told from a no-op here, and
   `qgis:next_extent@1` is reported as *not run* rather than as a defect.
 
-**Measured 2026-08-17, QGIS 4.0.2-Norrköping / Qt 6.11.0 / PyQt 6.11.0,
-offscreen: 41 checks ran — 38 passed, 2 failed, 1 not run.** The dispatch sweep
-covered all 53 advertised actions (18 legacy `qgis:*` plus 35 bound
-capabilities): 51 executed with an observable effect or a stated result, 1 was
-not verifiable offscreen, and **none was silently dropped**. Two runs
+**Re-measured 2026-08-18 with the drawing capability, QGIS 4.0.2-Norrköping /
+Qt 6.11.0 / PyQt 6.11.0, offscreen: 44 checks ran — 41 passed, 3 failed, 0 not
+run.** The dispatch sweep covered all 70 advertised actions (18 legacy `qgis:*`
+plus 52 bound capabilities): 1 was not verifiable offscreen and **none was
+silently dropped**. All three failures were reproduced against a clean
+`git archive HEAD` copy in the same session and are pre-existing; the third is
+the one the section below already predicted might have arrived with a later
+commit, and it had not.
+
+The earlier record, kept because the sweep's size is the thing that moves:
+**measured 2026-08-17, 41 checks ran — 38 passed, 2 failed, 1 not run**, over 53
+advertised actions (18 legacy plus 35 bound). Two runs
 back to back produced byte-identical output apart from QGIS's generated layer
 id. What it proved, and the two things it disproved:
 
@@ -144,6 +151,7 @@ id. What it proved, and the two things it disproved:
 | Answers | 24 features, EPSG:32635, 250,000 m² measured off the geometry by `analytics.geometry@1` (planar, EPSG:32635) **and** stated in `alan_m2`, mean 10,416.667, largest P-013 at 20,000, `nufus` sum 9,125 over 23 values with mean 396.739 — not 380.2 |
 | Effects | select-all really selects 24, select-by-ids 3; categorized styling really produces a `QgsCategorizedSymbolRenderer` with 3 categories; labels really turn on from `parsel_no`; opacity really moves 0.55 → 0.40; zoom really moves the canvas, and into the canvas CRS rather than raw UTM metres pasted onto degrees; a preview filter really cuts the layer to 7 and clearing restores 24; export really writes a file |
 | Gates | `field.calculate@1` asks before writing and writes nothing when declined; a Processing operation asks before it runs; `system.execute_code@1`, `system.execute_sql@1` and `postgis.write@1` are refused by the registry and never advertised |
+| Drawing | `draw.geometry@1` turns validated vertices into one valid polygon in the CRS they were drawn in, and says that CRS in the transcript; three clicks on one spot are refused with the reason and leave no layer behind; the draw tool really arms the real canvas, real screen positions come back through `toMapCoordinates` inside the canvas extent, and the tool disarms itself when the shape finishes |
 | **Failed** | **the `kullanim` breakdown does not separate the null from the empty string**, and **the geometry-area answer states no number in the transcript** |
 
 ### The two failures
@@ -187,3 +195,13 @@ not pixels); forward/back map navigation; that a Processing algorithm confirmed
 with **Yes** produces the right output layer; and the whole compose round trip
 against a live Mapdex — the sweep supplies the server's responses rather than
 receiving them.
+
+Drawing adds three of its own, because it is the one interaction where the
+input is a gesture. The harness synthesizes the release events and calls
+`canvasReleaseEvent` itself, so **Qt's own event delivery to the tool is not
+proved** — a human has to confirm that clicking the map actually places a
+vertex, that right-click and Enter both finish the shape and Esc abandons it,
+and that the shape the user sees drawn is the shape that lands in the layer.
+Nothing here draws a rubber band either: this build shows progress in the status
+line rather than on the canvas, which is a real gap in the feel of the tool and
+is worth a decision rather than a discovery.

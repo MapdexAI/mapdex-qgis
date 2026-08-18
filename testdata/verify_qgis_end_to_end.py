@@ -1083,6 +1083,11 @@ PARAM_VALUES = {
     "state": "all",
     "x": 28.9784, "y": 41.0082, "srid": 4326,
     "stroke_width": 1, "color": "#5B5BD6", "segments": 8,
+    # A shape drawn on the canvas. The vertices are a real square inside the
+    # canvas extent set below, in the canvas CRS, so the sweep's dispatch of
+    # draw.geometry@1 creates a layer that can be looked at afterwards.
+    "geometry": "polygon",
+    "vertices": [[28.92, 40.97], [29.08, 40.97], [29.08, 41.08], [28.92, 41.08]],
 }
 
 # Where the generic value would be wrong for that capability specifically.
@@ -1586,6 +1591,158 @@ def export_wrote_a_real_file():
 
 
 check("export writes a file that exists on disk", export_wrote_a_real_file)
+
+
+# --------------------------------------------------------------------------
+# Drawing
+#
+# The one interaction where the user supplies geometry. Three questions, and
+# only the first two can be answered here: does a validated request become a
+# real layer, does an impossible shape get refused rather than stored, and does
+# the canvas tool actually bind and convert clicks. The third is answered as far
+# as offscreen allows - the tool is armed on the real canvas and real screen
+# positions go through the real `toMapCoordinates` - but the release events are
+# synthesized, so this does NOT prove that a human's click reaches the tool
+# through Qt's own event delivery.
+# --------------------------------------------------------------------------
+
+class InputDialogStub:
+    """Answers the geometry picker, and records that it was asked."""
+
+    asked = []
+    answer = ("Polygon", True)
+
+    @classmethod
+    def getItem(cls, _parent, title, label, items, *_args, **_kwargs):  # noqa: N802 - Qt naming
+        cls.asked.append((title, label, list(items)))
+        return cls.answer
+
+
+plugin_module.QInputDialog = InputDialogStub
+
+
+class ReleaseStub:
+    """The two members `DrawMapTool.canvasReleaseEvent` reads off a Qt event."""
+
+    def __init__(self, x, y, button):
+        from qgis.PyQt.QtCore import QPoint
+
+        self._pos = QPoint(int(x), int(y))
+        self._button = button
+
+    def pos(self):
+        return self._pos
+
+    def button(self):
+        return self._button
+
+
+def drawn_vertices_become_a_layer():
+    before = set(PROJECT.mapLayers())
+    verdict, evidence = dispatch("draw.geometry@1", "", {
+        "geometry": "polygon",
+        "vertices": [[28.92, 40.97], [29.08, 40.97], [29.08, 41.08], [28.92, 41.08]],
+        "crs": "EPSG:4326",
+        "name": "Verification AOI",
+    })
+    if verdict != "executed":
+        raise AssertionError("draw {}: {}".format(verdict, evidence))
+    created = [key for key in PROJECT.mapLayers() if key not in before]
+    if len(created) != 1:
+        raise AssertionError("expected one new layer, got {}".format(len(created)))
+    layer = PROJECT.mapLayer(created[0])
+    if layer.featureCount() != 1:
+        raise AssertionError("the layer holds {} features".format(layer.featureCount()))
+    geometry = next(layer.getFeatures()).geometry()
+    if geometry.isEmpty() or not geometry.isGeosValid():
+        raise AssertionError("the stored shape is not valid geometry")
+    if layer.crs().authid() != "EPSG:4326":
+        raise AssertionError(
+            "the layer is in {}, not the CRS the vertices were drawn in".format(layer.crs().authid()))
+    IFACE.setActiveLayer(LAYER)
+    return "'{}' in {}, 1 valid polygon, area {:.4f} sq deg, and the line read: {}".format(
+        layer.name(), layer.crs().authid(), geometry.area(), evidence)
+
+
+check("a drawn shape becomes a real layer in the CRS it was drawn in",
+      drawn_vertices_become_a_layer)
+
+
+def a_shape_that_cannot_exist_is_refused():
+    # Three clicks on one spot is a polygon QGIS will happily store and every
+    # later measurement will report as zero area: a wrong answer with no error
+    # in front of it. The executor has to refuse it even though the registry
+    # sees three well-formed pairs of finite numbers.
+    before = set(PROJECT.mapLayers())
+    verdict, evidence = dispatch("draw.geometry@1", "", {
+        "geometry": "polygon",
+        "vertices": [[28.95, 41.00], [28.95, 41.00], [28.95, 41.00]],
+        "crs": "EPSG:4326",
+    })
+    if verdict != "refused":
+        raise AssertionError("a degenerate polygon was {}: {}".format(verdict, evidence))
+    if set(PROJECT.mapLayers()) != before:
+        raise AssertionError("the refused draw still left a layer behind")
+    return evidence
+
+
+check("a polygon with no distinct corners is refused, and leaves no layer",
+      a_shape_that_cannot_exist_is_refused)
+
+
+def the_draw_tool_arms_the_canvas_and_converts_clicks():
+    from qgis.PyQt.QtCore import Qt
+
+    from mapdex_qgis.maptools import DrawMapTool
+
+    plugin = need_plugin()
+    InputDialogStub.asked = []
+    InputDialogStub.answer = ("Polygon", True)
+    CANVAS.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+    CANVAS.resize(400, 400)
+    CANVAS.setExtent(QgsRectangle(28.90, 40.95, 29.10, 41.10))
+    CANVAS.refresh()
+    before = set(PROJECT.mapLayers())
+    plugin._nivo_turns = []
+    plugin._nivo_state = "idle"
+    plugin.status.setText("")
+
+    plugin._toggle_draw_tool(True)
+    if not InputDialogStub.asked:
+        raise AssertionError("the geometry picker was never shown")
+    tool = CANVAS.mapTool()
+    if not isinstance(tool, DrawMapTool):
+        raise AssertionError("the canvas tool is {}, not the draw tool".format(type(tool).__name__))
+
+    left = Qt.MouseButton.LeftButton
+    right = Qt.MouseButton.RightButton
+    for x, y in ((100, 300), (300, 300), (300, 100)):
+        tool.canvasReleaseEvent(ReleaseStub(x, y, left))
+    if len(tool.state.vertices) != 3:
+        raise AssertionError("three clicks produced {} vertices".format(len(tool.state.vertices)))
+    tool.canvasReleaseEvent(ReleaseStub(0, 0, right))
+
+    created = [key for key in PROJECT.mapLayers() if key not in before]
+    if len(created) != 1:
+        raise AssertionError("finishing produced {} new layers".format(len(created)))
+    layer = PROJECT.mapLayer(created[0])
+    box = next(layer.getFeatures()).geometry().boundingBox()
+    if not QgsRectangle(28.90, 40.95, 29.10, 41.10).contains(box):
+        raise AssertionError(
+            "the stored shape at {} is outside the canvas extent, so the screen "
+            "positions were not converted through the canvas".format(box.toString(4)))
+    # The tool must put itself away, or the user's next click on the map starts
+    # a shape they did not ask for.
+    if plugin._draw_tool is not None or isinstance(CANVAS.mapTool(), DrawMapTool):
+        raise AssertionError("the draw tool is still armed after the shape finished")
+    IFACE.setActiveLayer(LAYER)
+    return ("armed on the real canvas; 3 synthesized clicks -> '{}' at {} "
+            "(events synthesized: Qt event delivery is NOT proved)").format(
+        layer.name(), box.toString(4))
+
+
+check("the draw tool arms the canvas and turns clicked positions into a shape",
+      the_draw_tool_arms_the_canvas_and_converts_clicks)
 
 
 # --------------------------------------------------------------------------

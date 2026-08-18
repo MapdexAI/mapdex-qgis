@@ -129,6 +129,96 @@ def _catalogue_ids() -> set[str]:
     return ids
 
 
+def _explained_ids() -> set[str]:
+    """Capabilities the server records as ones it deliberately cannot select.
+
+    The keys of `CompanionUnreachable`. A catalogue entry writes its id as
+    `ID: "..."`, so a quoted id FOLLOWED by a colon appears only as a map key and
+    the two sets cannot be confused.
+    """
+    import re
+
+    source = CATALOGUE.read_text(encoding="utf-8")
+    return set(re.findall(r'"([a-z_]+\.[a-z_0-9]+@[0-9]+)":', source))
+
+
+def _declared_ids() -> set[str]:
+    """The ids the registry SOURCE declares, read rather than imported.
+
+    `all_capabilities()` was the obvious call and it is the wrong one: the
+    registry is module-level mutable state, `register` is the documented
+    extension point, and `test_agent.py` registers a fake `custom.hillshade@1`
+    to prove that extension point works. Asking the live registry therefore made
+    this gate report a test fixture as an unexplained product capability - and
+    only when the suite ran in the order that put that test first.
+
+    Reading the source asks the same question the Go half asks of the same text,
+    with the same regex, so the two sides cannot disagree about what "declared"
+    means.
+    """
+    import re
+
+    source = (PACKAGE / "capabilities.py").read_text(encoding="utf-8")
+    ids = set(re.findall(r'_c\("([a-z_]+\.[a-z_0-9]+@[0-9]+)"', source))
+    assert ids, "capabilities.py parsed to zero capabilities; this guard is now blind"
+    return ids
+
+
+# The desktop half of the same obligation the Go gate enforces from the other
+# side: a capability declared here that the server can neither select nor
+# explain. `packages/contracts/companion_capabilities_test.go` is the gate that
+# fails on it; this dictionary is where a capability waiting for that entry
+# records the entry it is waiting for, so the gap is a stated decision rather
+# than a red test somebody has to reverse-engineer.
+#
+# An entry carries the exact text the Go file needs, because the fix is one edit
+# and the reason for it is known here, at the point the capability was added.
+SERVER_DECISION_PENDING = {
+    "draw.geometry@1": (
+        'Add to contracts.CompanionUnreachable:\n\n'
+        '    "draw.geometry@1": "deferred to package 2.1 (interactive input tools), with '
+        'measure.distance@1 and for the same reason. Its vertices are positions a person '
+        'clicked on a canvas. The classifier has no typed slot for a list of positions, so '
+        'the server would have to read a boundary out of prose - and geometry quoted back '
+        'from a sentence is the fabricated fact the grounding rule forbids.",\n\n'
+        "This change was scoped to mapdex/apps/qgis-plugin/, so the entry was not made here."
+    ),
+}
+
+
+def test_a_desktop_capability_is_either_selectable_or_explained():
+    """The server may not be silent about something the desktop can do.
+
+    Not a duplicate of the Go gate: that one fails when the entry is missing,
+    which is correct and gives no place to say why it is missing yet. This one
+    fails when a capability is neither catalogued, nor explained, nor recorded
+    above - so "merely absent" stays impossible on both sides.
+    """
+    if not CATALOGUE.exists():
+        return  # standalone plugin checkout: the server catalogue is not present
+    unaccounted = sorted(
+        _declared_ids() - _catalogue_ids() - _explained_ids() - set(SERVER_DECISION_PENDING)
+    )
+    assert not unaccounted, (
+        "the server can neither select nor explain these: {}. Add a catalogue entry, a "
+        "CompanionUnreachable reason, or record the pending decision in "
+        "SERVER_DECISION_PENDING.".format(unaccounted)
+    )
+
+
+def test_the_pending_server_decisions_have_not_already_been_made():
+    # An entry that has since been catalogued or explained is a note about a
+    # problem that was solved, which reads as an open gap and is not one.
+    if not CATALOGUE.exists():
+        return
+    settled = sorted(
+        name for name in SERVER_DECISION_PENDING
+        if name in _catalogue_ids() or name in _explained_ids()
+    )
+    assert not settled, "the server accounts for these now; drop them from " \
+                        "SERVER_DECISION_PENDING: {}".format(settled)
+
+
 def _bound() -> set[str]:
     import sys
 

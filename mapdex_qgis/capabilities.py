@@ -18,6 +18,7 @@ capability that is not registered at all cannot be executed by any path.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 PROTOCOL_VERSION = "companion.v2"
@@ -192,7 +193,49 @@ def _coerce(name: str, spec: Mapping[str, Any], value: Any) -> Any:
         if not isinstance(value, (list, tuple)):
             raise CapabilityError("{} must be a list".format(name))
         return [str(item)[:MAX_PARAM_STRING] for item in value[:MAX_PARAM_LIST]]
+    if kind == "points":
+        return _coerce_points(name, spec, value)
     raise CapabilityError("unsupported parameter type for {}".format(name))
+
+
+def _coerce_points(name: str, spec: Mapping[str, Any], value: Any) -> list[list[float]]:
+    """A bounded list of ``[x, y]`` pairs, each a real number and nothing else.
+
+    ``list`` cannot carry this: it stringifies every item, which turns a
+    coordinate into text. The discipline is the one ``postgis.bind_numeric_parameters``
+    already applies to a database parameter, for the same reason - the value is
+    about to become geometry, so anything that is not a finite number has to be
+    refused rather than coerced into something plausible.
+
+    ``bool`` is rejected explicitly. It subclasses ``int``, so ``True`` would
+    otherwise sail through as the coordinate 1.0 and place a vertex on the
+    equator. Numeric STRINGS are refused too: a caller sending ``"41.0"`` has
+    sent text, and quietly reading it as a position is how a shape ends up
+    somewhere nobody chose.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise CapabilityError("{} must be a list of [x, y] pairs".format(name))
+    if len(value) > MAX_PARAM_LIST:
+        raise CapabilityError("{} carries more than {} points".format(name, MAX_PARAM_LIST))
+    points: list[list[float]] = []
+    for pair in value:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise CapabilityError("{} must contain [x, y] pairs".format(name))
+        ordinates: list[float] = []
+        for ordinate in pair:
+            if isinstance(ordinate, bool) or not isinstance(ordinate, (int, float)):
+                raise CapabilityError("{} must contain numbers".format(name))
+            number = float(ordinate)
+            if not math.isfinite(number):
+                raise CapabilityError("{} must contain finite numbers".format(name))
+            ordinates.append(number)
+        points.append(ordinates)
+    minimum = spec.get("min_points")
+    if minimum is not None and len(points) < minimum:
+        raise CapabilityError("{} needs at least {} point(s)".format(name, minimum))
+    if not points and spec.get("required"):
+        raise CapabilityError("{} is required".format(name))
+    return points
 
 
 def validate_request(identifier: str, params: Mapping[str, Any] | None, client: str = CLIENT_QGIS) -> dict[str, Any]:
@@ -563,6 +606,32 @@ _c("export.layer@1", "export", "Write a layer to a file in a standard GIS format
                       "enum": ["geojson", "gpkg", "shp", "csv"],
                       "default": "gpkg"}},
    targets=("vector",), execution=EXEC_LOCAL, produces=("file",))
+
+# -- Drawing: the shape the user pointed at ----------------------------------
+#
+# `features.py` refuses to invent a polygon or a line, and it is right to:
+# corners nobody supplied are fabricated geometry. That refusal left the third
+# release-gate scenario - draw an AOI, analyse it, inspect the result - with no
+# way to start, because the plugin's answer to "draw" was to create an empty
+# layer and tell the user to toggle editing themselves. The vertices here come
+# from a person clicking on the canvas, which is the one honest source of them,
+# and the shape lands as a real layer so every capability that takes a
+# `layer_id` can then be pointed at it.
+#
+# `crs` is required and carries no default. The vertices are in whatever the
+# canvas is projected to - a national grid as often as not - and stamping
+# EPSG:4326 on them because nothing better was supplied would produce a shape
+# claiming a place it was not drawn in. How many vertices each geometry needs is
+# `maptools.refusal_for`, not a registry rule: it depends on the value of
+# another parameter, and a schema that cannot see that would have to guess.
+_c("draw.geometry@1", "draw",
+   "Turn a shape drawn on the map canvas into a layer other operations can use.",
+   params={"geometry": {"type": "string", "required": True,
+                        "enum": ["point", "linestring", "polygon"]},
+           "vertices": {"type": "points", "required": True, "min_points": 1},
+           "crs": {"type": "string", "required": True},
+           "name": {"type": "string"}},
+   execution=EXEC_LOCAL, reversible=True, produces=("layer",))
 
 # -- the field calculator ----------------------------------------------------
 #

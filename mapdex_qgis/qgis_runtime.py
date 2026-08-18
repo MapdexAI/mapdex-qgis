@@ -1955,6 +1955,11 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     # and its task runner, none of which the runtime has.
     "mapdex.jobs@1",
     "mapdex.open_review@1",
+    # Drawing needs the canvas map tool, the project the new layer joins and the
+    # assistant context that has to learn about it - all of them the plugin's,
+    # none of them the runtime's. The runtime could add a memory layer; it could
+    # not arm a tool and wait for a person to click.
+    "draw.geometry@1",
 })
 
 

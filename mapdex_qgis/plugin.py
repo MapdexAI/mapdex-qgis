@@ -167,6 +167,12 @@ LEGACY_CAPABILITY_IDS = {
     "qgis:invert_selection@1": "selection.invert@1",
 }
 
+# The shapes the canvas tool can collect, which is the enum draw.geometry@1
+# declares. Multi-part geometries are absent on purpose: a user drawing one
+# shape has drawn one shape, and offering "multipolygon" would promise a second
+# part there is no gesture to start.
+DRAWABLE_GEOMETRIES = ("point", "linestring", "polygon")
+
 # The legacy ids with no registered capability behind them. Each names a method
 # on the plugin rather than a branch in a conditional, so the dispatcher stays
 # one lookup whether or not the registry knows the id.
@@ -458,6 +464,11 @@ RESULT_DESCRIBERS = {
     "review_opened": _describe_review_opened,
     "reorder_applied": lambda result: "moved to {}".format(result.get("position")),
     "basemap_added": lambda result: "added {}".format(result.get("name")),
+    # The CRS is in the line on purpose. A drawn shape is data, and a layer whose
+    # frame the user cannot see is one they cannot check against anything else.
+    "geometry_drawn": lambda result: "drew a {} into '{}' from {} point(s), in {}".format(
+        result.get("geometry"), result.get("layer_name"),
+        _pretty_number(result.get("vertices")), result.get("crs")),
     "undone": lambda result: "undid the last {} change".format(result.get("change")),
     "undo_failed": lambda result: "could not undo that: {}".format(result.get("reason")),
 }
@@ -595,6 +606,8 @@ class MapdexPlugin:
         self._layer_menu_actions = []
         self._measure_action = None
         self._measure_tool = None
+        self._draw_action = None
+        self._draw_tool = None
         self._previous_map_tool = None
         self.input_box = None
         self.source_summary = None
@@ -644,6 +657,7 @@ class MapdexPlugin:
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
         self.iface.addToolBarIcon(self.action)
         self._install_measure_action()
+        self._install_draw_action()
         self._install_layer_menu_actions()
         # Register the dock immediately so QGIS places it in the right rail,
         # not as a floating overlay over the menu bar.
@@ -672,15 +686,22 @@ class MapdexPlugin:
 
     @guarded
     def _toggle_measure_tool(self, checked=True):
-        canvas = self.iface.mapCanvas()
         if not checked:
             self._restore_map_tool()
             return
         from .maptools import MeasureMapTool  # noqa: PLC0415 - Qt-only import
 
+        # Put any Mapdex tool away first, so "previous" is the tool the user
+        # chose rather than our other one. Without it, starting a measurement
+        # while drawing makes the draw tool the thing measuring returns to, and
+        # the user is left in a mode whose menu item reads unchecked.
+        self._restore_map_tool()
+        canvas = self.iface.mapCanvas()
         self._previous_map_tool = canvas.mapTool()
         self._measure_tool = MeasureMapTool(canvas, self._measured_two_points, self._set_status)
         canvas.setMapTool(self._measure_tool)
+        if self._measure_action is not None:
+            self._measure_action.setChecked(True)
         self._set_status("Click the first point to measure from.")
 
     @guarded
@@ -699,22 +720,178 @@ class MapdexPlugin:
             "Measure between two clicked points",
         )
 
+    def _install_draw_action(self):
+        """Let a person draw the shape, rather than describe it.
+
+        `features.py` will place points and refuses to invent a polygon, which
+        is the right refusal - corners nobody supplied are fabricated geometry -
+        but it left the product unable to accept a boundary either. Asking for
+        an area of interest created an empty layer and told the user to toggle
+        editing, so the third release-gate scenario, draw an AOI then analyse it,
+        had no first step.
+
+        Checkable and self-restoring for the same reason the measure action is:
+        a modal canvas state the user has to remember to leave turns their next
+        click into a vertex of a shape they were not drawing.
+        """
+        self._draw_action = QAction(plugin_icon(), "Draw with Mapdex", self.iface.mainWindow())
+        self._draw_action.setToolTip(
+            "Draw a point, line or area on the map and keep it as a layer")
+        self._draw_action.setCheckable(True)
+        self._draw_action.triggered.connect(self._toggle_draw_tool)
+        self.iface.addPluginToWebMenu("&Mapdex", self._draw_action)
+
+    @guarded
+    def _toggle_draw_tool(self, checked=True):
+        if not checked:
+            self._restore_map_tool()
+            return
+        # The geometry cannot be defaulted: someone drawing parcels gets nothing
+        # from a point layer. The picker is the existing one, so "what kind of
+        # shape" is asked the same way whether a layer is being created or drawn.
+        geometry = self._ask_geometry_type()
+        if not geometry or geometry not in DRAWABLE_GEOMETRIES:
+            self._restore_map_tool()
+            self._set_status("Nivo did not start drawing.")
+            return
+        from .maptools import DrawMapTool  # noqa: PLC0415 - Qt-only import
+
+        # As the measure action: put any Mapdex tool away first so "previous" is
+        # the tool the user picked, not our other one.
+        self._restore_map_tool()
+        canvas = self.iface.mapCanvas()
+        self._previous_map_tool = canvas.mapTool()
+        self._draw_tool = DrawMapTool(
+            canvas, geometry, self._drew_geometry, self._draw_cancelled, self._set_status)
+        canvas.setMapTool(self._draw_tool)
+        if self._draw_action is not None:
+            self._draw_action.setChecked(True)
+        self._set_status(
+            "Click to place points for the {}. Right-click or press Enter to finish, "
+            "Esc to cancel.".format(geometry))
+
+    @guarded
+    def _drew_geometry(self, geometry, vertices, crs):
+        """Hand the drawn shape to the registry-validated capability.
+
+        Routed through `_run_capability` for the reason the measure tool is: a
+        shape drawn on the canvas and one arriving from the server must be
+        validated by the same registry and produce the same transcript line.
+        """
+        self._restore_map_tool()
+        if not crs:
+            # Refused here rather than at the registry, which would only be able
+            # to say "crs is required". The user needs the reason, and the reason
+            # is their project, not their request.
+            self._set_status(
+                "This map is in a coordinate system with no authority code, so Mapdex "
+                "cannot state where that shape is. Set a project CRS such as EPSG:4326 "
+                "and draw it again.")
+            return
+        self._run_capability(
+            "draw.geometry@1",
+            {"geometry": geometry, "vertices": vertices, "crs": crs},
+            "Draw {} on the map".format("an area" if geometry == "polygon" else "a " + geometry),
+        )
+
+    @guarded
+    def _draw_cancelled(self, discarded):
+        self._restore_map_tool()
+        self._set_status(
+            "Drawing cancelled; {} point(s) discarded.".format(discarded) if discarded
+            else "Drawing cancelled.")
+
+    def _draw_geometry_capability(self, params):
+        """Turn validated vertices into a real layer, in the CRS they were drawn in.
+
+        The registry has already proved the vertices are pairs of finite numbers
+        and bounded in count. What it cannot check is whether that many of them
+        make the requested shape, because the answer depends on a second
+        parameter - so `refusal_for` is asked here, and a request that arrived
+        from the capability channel with two corners for a polygon is refused
+        with the reason rather than stored as a shape with no area.
+
+        A memory layer, deliberately: it appears immediately and needs no path or
+        format decision from someone who is in the middle of drawing. Nothing the
+        user already had is touched, which is why this is safe rather than
+        consequential.
+        """
+        from .maptools import refusal_for  # noqa: PLC0415 - keeps the import graph honest
+
+        geometry = str(params.get("geometry") or "")
+        vertices = list(params.get("vertices") or [])
+        authid = str(params.get("crs") or "").strip()
+        refusal = refusal_for(geometry, vertices)
+        if refusal:
+            raise CapabilityError(refusal)
+        crs = QgsCoordinateReferenceSystem(authid)
+        if not crs.isValid():
+            raise CapabilityError("{} is not a coordinate reference system QGIS knows".format(
+                authid or "that CRS"))
+        name = str(params.get("name") or "").strip()[:120] or self._unique_layer_name(geometry)
+        layer = QgsVectorLayer("{}?crs={}&index=yes".format(geometry, authid), name, "memory")
+        if not layer.isValid():
+            raise CapabilityError("QGIS could not create a {} layer in {}".format(geometry, authid))
+        feature = QgsFeature(layer.fields())
+        feature.setGeometry(self._drawn_geometry(geometry, vertices))
+        added, _features = layer.dataProvider().addFeatures([feature])
+        if not added:
+            raise CapabilityError("QGIS rejected the drawn geometry")
+        layer.updateExtents()
+        QgsProject.instance().addMapLayer(layer)
+        self.iface.setActiveLayer(layer)
+        layer.triggerRepaint()
+        # The assistant has to learn about the layer in this turn, or the next
+        # question ("how big is it?") is asked about a layer it cannot see.
+        self._refresh_nivo_context()
+        return {
+            "kind": "geometry_drawn",
+            "layer_id": layer.id(),
+            "layer_name": layer.name(),
+            "geometry": geometry,
+            "crs": authid,
+            "vertices": len(vertices),
+        }
+
+    @staticmethod
+    def _drawn_geometry(geometry, vertices):
+        """Build the QGIS geometry, closing a polygon ring if the user did not.
+
+        A ring left open is the ordinary case: the user right-clicks to finish
+        rather than clicking exactly on their first corner, and a ring whose
+        ends do not meet is not a polygon.
+        """
+        points = [QgsPointXY(float(x), float(y)) for x, y in vertices]
+        if geometry == "point":
+            return QgsGeometry.fromPointXY(points[0])
+        if geometry == "linestring":
+            return QgsGeometry.fromPolylineXY(points)
+        ring = list(points)
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        return QgsGeometry.fromPolygonXY([ring])
+
     def _restore_map_tool(self):
         canvas = self.iface.mapCanvas()
-        if self._measure_tool is not None:
+        for attribute in ("_measure_tool", "_draw_tool"):
+            tool = getattr(self, attribute, None)
+            if tool is None:
+                continue
             try:
-                canvas.unsetMapTool(self._measure_tool)
+                canvas.unsetMapTool(tool)
             except (AttributeError, RuntimeError):
                 pass
-            self._measure_tool = None
+            setattr(self, attribute, None)
         if self._previous_map_tool is not None:
             try:
                 canvas.setMapTool(self._previous_map_tool)
             except (AttributeError, RuntimeError):
                 pass
             self._previous_map_tool = None
-        if self._measure_action is not None:
-            self._measure_action.setChecked(False)
+        for attribute in ("_measure_action", "_draw_action"):
+            action = getattr(self, attribute, None)
+            if action is not None:
+                action.setChecked(False)
 
     def _install_layer_menu_actions(self):
         """Offer the paid work where the user already is: the layer tree.
@@ -830,9 +1007,11 @@ class MapdexPlugin:
         # A map tool outlives the plugin that set it: leaving it active means
         # clicking the canvas after an unload calls into a dead plugin.
         self._restore_map_tool()
-        if self._measure_action is not None:
-            self.iface.removePluginWebMenu("&Mapdex", self._measure_action)
-            self._measure_action = None
+        for attribute in ("_measure_action", "_draw_action"):
+            action = getattr(self, attribute, None)
+            if action is not None:
+                self.iface.removePluginWebMenu("&Mapdex", action)
+                setattr(self, attribute, None)
         self.poll_timer.stop()
         self.progress_timer.stop()
         for task in list(self._tasks):
@@ -2202,6 +2381,10 @@ class MapdexPlugin:
             # by hand.
             "mapdex.jobs@1": self._list_mapdex_runs,
             "mapdex.open_review@1": self._open_mapdex_review,
+            # The shape a person drew on the canvas becoming a layer. It needs
+            # the project, the active-layer change and the assistant context
+            # refresh, so it belongs on this side rather than in the runtime.
+            "draw.geometry@1": self._draw_geometry_capability,
         }
         # The declaration and the table must not drift: an id advertised here
         # and missing from the table is the "Nivo prepared an action" and a
