@@ -174,15 +174,12 @@ def _declared_ids() -> set[str]:
 # An entry carries the exact text the Go file needs, because the fix is one edit
 # and the reason for it is known here, at the point the capability was added.
 SERVER_DECISION_PENDING = {
-    "draw.geometry@1": (
-        'Add to contracts.CompanionUnreachable:\n\n'
-        '    "draw.geometry@1": "deferred to package 2.1 (interactive input tools), with '
-        'measure.distance@1 and for the same reason. Its vertices are positions a person '
-        'clicked on a canvas. The classifier has no typed slot for a list of positions, so '
-        'the server would have to read a boundary out of prose - and geometry quoted back '
-        'from a sentence is the fabricated fact the grounding rule forbids.",\n\n'
-        "This change was scoped to mapdex/apps/qgis-plugin/, so the entry was not made here."
-    ),
+    # Empty on purpose, and kept rather than deleted. draw.geometry@1 lived here
+    # for one change, between the desktop declaring it and the server recording
+    # why it cannot select it; the stale check below then failed and sent
+    # whoever landed the server entry back to clear this. That is the loop this
+    # map exists for, so the next capability that arrives ahead of its server
+    # decision has somewhere to be recorded instead of merely being absent.
 }
 
 
