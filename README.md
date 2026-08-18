@@ -78,10 +78,10 @@ or Processing algorithm ids from model text. Every action comes from a closed
 capability registry; an unregistered capability cannot execute by any path, and
 an unexpected parameter is rejected rather than ignored.
 
-## Store your own model key (optional)
+## Use your own model key (optional)
 
-The assistant runs through Mapdex on your plan — nothing to configure. You can
-already store your own provider key from *Settings* in the panel:
+The assistant runs through Mapdex on your plan — nothing to configure. Or point
+it at your own provider from *Settings* in the panel:
 
 | Provider | Needs |
 | --- | --- |
@@ -94,14 +94,23 @@ read back into the interface, and are redacted from every error message. If the
 authentication database is locked the key is kept for the session only rather
 than being written as plaintext.
 
-**A stored key is not used yet.** Every assistant turn still goes through
-Mapdex on your plan, so bounded map context is sent to Mapdex whether or not a
-key is configured. Sending the turn directly to your provider is built but not
-wired into the conversation path; the settings panel says which of the two is
-in force, so the answer is never inferred from this document.
+With a key configured, the turn goes **directly to that provider** and does not
+pass through Mapdex servers, so it needs no Mapdex account: you can ask your own
+model about your own layers signed out of Mapdex entirely. With Ollama the whole
+conversation stays on your machine. The settings panel states which of the two
+paths is in force, so the answer is never inferred from this document.
 
-Mapdex processing (georeference, digitization, validation, batch) still uses
-your Mapdex account.
+**What that mode cannot do.** Georeferencing, digitization, validation, batch
+and review execute as Mapdex Runs, so a conversation that never contacts Mapdex
+cannot start one — Nivo is not offered them and will say so rather than
+preparing a step it cannot run. They still work from the task panel with your
+Mapdex account. Everything QGIS and your saved PostGIS connections do locally —
+analysis, styling, selection, Processing, measurement, export — is available.
+
+**If your provider fails**, Mapdex is offered as a choice, never taken as a
+default: falling back automatically would upload the map context this mode
+exists to keep off Mapdex. You are told what failed, told that nothing has been
+sent, and asked.
 
 Work runs in the background: you can close the panel, keep working, or restart
 QGIS — the panel picks the task back up from *Recent tasks*.

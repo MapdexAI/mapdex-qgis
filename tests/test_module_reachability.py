@@ -27,19 +27,13 @@ ROOTS = ("__init__", "plugin")
 
 # Modules that are knowingly not wired yet. Each needs a reason, and the reason
 # has to be a decision rather than an oversight.
-ALLOWED = {
-    "agent": (
-        "The bounded BYOK agent loop. Every turn currently takes the hosted "
-        "compose path; `plugin.assistant_runtime()` resolves which runtime a "
-        "turn WOULD take, but nothing acts on it yet. This is the one gap the "
-        "plugin still records, and `metadata.txt` states it to users rather "
-        "than advertising a direct-to-provider path that does not exist."
-    ),
-    "nivo_prompt": (
-        "The vendored system prompt the BYOK loop feeds its provider. It is "
-        "reachable exactly when `agent` is, and is listed with it."
-    ),
-}
+#
+# Empty on purpose, and kept rather than deleted. `agent` and `nivo_prompt` sat
+# here for as long as the BYOK loop existed and nothing drove it; they left when
+# `plugin.ask_nivo` grew the branch that builds a provider and runs the loop, so
+# the next module that arrives ahead of its call site has somewhere to record
+# the decision instead of merely being absent from the graph.
+ALLOWED = {}
 
 
 def _relative_imports(path: pathlib.Path, modules: set[str]) -> set[str]:

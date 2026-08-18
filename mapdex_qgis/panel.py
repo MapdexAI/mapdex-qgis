@@ -318,10 +318,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     endpoint_layout.addLayout(connection_form)
     connection_layout.addWidget(endpoint_frame)
 
-    # Nivo assistant runtime. Every turn currently goes through Mapdex; a key
-    # entered here is stored encrypted but is not yet used to reach the provider
-    # directly. The privacy label below states which of the two is in force, so
-    # the user reads the live answer rather than an intention.
+    # Nivo assistant runtime. With no provider the turn goes through Mapdex on
+    # the user's plan; with one configured it goes straight to that provider and
+    # never reaches Mapdex. The privacy label below is rendered from the SAME
+    # resolution the turn uses (`plugin.assistant_runtime`), so it states the
+    # live answer rather than an intention - reading it from a second place is
+    # how the panel came to promise a path the turn never took.
     connection_layout.addWidget(_section_label("Nivo assistant"))
     assistant_form = root.register_form(QFormLayout())
     assistant_form.setFieldGrowthPolicy(

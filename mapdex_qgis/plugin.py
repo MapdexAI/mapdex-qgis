@@ -60,8 +60,17 @@ from .build_version import PLUGIN_VERSION
 from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
-from .providers import resolve_runtime
+from .providers import ProviderError, build_provider, default_model_for, resolve_runtime
+from .agent import AgentSession
+from .byok import (
+    ByokTurn,
+    is_byok,
+    needs_mapdex_account,
+    provider_failed,
+    session_allowance,
+)
 from .capabilities import (
+    CLIENT_QGIS,
     CapabilityError,
     get as get_capability,
     validate_request,
@@ -1295,6 +1304,17 @@ class MapdexPlugin:
         self.base_url_input.setEnabled(bool(provider))
         self.api_key_input.setEnabled(bool(provider) and provider != "ollama")
         self.model_input.setEnabled(bool(provider))
+        # Name the model a blank field actually resolves to. `build_provider`
+        # substitutes it, so "Provider default" was describing a real value the
+        # user could not see - and for a custom gateway there is no default at
+        # all, which is a thing to say before the first call fails on it.
+        default_model = default_model_for(provider)
+        if provider:
+            self.model_input.setPlaceholderText(
+                default_model or "Required: this endpoint has no default model"
+            )
+        else:
+            self.model_input.setPlaceholderText("Provider default")
         if needs_endpoint and not self.base_url_input.text().strip() and provider == "ollama":
             self.base_url_input.setPlaceholderText("http://127.0.0.1:11434")
         self._refresh_assistant_privacy()
@@ -1802,15 +1822,13 @@ class MapdexPlugin:
         if self._nivo_compose_task is not None:
             self._set_status("Nivo is already working. Use Stop to cancel that request.")
             return
-        # Every turn currently takes the hosted path, so the Mapdex account is a
-        # precondition for all of them. When the local provider loop is wired,
-        # this gate becomes hosted-only: a user driving their own provider needs
-        # no account to ask their own model about their own layers, and refusing
-        # them here is what would make BYOK unreachable for exactly the people
-        # it is offered to. `assistant_runtime()` already resolves which runtime
-        # a turn would take; the branch that acts on it is the remaining work,
-        # and `metadata.txt` states plainly that a stored key is not yet used.
-        if not self.api.token or not self.project_id:
+        # One resolution, used for the gate and for the branch below. A hosted
+        # turn IS a Mapdex call, so it needs a Mapdex session; a BYOK turn
+        # reaches the user's own provider and runs only capabilities that
+        # execute on this machine, so requiring an account for it is what would
+        # make the feature unreachable for exactly the people it is offered to.
+        runtime = self.assistant_runtime()
+        if needs_mapdex_account(runtime) and (not self.api.token or not self.project_id):
             self._set_status("Connect Mapdex and choose a project before asking Nivo.")
             return
         message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
@@ -1830,20 +1848,196 @@ class MapdexPlugin:
         # worker thread, and iface.activeLayer(), the map canvas and the layer
         # tree are main-thread only: reading them from the task returned an empty
         # snapshot, so Nivo answered "no layer is active yet" while a layer was
-        # plainly open. Only the HTTP call belongs in the background.
+        # plainly open. Only the HTTP call belongs in the background. The BYOK
+        # loop obeys the same rule for the same reason - it reads the same
+        # canvas and runs capabilities against the same layer tree.
         context = companion_context(self._nivo_snapshot())
+        if is_byok(runtime):
+            self._start_byok_turn(message, context, request_id)
+            return
+        self._start_hosted_turn(message, context, request_id)
+
+    def _start_hosted_turn(self, message, context, request_id):
+        """Ask Mapdex: one HTTP round trip, on a worker thread."""
         project_id = self.project_id
         # The active project can have moved since the conversation was opened
         # (starting a task switches it). A thread from another project cannot
         # be continued here, so it is dropped rather than sent.
         thread_id = remembered_thread(self._nivo_thread_id, self._nivo_thread_project, project_id)
         title = thread_title(message)
+        self._set_nivo_compose_busy(True)
         self._nivo_compose_task = self._task(
             "Nivo compose",
             lambda: self._compose_in_thread(project_id, message, context, thread_id, title),
             lambda exception, outcome: self._nivo_composed(request_id, exception, outcome),
             busy=False,
         )
+
+    # -- the BYOK turn -----------------------------------------------------
+
+    def _start_byok_turn(self, message, context, request_id):
+        """Ask the user's own provider, and run the answer's steps here.
+
+        The provider is built and the session is constructed at this line
+        deliberately: this is where a turn stops being a Mapdex request, so it
+        is where the decision should be readable. The capability allowance is
+        the offline subset - a turn that never contacts Mapdex cannot perform a
+        Mapdex Run, so georeference, digitization, validation, batch and review
+        stay account-gated rather than being offered and then refused.
+
+        Each turn gets a fresh session, so a BYOK conversation has no memory of
+        earlier turns the way the hosted path does through its Mapdex thread.
+        That is a stated limitation, not an oversight: `AgentSession` counts its
+        step budget and its repeat-call guard per instance, so simply keeping
+        one across turns would leave the second question with a spent budget.
+        Carrying `history` forward without those two is the change, and it is
+        not this one.
+        """
+
+        def retry_hosted():
+            self._start_hosted_turn(message, context, request_id)
+
+        try:
+            provider = build_provider(self.assistant_settings())
+            session = AgentSession(
+                provider,
+                self._capability_executor(),
+                client=CLIENT_QGIS,
+                confirm=self._confirm_byok_step,
+                allowed=session_allowance(CLIENT_QGIS),
+            )
+        except ProviderError as error:
+            self._byok_failed(request_id, error, retry_hosted)
+            return
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._byok_failed(request_id, error, retry_hosted)
+            return
+        turn = ByokTurn(session, self._offer_hosted_path, retry_hosted).start(message, context)
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Asking {}…".format(provider.describe().get("provider") or "your provider"))
+        self._byok_step(turn, request_id)
+
+    def _byok_step(self, turn, request_id):
+        """Hand the next model call to a worker thread, and only that."""
+        prompt = turn.next_prompt()
+        if prompt is None:
+            self._byok_finished(request_id, turn.exhausted())
+            return
+        system, messages = prompt
+        self._nivo_compose_task = self._task(
+            "Nivo (your provider)",
+            lambda: turn.provider_reply(system, messages),
+            lambda exception, reply: self._byok_replied(turn, request_id, exception, reply),
+            busy=False,
+        )
+
+    @guarded
+    def _byok_replied(self, turn, request_id, exception, reply):
+        """Back on the main thread: run what the model chose, then loop."""
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        if exception is not None:
+            self._byok_failed(request_id, exception, turn.run_hosted, turn=turn)
+            return
+        try:
+            outcome = turn.deliver(reply)
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._byok_failed(request_id, error, turn.run_hosted, turn=turn)
+            return
+        if outcome is None:
+            self._byok_step(turn, request_id)
+            return
+        self._byok_finished(request_id, outcome)
+
+    @guarded
+    def _byok_failed(self, request_id, error, retry_hosted, turn=None):
+        """A provider that could not answer ends the turn here.
+
+        It must not quietly become a Mapdex request: that would upload the map
+        context the settings panel had just promised to keep off Mapdex. The
+        hosted path is offered through one function that always asks first.
+        """
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._nivo_state = transition(self._nivo_state, "error")
+        if turn is not None:
+            outcome = turn.provider_failed(error)
+        else:
+            outcome = provider_failed(error, self._offer_hosted_path, retry_hosted)
+        self._replace_last_assistant_turn(outcome["message"])
+        if outcome["handed_to_mapdex"]:
+            # The hosted turn owns the busy state and the transcript from here.
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Asking Mapdex instead…")
+            return
+        self._set_nivo_compose_busy(False)
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Your provider could not answer")
+        self._set_status(outcome["message"])
+
+    @guarded
+    def _byok_finished(self, request_id, outcome):
+        """Render a terminal BYOK outcome. Capabilities have already run."""
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
+        outcome = outcome if isinstance(outcome, dict) else {}
+        kind = str(outcome.get("kind") or "")
+        self._replace_last_assistant_turn(str(outcome.get("message") or "Nivo returned no message."))
+        if kind == "clarify":
+            self._nivo_state = transition(self._nivo_state, "clarify")
+            status = "Waiting for your answer"
+        elif kind == "confirmation_required":
+            self._nivo_state = transition(self._nivo_state, "confirm")
+            status = "Not run — confirmation declined"
+        elif kind == "incomplete":
+            self._nivo_state = transition(self._nivo_state, "error")
+            status = "Ran out of steps"
+        else:
+            status = "Ready"
+        if self.nivo_status is not None:
+            self.nivo_status.setText(status)
+        if outcome.get("map_effects"):
+            self.iface.mapCanvas().refresh()
+
+    def _confirm_byok_step(self, decision):
+        """The registry's confirmation gate, asked from inside the loop.
+
+        The model's own view of risk is not consulted: the decision carries the
+        capability id and the registry decides whether it needs a person.
+        """
+        return self._confirm_capability(str((decision or {}).get("capability") or ""))
+
+    def _offer_hosted_path(self, notice):
+        """Ask whether to send this question to Mapdex after a provider failure.
+
+        Returns False without a dialog when there is no Mapdex session to offer:
+        a question promising a fallback that cannot happen is worse than none.
+        """
+        if not self.api.token or not self.project_id:
+            return False
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Ask Mapdex instead?",
+            "{}\n\nNothing has been sent to Mapdex. Asking Mapdex sends your bounded map "
+            "context to Mapdex and uses your plan. Ask Mapdex now?".format(notice),
+            yes | no,
+            no,
+        )
+        return answer == yes
+
+    def _replace_last_assistant_turn(self, text):
+        """Overwrite the pending "Thinking…" bubble, or add one."""
+        if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
+            self._nivo_turns[-1] = ("assistant", str(text))
+        else:
+            self._nivo_turns.append(("assistant", str(text)))
+        self._render_nivo_turns()
 
     def _compose_in_thread(self, project_id, message, context, thread_id, title):
         """One conversational turn. Network only — runs on a worker thread.

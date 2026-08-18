@@ -288,9 +288,12 @@ def test_privacy_statement_tells_the_user_where_context_goes():
     # Every state names Mapdex or names its absence. The BYOK sentences are
     # asserted against the live wiring in tests/test_privacy_claims.py rather
     # than pinned to a literal here: pinning the words in two places is how the
-    # copy and the code came apart in the first place.
-    assert "sent to Mapdex" in describe_privacy({"runtime": "byok", "provider": "ollama"})
-    assert "sent to Mapdex" in describe_privacy({"runtime": "byok", "provider": "openai"})
+    # copy and the code came apart in the first place. That is also why this
+    # asks for the WORD - it used to ask for "sent to Mapdex", which was only
+    # ever right while a BYOK turn still went to Mapdex, so it would have had to
+    # be edited by whoever wired the branch and reads as the guard being bent.
+    assert "Mapdex" in describe_privacy({"runtime": "byok", "provider": "ollama"})
+    assert "Mapdex" in describe_privacy({"runtime": "byok", "provider": "openai"})
     assert "sent to Mapdex" in describe_privacy({"runtime": "hosted", "provider": "mapdex"})
     assert "No assistant runtime" in describe_privacy({"runtime": "unavailable"})
 

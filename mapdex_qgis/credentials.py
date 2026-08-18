@@ -186,23 +186,38 @@ def describe_privacy(runtime: dict[str, Any]) -> str:
     mode = str(runtime.get("runtime") or "")
     provider = str(runtime.get("provider") or "")
     if mode == "byok":
-        # The runtime a key RESOLVES to is not the runtime a turn RUNS on: every
-        # assistant turn still goes through Mapdex /v1/compose. Claiming
-        # otherwise here is the product telling a user their map context stayed
-        # on their machine at the moment it is being uploaded, which is the one
-        # sentence a privacy notice may never get wrong.
-        if provider in LOCAL_PROVIDER_NAMES:
+        # True since plugin.ask_nivo grew the BYOK branch: the turn is driven by
+        # mapdex_qgis.byok against the configured provider, and its session may
+        # plan only from capabilities that execute on this machine, so no map
+        # context is posted to Mapdex. The second sentence is the other half of
+        # being honest: what this mode costs the user. Mapdex work is still
+        # reachable from the task panel with a Mapdex account; what it cannot do
+        # is start one from inside a conversation that never contacts Mapdex.
+        unavailable = (
+            " Mapdex work - georeference, digitize, validate, batch, review - is not available"
+            " inside this conversation."
+        )
+        if provider in ON_MACHINE_PROVIDERS:
             return (
-                "Local model configured but not used yet: the assistant still runs through "
-                "Mapdex on your plan, so bounded map context is sent to Mapdex."
+                "Local model: your map context stays on this machine and is not sent to "
+                "Mapdex." + unavailable
+            )
+        if provider == "openai_compatible":
+            return (
+                "Your own endpoint: this request goes there and does not pass through Mapdex "
+                "servers." + unavailable
             )
         return (
-            "Key stored for {} but not used yet: the assistant still runs through Mapdex "
-            "on your plan, so bounded map context is sent to Mapdex.".format(provider)
+            "Your key, sent directly to {}: this request does not pass through Mapdex "
+            "servers.".format(provider) + unavailable
         )
     if mode == "hosted":
         return "Mapdex-hosted assistant: bounded map context is sent to Mapdex and billed to your plan."
     return "No assistant runtime is configured. Add a provider key or upgrade your plan."
 
 
-LOCAL_PROVIDER_NAMES = frozenset({"ollama", "openai_compatible"})
+# Providers that genuinely run on the user's own computer. An OpenAI-compatible
+# endpoint is deliberately NOT one of them: it is an arbitrary base URL, and it
+# is as likely to be a hosted gateway as a process on localhost, so telling that
+# user their data "stays on this machine" would be a guess presented as a fact.
+ON_MACHINE_PROVIDERS = frozenset({"ollama"})

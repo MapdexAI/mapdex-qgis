@@ -13,12 +13,13 @@ Two runtimes, one interface:
     costs us nothing to serve. BYOK always wins when a key exists, whatever the
     plan says - the user paid for that key and expects it to be used.
 
-    **This resolution is not consumed by the turn path yet.** ``resolve_runtime``
-    has one caller, and it sets a label; ``build_provider`` has none. ``ask_nivo``
-    calls ``/v1/compose`` unconditionally, so a keyed install still sends its map
-    context to Mapdex. Nothing here may be restated to a user as a fact about
-    where their data went until that branch exists - see
-    ``tests/test_privacy_claims.py``, which fails on exactly that.
+    ``plugin.ask_nivo`` takes this branch: it builds the provider here, drives
+    the loop in ``mapdex_qgis.byok``, and never calls ``/v1/compose`` for that
+    turn. The session is bound to the offline capability allowance, so a mode
+    that cannot reach Mapdex is not offered capabilities that execute there.
+    ``tests/test_privacy_claims.py`` holds both directions of this shut: the
+    copy may not claim a direct path without the branch, and may not deny one
+    once the branch exists.
 
 Everything a provider needs is behind :class:`ModelProvider`, so adding Mistral
 or a corporate gateway is one subclass plus a registry entry - no change to the

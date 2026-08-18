@@ -16,6 +16,7 @@ a registry and supplies parameters; Python you can read validates and runs it.
 | --- | --- | --- |
 | `capabilities.py` | The trusted registry: what exists, its risk, where it runs | no |
 | `agent.py` | The bounded objective → capability → observation loop | no |
+| `byok.py` | Driving that loop against the user's own provider, and the fallback rule | no |
 | `analytics.py` | Statistics. Every number Nivo states comes from here | no |
 | `spatial.py` | CRS/unit correctness plus an exact small geometry kernel | no |
 | `postgis.py` | Read-only typed query builders and the SQL guard | no |
@@ -109,12 +110,28 @@ local endpoint    → byok     → nothing leaves the machine
 BYOK wins over the plan whenever a key is present: the user paid for that key.
 Because the request goes direct, BYOK traffic costs Mapdex nothing to serve.
 
-> **Not wired yet.** `resolve_runtime` returns that decision and nothing acts on
-> it: its only caller sets a label in the settings panel, `build_provider` has no
-> caller at all, and `ask_nivo` calls `self.api.compose(...)` unconditionally. So
-> every turn currently takes the hosted row of this table whatever the key says.
-> The table describes the design; `tests/test_privacy_claims.py` is what stops it
-> being restated to a user as a fact until the branch exists.
+`ask_nivo` resolves the runtime once and branches on it. The BYOK row is driven
+by `byok.py`: `build_provider` here, `AgentSession` bound to
+`byok.session_allowance()`, and a step-at-a-time loop so the model call runs on a
+`QgsTask` while every capability and every confirmation runs on the main thread —
+`iface`, the canvas and the layer tree are main-thread only, and reading them
+from a worker is what once made Nivo answer "no layer is active yet" with a layer
+plainly open.
+
+Two rules the row above does not show, and both are load-bearing:
+
+- **The allowance is the boundary, not the prompt.** A BYOK session may plan only
+  from capabilities whose execution site is not Mapdex, and `AgentSession.permits`
+  refuses a Mapdex Run even if the model names one anyway. Georeference,
+  digitize, validate, batch and review stay account-gated.
+- **A provider failure is never a silent Mapdex request.** `byok.hosted_fallback`
+  is the only route from a failed provider to `/v1/compose`, and it always asks
+  first. Falling back automatically would upload the context this mode exists to
+  keep off Mapdex.
+
+`tests/test_privacy_claims.py` holds the copy to the code in both directions:
+the panel may not claim a direct path without the branch, and may not deny one
+once the branch exists.
 
 Adding a vendor is one subclass and one registration:
 
