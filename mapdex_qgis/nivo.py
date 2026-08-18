@@ -34,6 +34,7 @@ def transition(state: str, event: str) -> str:
     }
     return table.get((state, event), state if state in TURN_STATES else "idle")
 
+
 # These names are product contracts, not model suggestions.  The plugin maps
 # them to a small set of native QGIS UI operations after compose returns.
 ALLOWED_ACTIONS = frozenset({
@@ -151,7 +152,9 @@ SAFE_PARAM_KEYS = {
     "qgis:set_layer_visibility@1": frozenset({"visible"}),
     "qgis:set_layer_opacity@1": frozenset({"opacity"}),
     "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),
-    "qgis:processing_operation@1": frozenset({"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}),
+    "qgis:processing_operation@1": frozenset(
+        {"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}
+    ),
     "qgis:add_xyz_basemap@1": frozenset({"provider"}),
     "qgis:create_layer@1": frozenset({"geometry", "crs", "name"}),
     "qgis:add_features@1": frozenset(
@@ -221,7 +224,8 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
             renderer = params.get("renderer")
             if renderer not in {"single", "categorized", "graduated", "labels"}:
                 continue
-            if renderer in {"categorized", "graduated", "labels"} and not _text(params.get("field") or params.get("label_field"), 128):
+            styling_field = _text(params.get("field") or params.get("label_field"), 128)
+            if renderer in {"categorized", "graduated", "labels"} and not styling_field:
                 continue
         if action["kind"] == "qgis:add_xyz_basemap@1" and params.get("provider") != "osm":
             continue
@@ -233,7 +237,16 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
         action_id = _text(action.get("action_id"), 128)
         if not action_id:
             continue
-        result.append({"id": action_id, "tool": action["kind"], "params": params, "summary": _text(action.get("summary")), "undo": bool(action.get("undo")), "undo_token": _text(action.get("undo_token"), 128), "target": target, "correlation_id": _text(action.get("correlation_id"), 128)})
+        result.append({
+            "id": action_id,
+            "tool": action["kind"],
+            "params": params,
+            "summary": _text(action.get("summary")),
+            "undo": bool(action.get("undo")),
+            "undo_token": _text(action.get("undo_token"), 128),
+            "target": target,
+            "correlation_id": _text(action.get("correlation_id"), 128),
+        })
     return result
 
 

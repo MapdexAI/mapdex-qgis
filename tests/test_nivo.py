@@ -30,7 +30,12 @@ def test_only_closed_qgis_actions_can_reach_dispatch():
     actions = allowed_actions({"companion_actions": [
         {"action_id": "act_zoom", "kind": "qgis:zoom_to_layer@1", "params": {}},
         {"action_id": "act_shell", "kind": "shell:run@1", "params": {"command": "rm -rf /"}},
-        {"action_id": "act_table", "kind": "qgis:open_attribute_table@1", "target": "layer_1", "params": "not-an-object"},
+        {
+            "action_id": "act_table",
+            "kind": "qgis:open_attribute_table@1",
+            "target": "layer_1",
+            "params": "not-an-object",
+        },
     ]})
     assert [item["tool"] for item in actions] == ["qgis:open_attribute_table@1"]
     assert actions[0]["params"] == {}
@@ -78,7 +83,11 @@ def test_confirmation_actions_only_accept_bounded_processing_payloads():
 def test_osm_xyz_basemap_action_is_provider_allowlisted():
     actions = allowed_actions({"companion_actions": [
         {"action_id": "act_osm", "kind": "qgis:add_xyz_basemap@1", "params": {"provider": "osm"}},
-        {"action_id": "act_custom", "kind": "qgis:add_xyz_basemap@1", "params": {"provider": "custom", "url": "https://example.com/{z}/{x}/{y}.png"}},
+        {
+            "action_id": "act_custom",
+            "kind": "qgis:add_xyz_basemap@1",
+            "params": {"provider": "custom", "url": "https://example.com/{z}/{x}/{y}.png"},
+        },
     ]})
     assert len(actions) == 1
     assert actions[0]["tool"] == "qgis:add_xyz_basemap@1"

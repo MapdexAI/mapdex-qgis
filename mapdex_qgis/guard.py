@@ -45,6 +45,48 @@ def format_traceback(exc: BaseException) -> str:
     )[:MAX_REPORTED_CHARS]
 
 
+def log_debug(context: str, exc: BaseException) -> None:
+    """Record a failure the plugin deliberately continued past.
+
+    Several paths here keep working when a QGIS or Qt call fails: a provider
+    whose registry is broken must not cost the user every other connection, one
+    of several routes to the active layer may be missing on a given build, a
+    widget may already have been destroyed. Continuing is right; going silent is
+    not, because a swallowed exception is a failure nobody can find. These sites
+    write the reason to the Mapdex log panel instead of dropping it.
+
+    This is diagnostic, not the error boundary: :func:`guarded` still owns
+    anything that reaches the user. Nothing here raises - it is called from
+    inside ``except`` blocks, including during teardown, so a logging failure
+    must never become the exception that escapes.
+    """
+    try:
+        from qgis.core import Qgis, QgsMessageLog  # noqa: PLC0415 - QGIS-only import
+
+        from .qt_compat import enum_member  # noqa: PLC0415 - avoids an import cycle at load
+
+        QgsMessageLog.logMessage(
+            "{}: {}".format(context, describe_exception(exc)),
+            "Mapdex",
+            enum_member(Qgis, "MessageLevel", "Info"),
+        )
+    except Exception:  # nosec B110
+        # No QGIS (unit tests), or the log itself is gone (teardown). There is
+        # nowhere left to write, and reporting a failure must not create one.
+        pass
+
+
+def _report_safely(report: Callable[..., Any], action: str, exc: BaseException) -> None:
+    """Hand a caught failure to the plugin's reporter, whatever happens next."""
+    try:
+        report(action, exc)
+    except Exception:  # nosec B110
+        # The reporter itself failed (a destroyed widget, say), so there is
+        # nothing left to report it to - log_debug would only add a second way
+        # to fail. Swallowing here is still better than aborting QGIS.
+        pass
+
+
 def _max_positional_args(method: Callable[..., Any]) -> int | None:
     """How many positional arguments the method accepts, excluding ``self``.
 
@@ -93,12 +135,7 @@ def guarded(method: Callable[..., Any]) -> Callable[..., Any]:
         except Exception as exc:  # noqa: BLE001 - the boundary is the point
             report = getattr(self, "_report_unexpected", None)
             if callable(report):
-                try:
-                    report(getattr(method, "__name__", "action"), exc)
-                except Exception:
-                    # The reporter itself failed (a destroyed widget, say).
-                    # Swallowing here is still better than aborting QGIS.
-                    pass
+                _report_safely(report, getattr(method, "__name__", "action"), exc)
             return None
 
     wrapper.__wrapped__ = method

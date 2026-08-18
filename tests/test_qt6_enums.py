@@ -101,7 +101,7 @@ def test_qgis_version_supports_qgis4_qgis_constant():
 
 def test_qaction_is_not_imported_directly_from_qtwidgets():
     """In Qt6/PyQt6 (QGIS 4), QAction moved from QtWidgets to QtGui.
-    
+
     All source files must import QAction from .qt_compat, never from QtWidgets.
     """
     offenders = []
@@ -113,4 +113,3 @@ def test_qaction_is_not_imported_directly_from_qtwidgets():
             if match:
                 offenders.append(f"{path.name}: imports QAction from qgis.PyQt.QtWidgets")
     assert not offenders, "Import QAction from .qt_compat instead:\n" + "\n".join(offenders)
-

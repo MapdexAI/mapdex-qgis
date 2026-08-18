@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .guard import log_debug
+
 try:  # pragma: no cover - import shape differs between QGIS builds
     from qgis.gui import QgsMapTool
 except Exception:  # pragma: no cover - importable outside QGIS for tests
@@ -88,8 +90,8 @@ class MeasureMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self.state.reset()
         try:
             super().deactivate()
-        except Exception:  # noqa: BLE001 - deactivation must not raise into Qt
-            pass
+        except Exception as exc:  # noqa: BLE001 - deactivation must not raise into Qt
+            log_debug("deactivating the measure tool", exc)
 
     def _to_wgs84(self, point: Any) -> tuple[float, float]:
         from qgis.core import (

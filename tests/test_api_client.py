@@ -114,12 +114,21 @@ def test_workflow_payload_uses_server_batch_contract(monkeypatch):
 def test_nivo_compose_uses_canonical_endpoint_and_companion_context(monkeypatch):
     api = MapdexAPI("https://api.mapdex.ai", "token")
     captured = {}
+
     def fake(method, path, payload=None, project_id=""):
         captured.update(method=method, path=path, payload=payload, project_id=project_id)
         return {"kind": "message"}
     monkeypatch.setattr(api, "_request", fake)
     api.compose("proj_1", "inspect selection", {"version": "companion.qgis.v1", "client": "qgis"})
-    assert captured == {"method": "POST", "path": "/v1/compose", "project_id": "proj_1", "payload": {"input": "inspect selection", "companion_context": {"version": "companion.qgis.v1", "client": "qgis"}}}
+    assert captured == {
+        "method": "POST",
+        "path": "/v1/compose",
+        "project_id": "proj_1",
+        "payload": {
+            "input": "inspect selection",
+            "companion_context": {"version": "companion.qgis.v1", "client": "qgis"},
+        },
+    }
 
 
 def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_path):
@@ -148,7 +157,16 @@ def test_upload_file_streams_to_signed_storage_and_finalizes(monkeypatch, tmp_pa
         (
             "POST",
             "/v1/files",
-            {"filename": "map.tif", "content_type": "image/tiff", "byte_size": 11},
+            {
+                "filename": "map.tif",
+                "content_type": "image/tiff",
+                "byte_size": 11,
+                # Required by every POST /v1/files. Omitting it means the API
+                # answers CONTENT_POLICY_ATTESTATION_REQUIRED and the desktop
+                # cannot upload anything at all, so this belongs in the
+                # assertion rather than being tolerated as an extra key.
+                "policy_acknowledged": True,
+            },
             "proj_1",
         ),
         ("POST", "/v1/files/file_123/complete", {}, "proj_1"),
@@ -186,6 +204,49 @@ def test_signed_upload_does_not_send_mapdex_authorization(monkeypatch, tmp_path)
     assert lowered["x-signed"] == "yes"
     assert "authorization" not in lowered
     assert hasattr(captured["data"], "read")
+
+
+def test_multipart_fallback_carries_the_policy_attestation(monkeypatch, tmp_path):
+    """The compatibility route posts the file directly, so it must attest too.
+
+    The API enforces the acknowledgement as a form field on this branch. Sending
+    it only on the signed-upload path would leave the fallback refused with
+    CONTENT_POLICY_ATTESTATION_REQUIRED on exactly the deployments that need it.
+    """
+    source = tmp_path / "plan.dxf"
+    source.write_bytes(b"DXFBODY")
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=0):
+        captured.update(data=req.data, headers=dict(req.header_items()))
+        return FakeResponse()
+
+    monkeypatch.setattr("mapdex_qgis.api_client._urlopen", fake_urlopen)
+    api._upload_file_multipart(str(source), "proj_1")
+
+    body = captured["data"]
+    boundary = dict(
+        (key.lower(), value) for key, value in captured["headers"].items()
+    )["content-type"].split("boundary=")[1]
+
+    assert b'name="policy_acknowledged"' in body
+    assert b"\r\n\r\ntrue\r\n" in body
+    # The file part must survive intact alongside the new field, and the body
+    # must still terminate with the closing boundary.
+    assert b"DXFBODY" in body
+    assert body.endswith(f"--{boundary}--\r\n".encode())
+    assert body.count(f"--{boundary}".encode()) == 3
 
 
 def test_multiple_files_create_one_real_batch(monkeypatch):
@@ -226,6 +287,26 @@ def test_run_and_layer_geojson_paths(monkeypatch):
     assert api.layer_geojson("layer_1", "proj_1")[:1] == b"{"
     assert calls[0] == ("GET", "/v1/runs/run_1", "proj_1")
     assert calls[1] == ("GET_BYTES", "/v1/layers/layer_1/geojson?limit=5000", "proj_1")
+
+
+def test_run_list_is_project_scoped_by_the_header_and_survives_an_envelope(monkeypatch):
+    # The server scopes `GET /v1/runs` by `X-Project-ID` and answers with a bare
+    # array. Reading only the array shape would turn a server that later wraps
+    # the list into an empty job list on the desktop, which reads as "you have
+    # no runs" rather than as a shape this client cannot parse.
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+    calls = []
+
+    def bare(method, path, payload=None, project_id=""):
+        calls.append((method, path, project_id))
+        return [{"id": "run_1"}, "not a run"]
+
+    monkeypatch.setattr(api, "_request", bare)
+    assert api.runs("proj_1") == [{"id": "run_1"}]
+    assert calls[0] == ("GET", "/v1/runs", "proj_1")
+
+    monkeypatch.setattr(api, "_request", lambda *a, **k: {"runs": [{"id": "run_2"}]})
+    assert api.runs("proj_1") == [{"id": "run_2"}]
 
 
 def test_api_error_parses_nested_envelope(monkeypatch):

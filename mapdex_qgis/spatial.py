@@ -519,7 +519,12 @@ def transform_bbox(bbox: Sequence[float], transform) -> list[float] | None:
     for x, y in samples:
         try:
             point = transform(x, y)
-        except Exception:
+        except Exception:  # noqa: BLE001  # nosec B112
+            # Not an error path: a sample outside the target projection's domain
+            # cannot be transformed, and dropping it is the correct answer. The
+            # remaining samples still bound the shape, and an empty set returns
+            # None below. Logging here would report a normal outcome once per
+            # sample point.
             continue
         if point and len(point) == 2 and math.isfinite(point[0]) and math.isfinite(point[1]):
             transformed.append((float(point[0]), float(point[1])))

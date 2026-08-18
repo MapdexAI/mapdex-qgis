@@ -12,7 +12,13 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.guard import describe_exception, format_traceback, guarded, is_guarded  # noqa: E402
+from mapdex_qgis.guard import (  # noqa: E402
+    describe_exception,
+    format_traceback,
+    guarded,
+    is_guarded,
+    log_debug,
+)
 
 PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
 
@@ -100,6 +106,38 @@ def test_the_full_trace_is_available_for_the_log_and_is_bounded():
         trace = format_traceback(exc)
     assert "Boom" in trace
     assert len(trace) <= 2000
+
+
+# --------------------------------------------------------------------------
+# Recording what the plugin deliberately continued past
+# --------------------------------------------------------------------------
+
+def test_logging_a_swallowed_failure_never_raises_without_qgis():
+    # log_debug is called from inside except blocks, including during teardown.
+    # Outside QGIS there is no log to write to, and that must not become the
+    # exception that escapes the handler it was called from.
+    assert log_debug("doing something", Boom("gone")) is None
+
+
+def test_logging_a_swallowed_failure_survives_a_broken_log(monkeypatch):
+    import mapdex_qgis.guard as guard_module
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("the message log is gone")
+
+    monkeypatch.setattr(guard_module, "describe_exception", explode)
+    assert log_debug("doing something", Boom("gone")) is None
+
+
+def test_the_active_layer_search_records_why_a_route_failed():
+    """Four routes to "the layer the user means"; a silent miss is unanswerable.
+
+    "Nivo says no layer is active" with a layer plainly selected used to leave
+    no trace at all. Bandit refuses a bare `pass` here; this states the positive
+    requirement, which is that the reason reaches the log.
+    """
+    body = PLUGIN[PLUGIN.index("def _active_qgis_layer"):PLUGIN.index("def _nivo_layer_for_action")]
+    assert body.count("log_debug(") == 4
 
 
 # --------------------------------------------------------------------------

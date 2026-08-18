@@ -547,9 +547,12 @@ def test_a_registered_capability_with_no_desktop_binding_fails_loudly(runtime):
     engine, _layer, _canvas = runtime
     execute = build_executor(engine)
     # Registered in the catalogue but not implemented here yet: it must not
-    # look like a silent success.
+    # look like a silent success. `report.build@1` is the current example; when
+    # it is bound, replace it with whatever is still unbound rather than
+    # deleting the test, because the honest-gap behaviour is the thing under
+    # test and not the particular capability.
     with pytest.raises(CapabilityError):
-        execute({"capability": "spatial.density@1", "params": {}})
+        execute({"capability": "report.build@1", "params": {}})
 
 
 def test_the_executor_ignores_anything_outside_the_validated_params(runtime):

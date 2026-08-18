@@ -145,7 +145,8 @@ def device_verification_url(response_url: str, web_base: str, api_base: str) -> 
 
 
 class MapdexAPI:
-    def __init__(self, base_url: str, token: str = ""):  # nosec B107 - no token yet
+    # The empty default is "not signed in yet", not a hardcoded credential.
+    def __init__(self, base_url: str, token: str = ""):  # nosec B107
         self.base_url = normalize_api_base(base_url)
         self.token = token
 
@@ -319,9 +320,19 @@ class MapdexAPI:
         with open(path, "rb") as handle:
             content = handle.read()
         body = (
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-            f"Content-Type: {content_type}\r\n\r\n"
-        ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode()
+            + content
+            # Same attestation the presigned path sends; the multipart branch of
+            # POST /v1/files enforces it as a form field.
+            + (
+                f"\r\n--{boundary}\r\nContent-Disposition: form-data; "
+                "name=\"policy_acknowledged\"\r\n\r\ntrue\r\n"
+                f"--{boundary}--\r\n"
+            ).encode()
+        )
         url = self.base_url + "/v1/files"
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -347,6 +358,10 @@ class MapdexAPI:
                 "filename": filename,
                 "content_type": content_type,
                 "byte_size": os.path.getsize(path),
+                # Required by every POST /v1/files (docs/API.md §Content policy
+                # acknowledgement). Without it the API refuses the registration
+                # with CONTENT_POLICY_ATTESTATION_REQUIRED and no file is created.
+                "policy_acknowledged": True,
             },
             project_id,
         )
@@ -445,6 +460,16 @@ class MapdexAPI:
 
     def run(self, run_id: str, project_id: str = "") -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}", project_id=project_id)
+
+    def runs(self, project_id: str = "") -> list[dict[str, Any]]:
+        """The project's runs, newest first, as `GET /v1/runs` returns them.
+
+        The server scopes the list by the `X-Project-ID` header rather than a
+        path segment, and answers with a bare array. `_rows` accepts the
+        envelope shape too, so a server that later wraps the list does not turn
+        into an empty job list on the desktop.
+        """
+        return _rows(self._request("GET", "/v1/runs", project_id=project_id), "runs")
 
     def layer_geojson(self, layer_id: str, project_id: str, limit: int = 5000) -> bytes:
         return self.download_bytes(f"/v1/layers/{layer_id}/geojson?limit={limit}", project_id=project_id)

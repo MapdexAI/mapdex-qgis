@@ -22,7 +22,7 @@ sys.path.insert(0, HERE)
 # A pristine copy per run. The field calculator writes real columns into a real
 # GeoPackage, so a second run against the same file hits its own
 # refuse-to-overwrite guard and reports a pass as a failure.
-import shutil as _shutil
+import shutil as _shutil  # noqa: E402
 
 _PRISTINE = os.path.join(HERE, "mapdex-test-parcels.gpkg")
 FIXTURE = os.path.join(HERE, "_run-parcels.gpkg")
