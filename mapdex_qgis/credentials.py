@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._vendor.nivo.providers import RUNTIME_BYOK, describe_privacy as _package_privacy
 from .guard import log_debug
 
 # Non-secret preferences live in QSettings; the secret itself never does.
@@ -176,48 +177,50 @@ def public_settings(values: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+#: What this install calls the service behind the hosted path. The vendored
+#: package cannot name a vendor, so the host supplies it; a wrong name here is a
+#: false privacy claim rather than a cosmetic defect.
+SERVICE_NAME = "Mapdex"
+
+#: The machine-readable half of the same thing: what `resolve_runtime` reports
+#: as the provider when no user key is configured. The package defaults it to
+#: the literal "hosted", which is honest for a package that knows no vendor and
+#: wrong for this one - anything reading the resolved runtime should see the
+#: service that will actually receive the turn.
+HOSTED_PROVIDER_NAME = "mapdex"
+
+#: The other half of being honest about BYOK: what the mode costs the user.
+#: Mapdex work is still reachable from the task panel with a Mapdex account;
+#: what it cannot do is start one from inside a conversation that deliberately
+#: never contacts Mapdex. This is Mapdex's own clause - it names Mapdex's five
+#: server-side capabilities - so it is appended here rather than asked of a
+#: package that does not know they exist.
+MAPDEX_WORK_UNAVAILABLE = (
+    " Mapdex work - georeference, digitize, validate, batch, review - is not available"
+    " inside this conversation."
+)
+
+
 def describe_privacy(runtime: dict[str, Any]) -> str:
     """One honest sentence about where this turn's context is going.
 
     The privacy boundary has to be legible in the UI, not buried in a document:
     a user running a local model deserves to know their project metadata stays
     on the machine, and a user on the hosted path deserves to know it does not.
+
+    The sentence itself comes from the vendored package, because the runtime it
+    describes is decided there: `resolve_runtime` chooses byok or hosted, and a
+    second copy of that reasoning here is exactly how the copy and the code came
+    to disagree the first time. What Mapdex adds is what only Mapdex knows - its
+    own name, and which of its capabilities a Mapdex-free conversation loses.
+
+    The BYOK claim is true since `plugin.ask_nivo` grew the branch: the turn is
+    driven by `mapdex_qgis.byok` against the configured provider, and its
+    session may plan only from capabilities that execute on this machine, so no
+    map context is posted to Mapdex. `tests/test_privacy_claims.py` holds both
+    directions of that shut.
     """
-    mode = str(runtime.get("runtime") or "")
-    provider = str(runtime.get("provider") or "")
-    if mode == "byok":
-        # True since plugin.ask_nivo grew the BYOK branch: the turn is driven by
-        # mapdex_qgis.byok against the configured provider, and its session may
-        # plan only from capabilities that execute on this machine, so no map
-        # context is posted to Mapdex. The second sentence is the other half of
-        # being honest: what this mode costs the user. Mapdex work is still
-        # reachable from the task panel with a Mapdex account; what it cannot do
-        # is start one from inside a conversation that never contacts Mapdex.
-        unavailable = (
-            " Mapdex work - georeference, digitize, validate, batch, review - is not available"
-            " inside this conversation."
-        )
-        if provider in ON_MACHINE_PROVIDERS:
-            return (
-                "Local model: your map context stays on this machine and is not sent to "
-                "Mapdex." + unavailable
-            )
-        if provider == "openai_compatible":
-            return (
-                "Your own endpoint: this request goes there and does not pass through Mapdex "
-                "servers." + unavailable
-            )
-        return (
-            "Your key, sent directly to {}: this request does not pass through Mapdex "
-            "servers.".format(provider) + unavailable
-        )
-    if mode == "hosted":
-        return "Mapdex-hosted assistant: bounded map context is sent to Mapdex and billed to your plan."
-    return "No assistant runtime is configured. Add a provider key or upgrade your plan."
-
-
-# Providers that genuinely run on the user's own computer. An OpenAI-compatible
-# endpoint is deliberately NOT one of them: it is an arbitrary base URL, and it
-# is as likely to be a hosted gateway as a process on localhost, so telling that
-# user their data "stays on this machine" would be a guess presented as a fact.
-ON_MACHINE_PROVIDERS = frozenset({"ollama"})
+    sentence = _package_privacy(runtime, SERVICE_NAME)
+    if str(runtime.get("runtime") or "") == RUNTIME_BYOK:
+        return sentence + MAPDEX_WORK_UNAVAILABLE
+    return sentence

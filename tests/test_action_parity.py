@@ -15,7 +15,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.capabilities import get as get_capability  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import get as get_capability  # noqa: E402
 from mapdex_qgis.nivo import (  # noqa: E402
     ALLOWED_ACTIONS,
     IMPLEMENTED_ACTIONS,

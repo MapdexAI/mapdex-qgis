@@ -1,25 +1,24 @@
+# SPDX-License-Identifier: MIT
 """Model provider abstraction: hosted by default, BYOK when a key is present.
 
 Two runtimes, one interface:
 
 ``hosted``
-    No key configured. The turn goes through Mapdex ``/v1/compose`` exactly as
-    before, gated by the account's plan. This is the default and the flow is
-    unchanged.
+    No key configured. The turn goes through the host application's own
+    endpoint, gated by whatever entitlement that host reports. This package
+    does not make that call; it only says which runtime applies.
 
 ``byok``
-    The user configured their own provider key. The request is meant to go
-    **directly** to that provider from QGIS, so it never transits Mapdex and
-    costs us nothing to serve. BYOK always wins when a key exists, whatever the
-    plan says - the user paid for that key and expects it to be used.
+    The user configured their own provider key. The request goes **directly**
+    to that provider from the host, so it never transits the host's servers.
+    BYOK always wins when a key exists, whatever the plan says - the user paid
+    for that key and expects it to be used.
 
-    ``plugin.ask_nivo`` takes this branch: it builds the provider here, drives
-    the loop in ``mapdex_qgis.byok``, and never calls ``/v1/compose`` for that
-    turn. The session is bound to the offline capability allowance, so a mode
-    that cannot reach Mapdex is not offered capabilities that execute there.
-    ``tests/test_privacy_claims.py`` holds both directions of this shut: the
-    copy may not claim a direct path without the branch, and may not deny one
-    once the branch exists.
+    A BYOK session is bound to :func:`nivo.capabilities.offline_capability_ids`,
+    so a mode that deliberately cannot reach the host's servers is never
+    offered capabilities that execute there. A host that advertises this
+    privacy property owes its users a test that the branch is really taken;
+    copy is not evidence.
 
 Everything a provider needs is behind :class:`ModelProvider`, so adding Mistral
 or a corporate gateway is one subclass plus a registry entry - no change to the
@@ -49,6 +48,11 @@ SECRET_PATTERN = re.compile(
 RUNTIME_HOSTED = "hosted"
 RUNTIME_BYOK = "byok"
 
+# What the hosted runtime calls itself when no vendor key is configured. A host
+# application overrides it per call through ``settings["hosted_provider_name"]``
+# so this package never has to know a product name.
+HOSTED_PROVIDER_NAME = "hosted"
+
 
 class ProviderError(Exception):
     """A provider call failed. The message is always redacted."""
@@ -60,12 +64,12 @@ def redact(text: Any) -> str:
 
 
 def resolve_runtime(settings: Mapping[str, Any]) -> dict[str, Any]:
-    """Decide whether this install talks to a provider directly or via Mapdex.
+    """Decide whether this install talks to a provider directly or via the host.
 
-    The rule the product asks for, in one place:
+    The rule, in one place:
 
     * a configured provider key wins outright -> ``byok``, direct to the vendor;
-    * otherwise, if the plan allows assistant use -> ``hosted`` via Mapdex;
+    * otherwise, if the plan allows assistant use -> ``hosted`` via the host;
     * otherwise the user is told what to do rather than silently failing.
 
     ``plan_allows_hosted`` is server-reported. When it is unknown we assume the
@@ -83,21 +87,62 @@ def resolve_runtime(settings: Mapping[str, Any]) -> dict[str, Any]:
             "runtime": RUNTIME_BYOK,
             "provider": provider,
             "reason": "user_key" if has_key else "local_endpoint",
-            "sends_context_to_mapdex": False,
+            "sends_context_to_host": False,
         }
     if plan_allows is False:
         return {
             "runtime": "unavailable",
             "provider": "",
             "reason": "plan_does_not_include_assistant",
-            "sends_context_to_mapdex": False,
+            "sends_context_to_host": False,
         }
     return {
         "runtime": RUNTIME_HOSTED,
-        "provider": "mapdex",
+        "provider": str(settings.get("hosted_provider_name") or HOSTED_PROVIDER_NAME),
         "reason": "plan_hosted",
-        "sends_context_to_mapdex": True,
+        "sends_context_to_host": True,
     }
+
+
+# Providers that genuinely run on the user's own computer. An OpenAI-compatible
+# endpoint is deliberately absent: it is usually somebody else's server.
+ON_MACHINE_PROVIDERS = frozenset({"ollama"})
+
+
+def describe_privacy(runtime: Mapping[str, Any], service_name: str = "the hosted service") -> str:
+    """One honest sentence about where this turn's context is going.
+
+    The privacy boundary has to be legible in the UI, not buried in a document:
+    a user running a local model deserves to know their project metadata stays
+    on the machine, and a user on the hosted path deserves to know it does not.
+
+    ``service_name`` is supplied by the host application. This package cannot
+    name a service it does not know, and a wrong name here is a false privacy
+    claim rather than a cosmetic defect.
+    """
+    mode = str(runtime.get("runtime") or "")
+    provider = str(runtime.get("provider") or "")
+    if mode == RUNTIME_BYOK:
+        if provider in ON_MACHINE_PROVIDERS:
+            return (
+                "Local model: your map context stays on this machine and is not sent "
+                "to {}.".format(service_name)
+            )
+        if provider == "openai_compatible":
+            return (
+                "Your own endpoint: this request goes there and does not pass through "
+                "{} servers.".format(service_name)
+            )
+        return (
+            "Your key, sent directly to {}: this request does not pass through {} "
+            "servers.".format(provider, service_name)
+        )
+    if mode == RUNTIME_HOSTED:
+        return (
+            "{}-hosted assistant: bounded map context is sent to {} and billed to your "
+            "plan.".format(service_name, service_name)
+        )
+    return "No assistant runtime is configured. Add a provider key or upgrade your plan."
 
 
 class ModelProvider:

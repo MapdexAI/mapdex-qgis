@@ -137,26 +137,43 @@ def _explained_ids() -> set[str]:
     return set(re.findall(r'"([a-z_]+\.[a-z_0-9]+@[0-9]+)":', source))
 
 
+# The two halves of the desktop registry. The generic catalogue is declared by
+# the vendored package with its `_c` helper; Mapdex's five server-side
+# capabilities are declared here, through the package's `register` extension
+# point, because a public registry cannot carry one vendor's product surface.
+GENERIC_REGISTRY = PACKAGE / "_vendor" / "nivo" / "capabilities.py"
+MAPDEX_REGISTRY = PACKAGE / "mapdex_capabilities.py"
+
+
 def _declared_ids() -> set[str]:
-    """The ids the registry SOURCE declares, read rather than imported.
+    """The ids the registry SOURCES declare, read rather than imported.
 
     `all_capabilities()` was the obvious call and it is the wrong one: the
     registry is module-level mutable state, `register` is the documented
-    extension point, and `test_agent.py` registers a fake `custom.hillshade@1`
-    to prove that extension point works. Asking the live registry therefore made
-    this gate report a test fixture as an unexplained product capability - and
-    only when the suite ran in the order that put that test first.
+    extension point, and a test registering a fake `custom.hillshade@1` to prove
+    that extension point works made this gate report a test fixture as an
+    unexplained product capability - and only when the suite ran in the order
+    that put that test first.
 
     Reading the source asks the same question the Go half asks of the same text,
-    with the same regex, so the two sides cannot disagree about what "declared"
-    means.
+    so the two sides cannot disagree about what "declared" means. Both files are
+    required to parse to something: reading only one would silently answer for
+    half the catalogue, which is the shape of blindness this file exists for.
     """
     import re
 
-    source = (PACKAGE / "capabilities.py").read_text(encoding="utf-8")
-    ids = set(re.findall(r'_c\("([a-z_]+\.[a-z_0-9]+@[0-9]+)"', source))
-    assert ids, "capabilities.py parsed to zero capabilities; this guard is now blind"
-    return ids
+    ids = set(re.findall(
+        r'_c\("([a-z_]+\.[a-z_0-9]+@[0-9]+)"',
+        GENERIC_REGISTRY.read_text(encoding="utf-8"),
+    ))
+    assert ids, "{} parsed to zero capabilities; this guard is now blind".format(GENERIC_REGISTRY.name)
+
+    mapdex = set(re.findall(
+        r'Capability\(\s*"([a-z_]+\.[a-z_0-9]+@[0-9]+)"',
+        MAPDEX_REGISTRY.read_text(encoding="utf-8"),
+    ))
+    assert mapdex, "{} parsed to zero capabilities; this guard is now blind".format(MAPDEX_REGISTRY.name)
+    return ids | mapdex
 
 
 # The desktop half of the same obligation the Go gate enforces from the other

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Read-only PostGIS analytics built from typed intent, never from model SQL.
 
 The product requirement is that a GIS user asks questions in their own language
@@ -24,7 +25,7 @@ read-only, so a defect in any one of them is not sufficient to write:
    builder bug, not to sanitise user input.
 
 Credentials never appear here. Connections are addressed by the stable id of a
-saved QGIS/Mapdex connection; the DSN, host, user and password stay inside the
+saved host connection; the DSN, host, user and password stay inside the
 platform credential store and are never placed in a prompt, a log, or an error.
 """
 from __future__ import annotations

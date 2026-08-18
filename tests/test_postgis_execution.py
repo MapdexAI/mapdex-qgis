@@ -20,7 +20,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.postgis import ReadOnlyViolation, bind_numeric_parameters  # noqa: E402
+from mapdex_qgis._vendor.nivo.postgis import ReadOnlyViolation, bind_numeric_parameters  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -185,7 +185,7 @@ def test_an_unknown_column_is_refused_naming_the_table():
 
 
 def test_an_unregistered_operation_is_refused():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     with pytest.raises(CapabilityError):
         _runtime(FakeConnection()).postgis_analyze("warehouse", "public", "parcels", "train_a_model")
@@ -219,7 +219,7 @@ def test_the_analysis_builders_are_reachable_for_every_declared_operation():
 
 def test_no_declared_parameter_can_carry_sql():
     """The property the whole design rests on, asserted rather than described."""
-    from mapdex_qgis.capabilities import get as get_capability
+    from mapdex_qgis._vendor.nivo.capabilities import get as get_capability
 
     for capability_id in ("postgis.profile@1", "postgis.analyze@1", "postgis.spatial@1"):
         capability = get_capability(capability_id)

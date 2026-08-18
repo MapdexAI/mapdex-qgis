@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Spatial reasoning that is correct about units, plus a pure geometry fallback.
 
 Two responsibilities live here, both deliberately free of QGIS imports:

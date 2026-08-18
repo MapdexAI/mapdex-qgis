@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .processing import safe_processing_params
+from ._vendor.nivo.processing import safe_processing_params
 
 COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64

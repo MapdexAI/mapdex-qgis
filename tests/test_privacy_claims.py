@@ -53,7 +53,7 @@ USER_FACING = (
 # Files that may describe the intended design, because their reader is the
 # person implementing it rather than the person trusting it. Both carry an
 # explicit statement that the path is not wired.
-DESIGN_DOCS = ("NIVO-AGENT.md", "mapdex_qgis/providers.py")
+DESIGN_DOCS = ("NIVO-AGENT.md", "mapdex_qgis/_vendor/nivo/providers.py")
 
 
 class Claim:
@@ -158,8 +158,8 @@ def test_the_wiring_probe_is_not_blind():
     renamed, the label function it excludes gets renamed (so every reference
     would be excluded), or plugin.py stops parsing into functions at all.
     """
-    from mapdex_qgis.agent import AgentSession  # noqa: F401  - the name must still exist
-    from mapdex_qgis.providers import build_provider  # noqa: F401
+    from mapdex_qgis._vendor.nivo.agent import AgentSession  # noqa: F401  - the name must still exist
+    from mapdex_qgis._vendor.nivo.providers import build_provider  # noqa: F401
 
     source = (PACKAGE / "plugin.py").read_text(encoding="utf-8")
     assert "def {}".format(LABEL_ONLY) in source, (

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Deterministic statistical analytics for Nivo.
 
 Nothing here imports QGIS or calls a model. Every number a Nivo answer states

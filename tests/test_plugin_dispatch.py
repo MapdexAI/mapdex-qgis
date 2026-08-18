@@ -27,7 +27,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.capabilities import CapabilityError, validate_request  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import CapabilityError, validate_request  # noqa: E402
 
 SOURCE = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)

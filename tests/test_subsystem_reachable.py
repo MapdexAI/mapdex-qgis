@@ -17,9 +17,14 @@ PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
 
 
 def test_the_plugin_imports_the_capability_subsystem():
-    for module in ("capabilities", "qgis_runtime"):
-        assert re.search(r"^from \.{} import ".format(module), PLUGIN, re.MULTILINE), (
-            "plugin.py does not import {}; the subsystem is unreachable again".format(module)
+    # The registry now lives in the vendored `nivo` package, so the import is
+    # `from ._vendor.nivo.capabilities import ...`; `qgis_runtime` is the
+    # plugin's own. Both spellings are checked as written, because the question
+    # is whether plugin.py reaches the subsystem, not what it is called today.
+    for statement in (r"^from \._vendor\.nivo\.capabilities import ",
+                      r"^from \.qgis_runtime import "):
+        assert re.search(statement, PLUGIN, re.MULTILINE), (
+            "plugin.py has no `{}`; the subsystem is unreachable again".format(statement)
         )
 
 

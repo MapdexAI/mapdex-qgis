@@ -11,8 +11,8 @@ import math
 
 import pytest
 
-from mapdex_qgis.capabilities import CapabilityError, get, validate_request
-from mapdex_qgis.spatial import measure_distance
+from mapdex_qgis._vendor.nivo.capabilities import CapabilityError, get, validate_request
+from mapdex_qgis._vendor.nivo.spatial import measure_distance
 
 
 def test_a_known_distance_comes_out_right():
@@ -140,7 +140,7 @@ class _ExportRuntime:
 
 def test_export_rejects_a_format_before_touching_qgis():
     """A bad format must be refused by name, and must not reach the writer."""
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
     from mapdex_qgis.qgis_runtime import QGISRuntime
 
     with pytest.raises(CapabilityError) as error:

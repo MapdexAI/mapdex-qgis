@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Build the coordinates for features Nivo places on a layer.
 
 Kept free of QGIS imports so the part that is easy to get wrong - how many
@@ -14,6 +15,11 @@ from __future__ import annotations
 import math
 import random
 from typing import Any, Mapping, Sequence
+
+# The seed a caller gets when it names none. Fixed so the same request places
+# the same points every run: a scatter that moves between runs is not a
+# measurement anybody can check.
+DEFAULT_JITTER_SEED = "nivo"
 
 MAX_FEATURES = 1000
 # Placement invents positions, never shapes. A point IS a position; a polygon or
@@ -94,7 +100,7 @@ def plan_points(params: Mapping[str, Any], seed: str = "") -> dict[str, Any]:
     # Deterministic sample geometry: the caller's seed must reproduce the same
     # points, so a cryptographic generator would be the wrong tool here. Nothing
     # about this placement is a security decision. (B311 below.)
-    generator = random.Random(seed or "mapdex")  # nosec B311
+    generator = random.Random(seed or DEFAULT_JITTER_SEED)  # nosec B311
     box = _bbox(params.get("bbox"))
     if box is None:
         centre = valid_pair(params.get("center"))
@@ -138,7 +144,7 @@ def scatter_in_rectangle(
     # Deterministic sample geometry: the caller's seed must reproduce the same
     # points, so a cryptographic generator would be the wrong tool here. Nothing
     # about this placement is a security decision. (B311 below.)
-    generator = random.Random(seed or "mapdex")  # nosec B311
+    generator = random.Random(seed or DEFAULT_JITTER_SEED)  # nosec B311
     return [(generator.uniform(minx, maxx), generator.uniform(miny, maxy)) for _index in range(count)]
 
 

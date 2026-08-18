@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
 
-from .agent import STATE_FAILED, AgentSession
-from .capabilities import CLIENT_QGIS, offline_capability_ids
-from .providers import RUNTIME_BYOK, redact
+from ._vendor.nivo.agent import STATE_FAILED, AgentSession
+from ._vendor.nivo.capabilities import CLIENT_QGIS, offline_capability_ids
+from ._vendor.nivo.providers import RUNTIME_BYOK, redact
 
 # Said when the user declined the offer, because "your provider could not
 # answer" alone leaves open whether we tried Mapdex anyway.

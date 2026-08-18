@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Turn computed analysis into map visualization and into an honest report.
 
 Two jobs, both pure so they can be tested without QGIS:

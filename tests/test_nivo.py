@@ -5,7 +5,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.nivo import ALLOWED_ACTIONS, allowed_actions, companion_context, confirmation_actions, transition
-from mapdex_qgis.processing import build_algorithm_parameters, resolve_processing_algorithm, safe_processing_params
+from mapdex_qgis._vendor.nivo.processing import (
+    build_algorithm_parameters,
+    resolve_processing_algorithm,
+    safe_processing_params,
+)
 
 
 def test_companion_context_contains_summary_not_attribute_values_or_credentials():

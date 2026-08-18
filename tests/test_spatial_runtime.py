@@ -527,7 +527,7 @@ def test_disjoint_is_the_negation_and_must_test_every_reference():
 def test_an_unregistered_predicate_is_refused():
     parcels = FakeLayer("parcels", [FakeFeature(1, FakeGeom(bounds=(0, 0, 5, 5)))])
     flood = FakeLayer("flood", [FakeFeature(1, FakeGeom(bounds=(0, 0, 10, 10)))])
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     with pytest.raises(CapabilityError):
         _runtime([parcels, flood]).relate("parcels", "flood", "somewhere_near")

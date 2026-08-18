@@ -113,7 +113,7 @@ check("QgsVectorFileWriter.NoError resolves", writer_enum)
 # 3. The registry
 # --------------------------------------------------------------------------
 def registry():
-    from mapdex_qgis import capabilities
+    from mapdex_qgis._vendor.nivo import capabilities
     from mapdex_qgis.qgis_runtime import bound_capability_ids
     declared = len(capabilities.all_capabilities())
     bound = bound_capability_ids()
@@ -320,7 +320,7 @@ def measure():
     # P-001 bottom-left to bottom-right is exactly 100 m in EPSG:32635.
     # The runtime converts to WGS84 first, so this is where a conversion fault
     # produces a plausible wrong number.
-    from mapdex_qgis import spatial
+    from mapdex_qgis._vendor.nivo import spatial
     got = spatial.measure_distance((28.9784, 41.0082), (28.9784, 41.0172), True, "degrees")
     return "spherical 0.009 deg lat -> {}".format(str(got)[:160])
 

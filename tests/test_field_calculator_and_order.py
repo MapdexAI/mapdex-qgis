@@ -13,7 +13,7 @@ import types
 import pytest
 
 
-from mapdex_qgis import capabilities
+from mapdex_qgis._vendor.nivo import capabilities
 from mapdex_qgis.maptools import MeasureState
 
 
@@ -202,7 +202,7 @@ def make_layer():
 # Silently replacing a column the user already had is the one mistake here that
 # destroys data rather than merely adding a wrong number.
 def test_an_existing_field_is_never_overwritten():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     layer = make_layer()
     with pytest.raises(CapabilityError) as error:
@@ -212,7 +212,7 @@ def test_an_existing_field_is_never_overwritten():
 
 
 def test_a_bad_expression_is_refused_before_any_row_is_touched():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     layer = make_layer()
     with pytest.raises(CapabilityError):
@@ -222,7 +222,7 @@ def test_a_bad_expression_is_refused_before_any_row_is_touched():
 
 
 def test_a_reference_to_a_missing_field_is_refused():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     layer = make_layer()
     with pytest.raises(CapabilityError):
@@ -289,7 +289,7 @@ def test_a_text_field_writes_text():
 
 
 def test_a_provider_that_refuses_a_new_field_is_an_error_not_a_silent_success():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     layer = make_layer()
     layer.provider.accepts = False
@@ -298,7 +298,7 @@ def test_a_provider_that_refuses_a_new_field_is_an_error_not_a_silent_success():
 
 
 def test_an_empty_field_name_is_refused():
-    from mapdex_qgis.capabilities import CapabilityError
+    from mapdex_qgis._vendor.nivo.capabilities import CapabilityError
 
     layer = make_layer()
     with pytest.raises(CapabilityError):

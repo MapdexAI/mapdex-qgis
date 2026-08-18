@@ -22,7 +22,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.capabilities import CapabilityError, get, validate_request  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import CapabilityError, get, validate_request  # noqa: E402
 from mapdex_qgis.maptools import (  # noqa: E402
     MINIMUM_VERTICES,
     DrawState,

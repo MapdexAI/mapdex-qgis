@@ -58,10 +58,15 @@ from .api_client import (
 )
 from .build_version import PLUGIN_VERSION
 from .connections import discover_connections, qgis_connection_names
-from .credentials import ProviderCredentialStore, describe_privacy, public_settings
+from .credentials import (
+    HOSTED_PROVIDER_NAME,
+    ProviderCredentialStore,
+    describe_privacy,
+    public_settings,
+)
 from .generated_contracts import BatchKind
-from .providers import ProviderError, build_provider, default_model_for, resolve_runtime
-from .agent import AgentSession
+from ._vendor.nivo.providers import ProviderError, build_provider, default_model_for, resolve_runtime
+from ._vendor.nivo.agent import AgentSession
 from .byok import (
     ByokTurn,
     is_byok,
@@ -69,7 +74,7 @@ from .byok import (
     provider_failed,
     session_allowance,
 )
-from .capabilities import (
+from ._vendor.nivo.capabilities import (
     CLIENT_QGIS,
     CapabilityError,
     get as get_capability,
@@ -81,7 +86,7 @@ from .qgis_runtime import (
     RuntimeUnavailable,
     build_executor,
 )
-from .features import (
+from ._vendor.nivo.features import (
     can_place,
     describe_placement,
     describe_unplaceable_geometry,
@@ -114,7 +119,7 @@ from .nivo import (
     transition,
 )
 from .panel import build_companion_panel, build_thread_history_dialog
-from .processing import (
+from ._vendor.nivo.processing import (
     PROCESSING_OPERATION_CATALOG,
     build_algorithm_parameters,
     describe_empty_input,
@@ -123,7 +128,7 @@ from .processing import (
     resolve_processing_algorithm,
 )
 from .qt_compat import QAction, enum_member, qgis_version
-from .viewport import resolve_extent
+from ._vendor.nivo.viewport import resolve_extent
 from .results import (
     batch_failure,
     batch_is_terminal,
@@ -1273,6 +1278,9 @@ class MapdexPlugin:
             "model": str(settings.value("mapdex/nivo/model", "") or ""),
             "base_url": str(settings.value("mapdex/nivo/base_url", "") or ""),
             "auth_config_id": str(settings.value("mapdex/nivo/auth_config_id", "") or ""),
+            # The vendored package deliberately knows no vendor name, so the host
+            # names the service a hosted turn would actually reach.
+            "hosted_provider_name": HOSTED_PROVIDER_NAME,
         }
         if stored["provider"]:
             stored["api_key"] = self._credential_store().load(stored["auth_config_id"])
@@ -1331,6 +1339,7 @@ class MapdexPlugin:
             "provider": provider,
             "api_key": typed_key or stored_key,
             "base_url": self.base_url_input.text().strip() if self.base_url_input is not None else "",
+            "hosted_provider_name": HOSTED_PROVIDER_NAME,
         })
         self.assistant_privacy.setText(describe_privacy(runtime))
 

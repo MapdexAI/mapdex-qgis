@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """The bounded agent loop: objective -> capability -> observation -> next step.
 
 Nivo is not a prompt-to-single-action mapper. A real GIS objective ("which
@@ -33,10 +34,11 @@ import json
 import re
 from typing import Any, Callable, Mapping, Sequence
 
-from .nivo_prompt import system_prompt
+from .prompt import system_prompt
 from .capabilities import (
     CLIENT_QGIS,
     CapabilityError,
+    client_display_name,
     catalog_for_prompt,
     get as get_capability,
     validate_request,
@@ -59,9 +61,9 @@ STATE_CANCELLED = "cancelled"
 TERMINAL_STATES = frozenset({STATE_COMPLETED, STATE_FAILED, STATE_CANCELLED})
 
 # The system contract is NOT written here. It lives in
-# packages/ai-prompts/prompts/nivo.system.md and is vendored into
-# nivo_prompt.py, so QGIS and the Mapdex workspace drive the agent from one
-# versioned text. An inline prompt would be a second vocabulary that drifts.
+# nivo/prompts/nivo.system.md and is read by nivo.prompt, so every client
+# drives the agent from one versioned text. An inline prompt would be a second
+# vocabulary that drifts.
 
 
 class AgentError(Exception):
@@ -195,15 +197,20 @@ class AgentSession:
         confirm: Callable[[Mapping[str, Any]], bool] | None = None,
         max_steps: int = MAX_STEPS,
         allowed: Sequence[str] | None = None,
+        client_name: str = "",
     ):
         self.provider = provider
         self.executor = executor
         self.client = client
+        # What the model is told it is running inside. Defaults to the name the
+        # registry holds for this client, so a host names itself once instead of
+        # at every call site.
+        self.client_name = str(client_name or client_display_name(client))
         self.confirm = confirm
         self.max_steps = max(1, min(int(max_steps or MAX_STEPS), MAX_STEPS))
         # A narrower catalogue than the client's. A session driving the user's
-        # own provider with no Mapdex account can reach everything QGIS can do
-        # locally and nothing that executes as a server-side Run - so the
+        # own provider with no host account can reach everything the client can
+        # do locally and nothing that executes as a server-side Run - so the
         # subset is passed in rather than inferred, and `None` means "the
         # client's full catalogue" so every existing caller is unchanged.
         self.allowed = frozenset(allowed) if allowed is not None else None
@@ -229,14 +236,13 @@ class AgentSession:
     def _system_prompt(self, context: Mapping[str, Any]) -> str:
         """The shared contract, plus this client's context and catalogue.
 
-        The rules come from the versioned prompt both clients share; only the
-        capability catalogue differs between QGIS and the workspace, which is
-        what keeps the same question answerable the same way on both.
+        The rules come from the versioned prompt every client shares; only the
+        capability catalogue differs between one client and another, which is
+        what keeps the same question answerable the same way on all of them.
         """
         catalog = [entry for entry in catalog_for_prompt(self.client) if self.permits(entry.get("id"))]
-        client_name = "QGIS" if self.client == CLIENT_QGIS else "the Mapdex workspace"
         return "\n\n".join((
-            system_prompt(client_name),
+            system_prompt(self.client_name),
             "<context>\n" + self._context_block(context) + "\n</context>",
             "<capabilities>\n" + json.dumps(catalog, ensure_ascii=False) + "\n</capabilities>",
         ))
@@ -301,7 +307,7 @@ class AgentSession:
             return self._result(decision["message"], None, kind="clarify")
         if not self.permits(decision["capability"]):
             # Second gate, after the catalogue filter. The prompt is guidance;
-            # this is the boundary. A session with no Mapdex account must not
+            # this is the boundary. A session with no host account must not
             # reach a server-side Run because a model named one anyway.
             self.observations.append(
                 Observation(decision["capability"], decision["params"], None, ok=False,

@@ -67,7 +67,7 @@ def _install_qgis_stubs():
 
 _install_qgis_stubs()
 
-from mapdex_qgis.capabilities import CapabilityError, validate_request  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import CapabilityError, validate_request  # noqa: E402
 from mapdex_qgis.qgis_runtime import (  # noqa: E402
     MAX_ANALYTIC_FEATURES,
     QGISRuntime,

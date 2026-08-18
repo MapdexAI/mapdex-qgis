@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """The trusted capability registry: what Nivo is allowed to do, and where.
 
 This is the contract between the model and the product. The model never emits
@@ -28,7 +29,11 @@ PROTOCOL_VERSION = "companion.v2"
 EXEC_LOCAL = "local"                # in-process QGIS/Python, no network
 EXEC_QGIS_PROCESSING = "qgis_processing"
 EXEC_POSTGIS = "postgis"            # read-only, on the user's database
-EXEC_MAPDEX = "mapdex"              # durable server-side Run
+# A durable Run on the host application's own server. Nivo does not name a
+# vendor: a host registers its remote capabilities with this execution site and
+# `offline_capability_ids` then reports, as a registry fact, exactly which part
+# of the catalogue needs an account behind it.
+EXEC_REMOTE_SERVICE = "remote_service"
 EXEC_CLIENT_UI = "client_ui"        # a pure UI/navigation effect
 
 # Risk classes. ``forbidden`` exists so a refusal is a registry fact with a
@@ -138,12 +143,12 @@ def catalog_for_prompt(client: str) -> list[dict[str, Any]]:
 
 
 def offline_capability_ids(client: str = CLIENT_QGIS) -> frozenset:
-    """What this client can do with no Mapdex account behind it.
+    """What this client can do with no host account behind it.
 
-    Everything except the capabilities whose execution site is Mapdex. That is
-    the commercial split stated as a registry fact rather than a list somebody
-    maintains: georeferencing, digitization, validation, batch and run review
-    are the product, and they execute server-side, so they stay account-gated.
+    Everything except the capabilities whose execution site is a remote
+    service. That is the split stated as a registry fact rather than a list
+    somebody maintains: whatever a host registers as server-side work stays
+    account-gated, and everything else keeps working offline.
 
     Read-only PostGIS is deliberately included. It executes on the user's own
     database, which they already own, and excluding it would gate a local
@@ -152,7 +157,7 @@ def offline_capability_ids(client: str = CLIENT_QGIS) -> frozenset:
     return frozenset(
         capability.id
         for capability in for_client(client)
-        if capability.execution != EXEC_MAPDEX
+        if capability.execution != EXEC_REMOTE_SERVICE
     )
 
 
@@ -578,29 +583,14 @@ _c("processing.discover@1", "processing", "List the installed Processing algorit
    params={"objective": {"type": "string", "required": True}},
    execution=EXEC_LOCAL, produces=("catalog",))
 
-# -- Mapdex server-side work: consequential --------------------------------
-_c("mapdex.workflow@1", "mapdex", "Run a Mapdex workflow (georeference, extract, validate, convert) on a source.",
-   params={"workflow": {"type": "string", "required": True,
-                        "enum": ["georeference_maps", "digitize_parcels", "validate_deliver"]},
-           "source_id": {"type": "string", "required": True}},
-   risk=RISK_CONSEQUENTIAL, execution=EXEC_MAPDEX, produces=("run",),
-   clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("mapdex.batch@1", "mapdex", "Run one verified workflow across several prepared sources.",
-   params={"workflow": {"type": "string", "required": True},
-           "source_ids": {"type": "list", "required": True}},
-   risk=RISK_CONSEQUENTIAL, execution=EXEC_MAPDEX, produces=("batch",),
-   clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("mapdex.jobs@1", "mapdex", "List Mapdex runs with their state, and explain a failure.",
-   params={"state": {"type": "string", "enum": ["all", "active", "failed", "review_required", "completed"],
-                     "default": "all"}},
-   execution=EXEC_MAPDEX, produces=("jobs",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("mapdex.open_review@1", "mapdex", "Open the Mapdex review surface for a run that needs review.",
-   params={"run_id": {"type": "string"}},
-   execution=EXEC_MAPDEX, produces=("ui_effect",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("mapdex.import_result@1", "mapdex", "Add a completed Mapdex result to the map.",
-   params={"run_id": {"type": "string", "required": True}},
-   risk=RISK_CONSEQUENTIAL, execution=EXEC_MAPDEX, produces=("layer",),
-   clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+# -- the host application's server-side work -------------------------------
+#
+# Deliberately empty. A capability that runs on one vendor's server belongs to
+# that vendor, not to this package, so a host registers its own with
+# `register(Capability(..., execution=EXEC_REMOTE_SERVICE))`. Everything the
+# agent needs then follows from the registry: the catalogue advertises them,
+# `offline_capability_ids` excludes them, and a session without an account
+# cannot reach them even if a model names one.
 
 # -- reporting -------------------------------------------------------------
 _c("report.build@1", "report", "Build an evidence-based report from the analyses run in this session.",
@@ -656,7 +646,7 @@ _c("draw.geometry@1", "draw",
 #
 # Consequential and not reversible: it writes a column into the user's data, and
 # once written there is no undo outside QGIS's own edit buffer. The expression
-# is parsed by mapdex_qgis.expressions, a grammar that can only express
+# is parsed by nivo.expressions, a grammar that can only express
 # arithmetic over the layer's own fields. That grammar, not a prompt
 # instruction, is what stops a calculation reaching outside the row.
 _c("field.calculate@1", "field", "Add a field computed from the layer's existing fields.",
@@ -684,6 +674,25 @@ _c("system.execute_sql@1", "system", "Run arbitrary SQL.", risk=RISK_FORBIDDEN,
 def supported_action_kinds(client: str = CLIENT_QGIS) -> list[str]:
     """The capability ids this client advertises during negotiation."""
     return [capability.id for capability in for_client(client)]
+
+
+# What the agent calls the surface it is running in, when it introduces itself to
+# the model. A host registers its own name rather than this package hard-coding
+# one; the prompt substitutes it for {{CLIENT_NAME}}.
+_CLIENT_DISPLAY_NAMES: dict[str, str] = {
+    CLIENT_QGIS: "QGIS",
+    CLIENT_WORKSPACE: "the workspace",
+}
+
+
+def client_display_name(client: str) -> str:
+    """The human name for a client, defaulting to the client id itself."""
+    return _CLIENT_DISPLAY_NAMES.get(str(client or ""), str(client or ""))
+
+
+def set_client_display_name(client: str, name: str) -> None:
+    """Name a client for the prompt. Hosts call this once at start-up."""
+    _CLIENT_DISPLAY_NAMES[str(client)] = str(name)
 
 
 def executable_domains() -> Iterable[str]:

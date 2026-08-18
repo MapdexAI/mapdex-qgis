@@ -26,7 +26,11 @@ REPO="$(git -C "$ROOT" rev-parse --show-toplevel)"
 PREFIX="$(realpath --relative-to="$REPO" "$ROOT")"
 
 # The two tests that are allowed to skip, and only for the standalone reason.
-EXPECTED_SKIP_FILES="tests/test_vendored_contracts.py tests/test_vendored_prompt.py"
+# Both compare a vendored copy against a source that lives outside the published
+# tree: the generated contracts excerpt, and the vendored nivo-gis package.
+# (test_vendored_prompt.py left when the prompt moved into that package - the
+# plugin no longer carries a separate copy of it to drift.)
+EXPECTED_SKIP_FILES="tests/test_vendored_contracts.py tests/test_vendored_nivo.py"
 
 WORK="$(mtmp=$(mktemp -d -t mapdex-qgis-standalone-XXXXXX); echo "$mtmp")"
 trap 'rm -rf "$WORK"' EXIT

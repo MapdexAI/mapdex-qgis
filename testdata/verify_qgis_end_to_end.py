@@ -140,7 +140,7 @@ QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, SETTING
 QCoreApplication.setOrganizationName("MapdexVerify")
 QCoreApplication.setApplicationName("MapdexVerify")
 
-from mapdex_qgis import capabilities as capabilities_module  # noqa: E402
+from mapdex_qgis._vendor.nivo import capabilities as capabilities_module  # noqa: E402
 from mapdex_qgis import nivo as nivo_module  # noqa: E402
 from mapdex_qgis import plugin as plugin_module  # noqa: E402
 from mapdex_qgis.api_client import MapdexAPIError  # noqa: E402

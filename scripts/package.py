@@ -28,6 +28,17 @@ DOCUMENTS = ("metadata.txt", "README.md", "LICENSE")
 ASSETS = ("icon.png",)
 CHANNELS = ("development", "production")
 
+# The vendored `nivo` package is source, so `rglob("*.py")` below already
+# carries its modules. What it does NOT carry is the package's data: the shared
+# system prompt, which `nivo.prompt` opens at import time, its MIT licence, and
+# the `py.typed` marker. A zip missing the prompt imports cleanly here and
+# raises FileNotFoundError inside QGIS on a user's machine, so the non-Python
+# files are collected explicitly rather than left to a glob that cannot see
+# them.
+VENDOR_DIR = "_vendor"
+VENDOR_DATA_SUFFIXES = (".md", ".txt", ".json")
+VENDOR_DATA_NAMES = ("py.typed", "NIVO_VERSION", "NIVO-LICENSE")
+
 
 def channel_from(argv) -> str:
     if "--channel" in argv:
@@ -48,6 +59,34 @@ def stamped_build_profile(source: Path, channel: str) -> bytes:
     if count != 1:
         raise SystemExit("could not stamp the build channel into build_profile.py")
     return stamped.encode("utf-8")
+
+
+# Files whose absence from the zip is invisible until QGIS loads the plugin on
+# somebody else's machine. Each one is opened at import time by code that ships
+# in the same archive, so a missing entry is an ImportError in a release rather
+# than a degraded feature.
+REQUIRED_ENTRIES = (
+    f"{PLUGIN_DIR_NAME}/__init__.py",
+    f"{PLUGIN_DIR_NAME}/mapdex_capabilities.py",
+    f"{PLUGIN_DIR_NAME}/generated_contracts.py",
+    f"{PLUGIN_DIR_NAME}/_vendor/__init__.py",
+    f"{PLUGIN_DIR_NAME}/_vendor/nivo/__init__.py",
+    f"{PLUGIN_DIR_NAME}/_vendor/nivo/capabilities.py",
+    f"{PLUGIN_DIR_NAME}/_vendor/nivo/prompts/nivo.system.md",
+    # MIT: shipping the source without the terms is a licence violation, not a
+    # packaging nicety.
+    f"{PLUGIN_DIR_NAME}/_vendor/NIVO-LICENSE",
+    f"{PLUGIN_DIR_NAME}/metadata.txt",
+)
+
+
+def _verify(zip_path: Path) -> None:
+    """Refuse to hand over an archive that cannot load."""
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+    missing = [name for name in REQUIRED_ENTRIES if name not in names]
+    if missing:
+        raise SystemExit("the package is missing files it needs to import: {}".format(", ".join(missing)))
 
 
 def main(argv) -> int:
@@ -86,7 +125,18 @@ def main(argv) -> int:
             archive.write(
                 path, f"{PLUGIN_DIR_NAME}/{path.relative_to(ROOT / 'mapdex_qgis').as_posix()}"
             )
+        for path in sorted((ROOT / "mapdex_qgis" / VENDOR_DIR).rglob("*")):
+            if not path.is_file() or path.suffix == ".py":
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            if path.suffix not in VENDOR_DATA_SUFFIXES and path.name not in VENDOR_DATA_NAMES:
+                continue
+            archive.write(
+                path, f"{PLUGIN_DIR_NAME}/{path.relative_to(ROOT / 'mapdex_qgis').as_posix()}"
+            )
 
+    _verify(zip_path)
     print("{} ({} build)".format(zip_path, channel))
     return 0
 

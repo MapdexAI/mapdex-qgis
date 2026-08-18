@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from . import analytics, postgis, presentation, spatial
-from .capabilities import CapabilityError
+from ._vendor.nivo import analytics, postgis, presentation, spatial
+from ._vendor.nivo.capabilities import CapabilityError
 from .guard import log_debug
 
 # Attribute analytics stream this many features at most. Above the cap the
@@ -1569,7 +1569,7 @@ class QGISRuntime:
         already had is the one mistake here that destroys data rather than merely
         adding a wrong number.
         """
-        from . import expressions
+        from ._vendor.nivo import expressions
 
         layer = self.vector(layer_id)
         name = str(field or "").strip()

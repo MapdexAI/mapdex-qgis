@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Bounded QGIS Processing operation registry for Nivo.
 
 The server may ask for a named operation, but this plugin owns the native

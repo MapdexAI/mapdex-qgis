@@ -32,7 +32,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.agent import STATE_COMPLETED, AgentSession  # noqa: E402
+from mapdex_qgis._vendor.nivo.agent import STATE_COMPLETED, AgentSession  # noqa: E402
 from mapdex_qgis.byok import (  # noqa: E402
     ByokTurn,
     hosted_fallback,
@@ -42,12 +42,12 @@ from mapdex_qgis.byok import (  # noqa: E402
     provider_failure_notice,
     session_allowance,
 )
-from mapdex_qgis.capabilities import (  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import (  # noqa: E402
     CLIENT_QGIS,
-    EXEC_MAPDEX,
+    EXEC_REMOTE_SERVICE,
     for_client,
 )
-from mapdex_qgis.providers import ProviderError, build_provider, resolve_runtime  # noqa: E402
+from mapdex_qgis._vendor.nivo.providers import ProviderError, build_provider, resolve_runtime  # noqa: E402
 
 SECRET = "sk-test-do-not-log-0123456789abcdef"  # nosec B105 - a fixture, never a real key
 KEYED_SETTINGS = {"provider": "openai", "api_key": SECRET, "model": "gpt-4o-mini"}
@@ -138,7 +138,7 @@ def test_the_plugin_gates_on_the_runtime_rather_than_on_the_token():
 
 def test_the_offline_allowance_excludes_every_mapdex_executed_capability():
     allowance = session_allowance(CLIENT_QGIS)
-    server_side = {c.id for c in for_client(CLIENT_QGIS) if c.execution == EXEC_MAPDEX}
+    server_side = {c.id for c in for_client(CLIENT_QGIS) if c.execution == EXEC_REMOTE_SERVICE}
     assert server_side, "no capability executes on Mapdex any more; this guard is blind"
     assert not (allowance & server_side), sorted(allowance & server_side)
     # And it is not merely empty: the local half of the product is still there.
@@ -187,21 +187,29 @@ ALLOWED_BUT_UNBOUND = {
 
 
 def _declared_ids():
-    """Capability ids the registry SOURCE declares.
+    """Capability ids the registry SOURCES declare.
 
     Not `all_capabilities()`, for the reason `test_module_reachability.py`
-    records: the registry is module-level mutable state and `test_agent.py`
-    registers a fake `custom.hillshade@1` to prove the extension point works, so
-    asking the live registry reports a test fixture as an unbound product
-    capability - and only when the suite runs in the order that puts that test
-    first.
+    records: the registry is module-level mutable state and a test registering a
+    fake `custom.hillshade@1` to prove the extension point works makes the live
+    registry report a test fixture as an unbound product capability - and only
+    when the suite runs in the order that puts that test first.
+
+    Both halves are read. The generic catalogue lives in the vendored package;
+    Mapdex's five are registered separately, and while the allowance below
+    subtracts every remote-service capability anyway, reading only one file
+    would stop being true the day a `mapdex.*` capability is declared local.
     """
     import re
 
-    source = (ROOT / "mapdex_qgis" / "capabilities.py").read_text(encoding="utf-8")
-    ids = set(re.findall(r'_c\("([a-z_]+\.[a-z_0-9]+@[0-9]+)"', source))
-    assert ids, "capabilities.py parsed to zero capabilities; this guard is now blind"
-    return ids
+    generic = (ROOT / "mapdex_qgis" / "_vendor" / "nivo" / "capabilities.py").read_text(encoding="utf-8")
+    ids = set(re.findall(r'_c\("([a-z_]+\.[a-z_0-9]+@[0-9]+)"', generic))
+    assert ids, "the vendored capabilities.py parsed to zero capabilities; this guard is now blind"
+
+    host = (ROOT / "mapdex_qgis" / "mapdex_capabilities.py").read_text(encoding="utf-8")
+    mapdex = set(re.findall(r'Capability\(\s*"([a-z_]+\.[a-z_0-9]+@[0-9]+)"', host))
+    assert mapdex, "mapdex_capabilities.py parsed to zero capabilities; this guard is now blind"
+    return ids | mapdex
 
 
 def test_the_allowance_offers_nothing_new_that_cannot_be_executed():

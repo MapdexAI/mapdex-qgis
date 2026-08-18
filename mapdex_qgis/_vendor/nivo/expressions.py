@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """A bounded field-calculation grammar.
 
 A field calculator is the last obvious gap in ordinary GIS work, and it is also

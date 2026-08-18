@@ -32,7 +32,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.capabilities import CapabilityError, validate_request  # noqa: E402
+from mapdex_qgis._vendor.nivo.capabilities import CapabilityError, validate_request  # noqa: E402
 from mapdex_qgis.guard import describe_exception, guarded  # noqa: E402
 from mapdex_qgis.guidance import with_failure_guidance  # noqa: E402
 from mapdex_qgis.nivo import transition  # noqa: E402

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Turn a server viewport instruction into a canvas extent, in the right CRS.
 
 The server geocodes in WGS84 because that is the only CRS a place lookup can
