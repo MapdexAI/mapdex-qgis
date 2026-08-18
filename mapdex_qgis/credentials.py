@@ -186,9 +186,20 @@ def describe_privacy(runtime: dict[str, Any]) -> str:
     mode = str(runtime.get("runtime") or "")
     provider = str(runtime.get("provider") or "")
     if mode == "byok":
+        # The runtime a key RESOLVES to is not the runtime a turn RUNS on: every
+        # assistant turn still goes through Mapdex /v1/compose. Claiming
+        # otherwise here is the product telling a user their map context stayed
+        # on their machine at the moment it is being uploaded, which is the one
+        # sentence a privacy notice may never get wrong.
         if provider in LOCAL_PROVIDER_NAMES:
-            return "Local model: your map context stays on this machine and is not sent to Mapdex."
-        return "Your key, sent directly to {}: this request does not pass through Mapdex servers.".format(provider)
+            return (
+                "Local model configured but not used yet: the assistant still runs through "
+                "Mapdex on your plan, so bounded map context is sent to Mapdex."
+            )
+        return (
+            "Key stored for {} but not used yet: the assistant still runs through Mapdex "
+            "on your plan, so bounded map context is sent to Mapdex.".format(provider)
+        )
     if mode == "hosted":
         return "Mapdex-hosted assistant: bounded map context is sent to Mapdex and billed to your plan."
     return "No assistant runtime is configured. Add a provider key or upgrade your plan."

@@ -8,10 +8,17 @@ Two runtimes, one interface:
     unchanged.
 
 ``byok``
-    The user configured their own provider key. The request goes **directly** to
-    that provider from QGIS, so it never transits Mapdex and costs us nothing to
-    serve. BYOK always wins when a key exists, whatever the plan says - the user
-    paid for that key and expects it to be used.
+    The user configured their own provider key. The request is meant to go
+    **directly** to that provider from QGIS, so it never transits Mapdex and
+    costs us nothing to serve. BYOK always wins when a key exists, whatever the
+    plan says - the user paid for that key and expects it to be used.
+
+    **This resolution is not consumed by the turn path yet.** ``resolve_runtime``
+    has one caller, and it sets a label; ``build_provider`` has none. ``ask_nivo``
+    calls ``/v1/compose`` unconditionally, so a keyed install still sends its map
+    context to Mapdex. Nothing here may be restated to a user as a fact about
+    where their data went until that branch exists - see
+    ``tests/test_privacy_claims.py``, which fails on exactly that.
 
 Everything a provider needs is behind :class:`ModelProvider`, so adding Mistral
 or a corporate gateway is one subclass plus a registry entry - no change to the
@@ -313,6 +320,22 @@ def available_providers() -> list[str]:
     return sorted(PROVIDERS)
 
 
+def default_model_for(provider: str) -> str:
+    """The model this provider uses when the user named none.
+
+    Exposed so the settings field can show the real default instead of the word
+    "default", and so a blank model is resolved in one place rather than being
+    sent to a vendor as an empty string - which is not a request any of them
+    accept, and produces a vendor error the user cannot act on.
+
+    An OpenAI-compatible gateway deliberately has none: it is an arbitrary
+    endpoint serving arbitrary model names, so there is nothing to guess and
+    guessing would fail on the first call anyway.
+    """
+    factory = PROVIDERS.get(str(provider or "").strip().lower())
+    return getattr(factory, "default_model", "") if factory is not None else ""
+
+
 def build_provider(settings: Mapping[str, Any], transport: Callable[..., bytes] | None = None) -> ModelProvider:
     """Instantiate the configured provider, refusing unsafe transports.
 
@@ -337,9 +360,15 @@ def build_provider(settings: Mapping[str, Any], transport: Callable[..., bytes] 
         )
     if name in KEYED_PROVIDERS and not api_key:
         raise ProviderError("{} needs an API key".format(name))
+    model = str(settings.get("model") or "").strip() or factory.default_model
+    if not model:
+        # Only reachable for a gateway with no default. Refused here, naming the
+        # fix, rather than posting {"model": ""} and surfacing whatever the
+        # gateway says about it.
+        raise ProviderError("{} needs a model name; there is no default for a custom endpoint".format(name))
     return factory(
         api_key=api_key,
-        model=str(settings.get("model") or ""),
+        model=model,
         base_url=base_url,
         timeout=int(settings.get("timeout") or DEFAULT_TIMEOUT),
         transport=transport,

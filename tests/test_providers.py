@@ -23,6 +23,7 @@ from mapdex_qgis.providers import (  # noqa: E402
     ProviderError,
     available_providers,
     build_provider,
+    default_model_for,
     redact,
     register_provider,
     resolve_runtime,
@@ -172,10 +173,28 @@ def test_unknown_providers_are_refused():
 
 
 def test_openai_compatible_requires_an_explicit_base_url():
-    provider = build_provider({"provider": "openai_compatible", "base_url": "https://gw.example/v1"})
+    settings = {"provider": "openai_compatible", "base_url": "https://gw.example/v1", "model": "gw-1"}
+    provider = build_provider(settings)
     assert provider.base_url == "https://gw.example/v1"
     with pytest.raises(ProviderError):
-        build_provider({"provider": "openai_compatible"}).complete("s", [])
+        build_provider(dict(settings, base_url="")).complete("s", [])
+
+
+def test_a_provider_with_no_default_model_is_refused_rather_than_sent_an_empty_one():
+    # An arbitrary gateway serves arbitrary model names, so there is nothing to
+    # guess. Refusing here names the fix; posting {"model": ""} produces a vendor
+    # error about a field the user never knew they had to fill in.
+    with pytest.raises(ProviderError):
+        build_provider({"provider": "openai_compatible", "base_url": "https://gw.example/v1"})
+
+
+def test_a_blank_model_falls_back_to_the_provider_default():
+    assert build_provider({"provider": "openai", "api_key": SECRET}).model == "gpt-4o-mini"
+    assert build_provider({"provider": "anthropic", "api_key": SECRET}).model == "claude-sonnet-4-5"
+    assert build_provider({"provider": "ollama", "base_url": "http://127.0.0.1:11434"}).model == "llama3.1"
+    assert default_model_for("gemini") == "gemini-2.0-flash"
+    assert default_model_for("openai_compatible") == ""
+    assert default_model_for("not-a-vendor") == ""
 
 
 def test_contributors_can_register_a_provider_without_editing_the_agent():
@@ -266,8 +285,12 @@ def test_public_settings_drop_every_secret_shaped_field():
 
 
 def test_privacy_statement_tells_the_user_where_context_goes():
-    assert "not sent to Mapdex" in describe_privacy({"runtime": "byok", "provider": "ollama"})
-    assert "does not pass through Mapdex" in describe_privacy({"runtime": "byok", "provider": "openai"})
+    # Every state names Mapdex or names its absence. The BYOK sentences are
+    # asserted against the live wiring in tests/test_privacy_claims.py rather
+    # than pinned to a literal here: pinning the words in two places is how the
+    # copy and the code came apart in the first place.
+    assert "sent to Mapdex" in describe_privacy({"runtime": "byok", "provider": "ollama"})
+    assert "sent to Mapdex" in describe_privacy({"runtime": "byok", "provider": "openai"})
     assert "sent to Mapdex" in describe_privacy({"runtime": "hosted", "provider": "mapdex"})
     assert "No assistant runtime" in describe_privacy({"runtime": "unavailable"})
 
@@ -281,5 +304,5 @@ def test_a_keyless_local_provider_cannot_point_at_a_non_http_scheme():
 
 def test_a_remote_openai_compatible_gateway_must_use_tls():
     with pytest.raises(ProviderError):
-        build_provider({"provider": "openai_compatible", "base_url": "http://gw.example/v1"})
-    assert build_provider({"provider": "openai_compatible", "base_url": "https://gw.example/v1"})
+        build_provider({"provider": "openai_compatible", "base_url": "http://gw.example/v1", "model": "gw-1"})
+    assert build_provider({"provider": "openai_compatible", "base_url": "https://gw.example/v1", "model": "gw-1"})

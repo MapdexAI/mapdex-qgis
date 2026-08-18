@@ -137,6 +137,25 @@ def catalog_for_prompt(client: str) -> list[dict[str, Any]]:
     return [capability.describe() for capability in for_client(client)]
 
 
+def offline_capability_ids(client: str = CLIENT_QGIS) -> frozenset:
+    """What this client can do with no Mapdex account behind it.
+
+    Everything except the capabilities whose execution site is Mapdex. That is
+    the commercial split stated as a registry fact rather than a list somebody
+    maintains: georeferencing, digitization, validation, batch and run review
+    are the product, and they execute server-side, so they stay account-gated.
+
+    Read-only PostGIS is deliberately included. It executes on the user's own
+    database, which they already own, and excluding it would gate a local
+    capability behind an account for no reason but tidiness.
+    """
+    return frozenset(
+        capability.id
+        for capability in for_client(client)
+        if capability.execution != EXEC_MAPDEX
+    )
+
+
 # --------------------------------------------------------------------------
 # Parameter validation
 # --------------------------------------------------------------------------

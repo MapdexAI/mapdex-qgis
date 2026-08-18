@@ -109,6 +109,13 @@ local endpoint    → byok     → nothing leaves the machine
 BYOK wins over the plan whenever a key is present: the user paid for that key.
 Because the request goes direct, BYOK traffic costs Mapdex nothing to serve.
 
+> **Not wired yet.** `resolve_runtime` returns that decision and nothing acts on
+> it: its only caller sets a label in the settings panel, `build_provider` has no
+> caller at all, and `ask_nivo` calls `self.api.compose(...)` unconditionally. So
+> every turn currently takes the hosted row of this table whatever the key says.
+> The table describes the design; `tests/test_privacy_claims.py` is what stops it
+> being restated to a user as a fact until the branch exists.
+
 Adding a vendor is one subclass and one registration:
 
 ```python

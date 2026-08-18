@@ -61,7 +61,11 @@ from .connections import discover_connections, qgis_connection_names
 from .credentials import ProviderCredentialStore, describe_privacy, public_settings
 from .generated_contracts import BatchKind
 from .providers import resolve_runtime
-from .capabilities import CapabilityError, get as get_capability, validate_request
+from .capabilities import (
+    CapabilityError,
+    get as get_capability,
+    validate_request,
+)
 from .qgis_runtime import (
     PLUGIN_BOUND_CAPABILITIES,
     QGISRuntime,
@@ -1784,13 +1788,30 @@ class MapdexPlugin:
             self.nivo_stop_button.setVisible(busy)
             self.nivo_stop_button.setEnabled(busy)
 
+    def assistant_runtime(self) -> dict:
+        """Which runtime this turn will actually take, from stored settings.
+
+        One resolution for the label and for the turn. Reading it twice from
+        two different places is how the panel came to promise a direct path
+        that the turn never took.
+        """
+        return resolve_runtime(self.assistant_settings())
+
     @guarded
     def ask_nivo(self, *args):
-        if not self.api.token or not self.project_id:
-            self._set_status("Connect Mapdex and choose a project before asking Nivo.")
-            return
         if self._nivo_compose_task is not None:
             self._set_status("Nivo is already working. Use Stop to cancel that request.")
+            return
+        # Every turn currently takes the hosted path, so the Mapdex account is a
+        # precondition for all of them. When the local provider loop is wired,
+        # this gate becomes hosted-only: a user driving their own provider needs
+        # no account to ask their own model about their own layers, and refusing
+        # them here is what would make BYOK unreachable for exactly the people
+        # it is offered to. `assistant_runtime()` already resolves which runtime
+        # a turn would take; the branch that acts on it is the remaining work,
+        # and `metadata.txt` states plainly that a stored key is not yet used.
+        if not self.api.token or not self.project_id:
+            self._set_status("Connect Mapdex and choose a project before asking Nivo.")
             return
         message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
         if not message:

@@ -194,17 +194,29 @@ class AgentSession:
         client: str = CLIENT_QGIS,
         confirm: Callable[[Mapping[str, Any]], bool] | None = None,
         max_steps: int = MAX_STEPS,
+        allowed: Sequence[str] | None = None,
     ):
         self.provider = provider
         self.executor = executor
         self.client = client
         self.confirm = confirm
         self.max_steps = max(1, min(int(max_steps or MAX_STEPS), MAX_STEPS))
+        # A narrower catalogue than the client's. A session driving the user's
+        # own provider with no Mapdex account can reach everything QGIS can do
+        # locally and nothing that executes as a server-side Run - so the
+        # subset is passed in rather than inferred, and `None` means "the
+        # client's full catalogue" so every existing caller is unchanged.
+        self.allowed = frozenset(allowed) if allowed is not None else None
         self.state = STATE_IDLE
         self.observations: list[Observation] = []
         self.history: list[dict[str, str]] = []
         self.steps = 0
         self._called: set[str] = set()
+        self._objective = ""
+        self._system = ""
+
+    def permits(self, capability: str) -> bool:
+        return self.allowed is None or str(capability) in self.allowed
 
     # -- context -----------------------------------------------------------
 
@@ -221,7 +233,7 @@ class AgentSession:
         capability catalogue differs between QGIS and the workspace, which is
         what keeps the same question answerable the same way on both.
         """
-        catalog = catalog_for_prompt(self.client)
+        catalog = [entry for entry in catalog_for_prompt(self.client) if self.permits(entry.get("id"))]
         client_name = "QGIS" if self.client == CLIENT_QGIS else "the Mapdex workspace"
         return "\n\n".join((
             system_prompt(client_name),
@@ -238,75 +250,124 @@ class AgentSession:
 
     # -- the loop ----------------------------------------------------------
 
-    def run(self, objective: str, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """Pursue one objective to an answer, a clarification, or a failure."""
+    def start(self, objective: str, context: Mapping[str, Any] | None = None) -> "AgentSession":
+        """Fix the objective and the system prompt for this turn."""
         objective = str(objective or "").strip()
         if not objective:
             raise AgentError("an objective is required")
+        self._objective = objective
+        self._system = self._system_prompt(dict(context or {}))
         self.state = STATE_PLANNING
-        context = dict(context or {})
-        system = self._system_prompt(context)
-        pending_confirmation: dict[str, Any] | None = None
-        for _step in range(self.max_steps):
-            self.steps += 1
-            try:
-                reply = self.provider.complete(system, self._messages(objective))
-            except Exception as exc:
-                self.state = STATE_FAILED
-                raise AgentError(str(exc))
-            try:
-                decision = parse_decision(reply, self.client)
-            except CapabilityError as exc:
-                # A rejected capability is a recoverable mistake: tell the model
-                # what went wrong and let it choose again within the budget.
-                self.observations.append(Observation("(rejected)", {}, None, ok=False, error=str(exc)))
-                continue
-            except AgentError as exc:
-                self.observations.append(Observation("(unparsed)", {}, None, ok=False, error=str(exc)))
-                continue
-            if decision["action"] == "answer":
-                self.state = STATE_COMPLETED
-                return self._result(decision["message"], pending_confirmation)
-            if decision["action"] == "clarify":
-                self.state = STATE_CLARIFY
-                return self._result(decision["message"], None, kind="clarify")
-            signature = decision["capability"] + json.dumps(decision["params"], sort_keys=True, default=str)
-            if signature in self._called:
-                # Repeating an identical call cannot produce new information;
-                # it only burns the budget and the user's provider credits.
-                self.observations.append(
-                    Observation(decision["capability"], decision["params"], None, ok=False,
-                                error="already called with these parameters; use the existing observation")
+        return self
+
+    def prompt(self) -> tuple[str, list[dict[str, str]]]:
+        """The exact (system, messages) pair for the next model call.
+
+        Handed out rather than called internally so a caller can put the model
+        call somewhere the loop must not be: in QGIS the network round trip has
+        to happen on a worker thread while every capability executes on the main
+        thread, because iface, the canvas and the layer tree are main-thread
+        only. One loop, two threads, and the loop does not need to know.
+        """
+        return self._system, self._messages(self._objective)
+
+    def budget_spent(self) -> bool:
+        return self.steps >= self.max_steps
+
+    def advance(self, reply: str) -> dict[str, Any] | None:
+        """Consume one model reply. A terminal result, or None to ask again.
+
+        None means the turn is unfinished for a recoverable reason - an
+        unparseable reply, a capability the registry rejected, a repeat call, or
+        a capability that ran and produced an observation. In every one of those
+        the model gets to choose again within the same budget.
+        """
+        self.steps += 1
+        try:
+            decision = parse_decision(reply, self.client)
+        except CapabilityError as exc:
+            # A rejected capability is a recoverable mistake: tell the model
+            # what went wrong and let it choose again within the budget.
+            self.observations.append(Observation("(rejected)", {}, None, ok=False, error=str(exc)))
+            return None
+        except AgentError as exc:
+            self.observations.append(Observation("(unparsed)", {}, None, ok=False, error=str(exc)))
+            return None
+        if decision["action"] == "answer":
+            self.state = STATE_COMPLETED
+            return self._result(decision["message"], None)
+        if decision["action"] == "clarify":
+            self.state = STATE_CLARIFY
+            return self._result(decision["message"], None, kind="clarify")
+        if not self.permits(decision["capability"]):
+            # Second gate, after the catalogue filter. The prompt is guidance;
+            # this is the boundary. A session with no Mapdex account must not
+            # reach a server-side Run because a model named one anyway.
+            self.observations.append(
+                Observation(decision["capability"], decision["params"], None, ok=False,
+                            error="{} is not available in this session".format(decision["capability"]))
+            )
+            return None
+        signature = decision["capability"] + json.dumps(decision["params"], sort_keys=True, default=str)
+        if signature in self._called:
+            # Repeating an identical call cannot produce new information;
+            # it only burns the budget and the user's provider credits.
+            self.observations.append(
+                Observation(decision["capability"], decision["params"], None, ok=False,
+                            error="already called with these parameters; use the existing observation")
+            )
+            return None
+        self._called.add(signature)
+        if decision["requires_confirmation"]:
+            if self.confirm is None or not self.confirm(decision):
+                self.state = STATE_CONFIRM
+                return self._result(
+                    "I prepared this step but did not run it: {}".format(
+                        (get_capability(decision["capability"]) or _Unknown()).summary
+                    ),
+                    decision,
+                    kind="confirmation_required",
                 )
-                continue
-            self._called.add(signature)
-            if decision["requires_confirmation"]:
-                if self.confirm is None or not self.confirm(decision):
-                    self.state = STATE_CONFIRM
-                    return self._result(
-                        "I prepared this step but did not run it: {}".format(
-                            (get_capability(decision["capability"]) or _Unknown()).summary
-                        ),
-                        decision,
-                        kind="confirmation_required",
-                    )
-            self.state = STATE_EXECUTING
-            try:
-                result = self.executor(decision)
-                self.observations.append(Observation(decision["capability"], decision["params"], result))
-            except Exception as exc:
-                self.observations.append(
-                    Observation(decision["capability"], decision["params"], None, ok=False, error=str(exc))
-                )
-            self.state = STATE_PLANNING
-        # The budget is a real bound, so it must produce an honest outcome
-        # rather than an invented conclusion.
+        self.state = STATE_EXECUTING
+        try:
+            result = self.executor(decision)
+            self.observations.append(Observation(decision["capability"], decision["params"], result))
+        except Exception as exc:
+            self.observations.append(
+                Observation(decision["capability"], decision["params"], None, ok=False, error=str(exc))
+            )
+        self.state = STATE_PLANNING
+        return None
+
+    def exhausted(self) -> dict[str, Any]:
+        """The budget is a real bound, so it produces an honest outcome
+        rather than an invented conclusion."""
         self.state = STATE_FAILED
         return self._result(
             "I ran out of steps before I could finish that. Here is what I measured so far.",
             None,
             kind="incomplete",
         )
+
+    def run(self, objective: str, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Pursue one objective to an answer, a clarification, or a failure.
+
+        The synchronous driver. It is the same loop the asynchronous caller
+        runs, expressed in one place, so the two cannot diverge into two
+        different agents that answer the same question differently.
+        """
+        self.start(objective, context)
+        for _step in range(self.max_steps):
+            system, messages = self.prompt()
+            try:
+                reply = self.provider.complete(system, messages)
+            except Exception as exc:
+                self.state = STATE_FAILED
+                raise AgentError(str(exc))
+            outcome = self.advance(reply)
+            if outcome is not None:
+                return outcome
+        return self.exhausted()
 
     def _result(self, message: str, pending: Mapping[str, Any] | None, kind: str = "answer") -> dict[str, Any]:
         self.history.append({"role": "user", "content": ""})

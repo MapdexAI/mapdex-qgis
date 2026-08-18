@@ -743,7 +743,9 @@ class QGISRuntime:
 
     # -- counting one layer into another -----------------------------------
 
-    def _polygon_parts(self, layer: Any, label_field: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, float]]:
+    def _polygon_parts(
+        self, layer: Any, label_field: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, float]]:
         """Polygon parts as ring lists, with their label and their area.
 
         One entry per PART rather than per feature, because flattening a

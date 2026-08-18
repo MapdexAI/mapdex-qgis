@@ -318,9 +318,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     endpoint_layout.addLayout(connection_form)
     connection_layout.addWidget(endpoint_frame)
 
-    # Nivo assistant runtime. Hosted through Mapdex is the default and needs no
-    # configuration; entering a key switches this install to BYOK, and the
-    # request then goes straight to the provider instead of through Mapdex.
+    # Nivo assistant runtime. Every turn currently goes through Mapdex; a key
+    # entered here is stored encrypted but is not yet used to reach the provider
+    # directly. The privacy label below states which of the two is in force, so
+    # the user reads the live answer rather than an intention.
     connection_layout.addWidget(_section_label("Nivo assistant"))
     assistant_form = root.register_form(QFormLayout())
     assistant_form.setFieldGrowthPolicy(

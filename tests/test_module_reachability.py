@@ -29,10 +29,11 @@ ROOTS = ("__init__", "plugin")
 # has to be a decision rather than an oversight.
 ALLOWED = {
     "agent": (
-        "The bounded BYOK agent loop. It is a second execution model - the "
-        "client driving its own provider instead of the server composing - and "
-        "wiring it is a product decision about local inference, not a missing "
-        "import. Tracked as sprint scope, not closed here."
+        "The bounded BYOK agent loop. Every turn currently takes the hosted "
+        "compose path; `plugin.assistant_runtime()` resolves which runtime a "
+        "turn WOULD take, but nothing acts on it yet. This is the one gap the "
+        "plugin still records, and `metadata.txt` states it to users rather "
+        "than advertising a direct-to-provider path that does not exist."
     ),
     "nivo_prompt": (
         "The vendored system prompt the BYOK loop feeds its provider. It is "

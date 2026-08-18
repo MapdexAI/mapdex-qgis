@@ -520,7 +520,7 @@ def test_disjoint_is_the_negation_and_must_test_every_reference():
         FakeFeature(1, FakeGeom(bounds=(0, 0, 10, 10))),
         FakeFeature(2, FakeGeom(bounds=(50, 50, 60, 60))),
     ])
-    result = _runtime([parcels, flood]).relate("parcels", "flood", "disjoint")
+    _runtime([parcels, flood]).relate("parcels", "flood", "disjoint")
     assert parcels.selected == [2]
 
 

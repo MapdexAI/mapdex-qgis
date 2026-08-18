@@ -78,11 +78,10 @@ or Processing algorithm ids from model text. Every action comes from a closed
 capability registry; an unregistered capability cannot execute by any path, and
 an unexpected parameter is rejected rather than ignored.
 
-## Bring your own model key (optional)
+## Store your own model key (optional)
 
-By default the assistant runs through Mapdex on your plan — nothing to
-configure. If you would rather use your own provider, open *Settings* in the
-panel and pick one:
+The assistant runs through Mapdex on your plan — nothing to configure. You can
+already store your own provider key from *Settings* in the panel:
 
 | Provider | Needs |
 | --- | --- |
@@ -90,11 +89,16 @@ panel and pick one:
 | OpenAI-compatible endpoint (vLLM, LM Studio, OpenRouter, a corporate gateway) | a base URL, usually a key |
 | Ollama (local) | a base URL; no key, nothing leaves the machine |
 
-When a key is present, requests go **directly to that provider** and never pass
-through Mapdex servers. Keys are stored only in the encrypted QGIS
-Authentication Manager, are never read back into the interface, and are
-redacted from every error message. If the authentication database is locked the
-key is kept for the session only rather than being written as plaintext.
+Keys are stored only in the encrypted QGIS Authentication Manager, are never
+read back into the interface, and are redacted from every error message. If the
+authentication database is locked the key is kept for the session only rather
+than being written as plaintext.
+
+**A stored key is not used yet.** Every assistant turn still goes through
+Mapdex on your plan, so bounded map context is sent to Mapdex whether or not a
+key is configured. Sending the turn directly to your provider is built but not
+wired into the conversation path; the settings panel says which of the two is
+in force, so the answer is never inferred from this document.
 
 Mapdex processing (georeference, digitization, validation, batch) still uses
 your Mapdex account.

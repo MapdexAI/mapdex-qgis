@@ -20,7 +20,6 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis import postgis  # noqa: E402
 from mapdex_qgis.postgis import ReadOnlyViolation, bind_numeric_parameters  # noqa: E402
 
 
