@@ -1736,7 +1736,7 @@ ERROR_REGISTRY = [
         "code": "UNSUPPORTED_RASTER_PROFILE",
         "type": "validation",
         "http": 422,
-        "template": "The raster does not match a supported extraction profile; review or a specialist profile is required."
+        "template": "This page has no drawn content to extract; check that the intended page was selected and that the scan is not blank."
     },
     {
         "code": "GEOREFERENCE_REQUIRED",
