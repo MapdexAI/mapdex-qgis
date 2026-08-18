@@ -2604,9 +2604,20 @@ class MapdexPlugin:
         # The declaration and the table must not drift: an id advertised here
         # and missing from the table is the "Nivo prepared an action" and a
         # canvas that never moves failure this whole surface exists to avoid.
-        assert set(handlers) == set(PLUGIN_BOUND_CAPABILITIES), (
-            "the plugin-bound declaration and its handler table disagree"
-        )
+        #
+        # A raise rather than an assert, because assert statements are removed
+        # entirely under `python -O`. QGIS does not run optimised today, but an
+        # invariant that quietly stops being checked depending on how the host
+        # was started is not an invariant.
+        declared = set(PLUGIN_BOUND_CAPABILITIES)
+        bound = set(handlers)
+        if bound != declared:
+            raise RuntimeError(
+                "the plugin-bound declaration and its handler table disagree: "
+                "declared-not-bound {}, bound-not-declared {}".format(
+                    sorted(declared - bound), sorted(bound - declared)
+                )
+            )
         return handlers
 
     def _run_processing_capability(self, params):

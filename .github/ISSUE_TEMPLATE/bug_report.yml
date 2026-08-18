@@ -1,6 +1,9 @@
-# Placed at .github/ISSUE_TEMPLATE/bug_report.yml in the public repository by
-# scripts/sync_public_repo.sh. The fields are the ones that actually decide a
-# QGIS plugin bug: which QGIS, which Qt, and the Python log.
+# The published plugin repository's issue form, at the same path it occupies
+# there so `git subtree split` publishes it as-is. Inert in the monorepo, which
+# discovers .github/ only at its own root.
+#
+# The fields are the ones that actually decide a QGIS plugin bug: which QGIS,
+# which Qt, and the Python log.
 name: Bug report
 description: Something in Mapdex for QGIS does not work
 labels: ["bug"]

@@ -1,8 +1,10 @@
-# Placed at .github/workflows/release.yml in the public plugin repository by
-# scripts/sync_public_repo.sh.
+# The published plugin repository's release workflow. It lives here at the same
+# path it occupies there, so `git subtree split` publishes it as-is; the
+# monorepo never runs it (GitHub discovers .github/workflows only at a
+# repository root).
 #
-# Tag the repo and the release ships itself:
-#   git tag v0.9.11 && git push origin v0.9.11
+# Nobody tags the public repo by hand. Tagging `qgis-v<version>` in the monorepo
+# mirrors a matching `v<version>` tag here, which is what starts this run.
 #
 # Requires two repository secrets holding the OSGeo account that owns the
 # plugin on plugins.qgis.org: OSGEO_USERNAME and OSGEO_PASSWORD.

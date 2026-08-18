@@ -763,7 +763,17 @@ class QGISRuntime:
             label = str(feature[label_field]) if label_field else "feature {}".format(feature.id())
             try:
                 polygons = geometry.asMultiPolygon() if geometry.isMultipart() else [geometry.asPolygon()]
-            except Exception:  # noqa: BLE001 - a non-polygon geometry is skipped, not fatal
+            except Exception as exc:  # noqa: BLE001 - a non-polygon geometry is skipped, not fatal
+                # Skipping is right: a layer can legitimately mix geometry
+                # types and one line among polygons is not a failure. Skipping
+                # SILENTLY is not - it swallows a real defect just as quietly
+                # as it swallows the expected case, which is what the bare
+                # except/continue here used to do.
+                log_debug(
+                    "skipped feature {}: geometry is not polygonal ({})".format(
+                        feature.id(), exc.__class__.__name__
+                    )
+                )
                 continue
             for index, polygon in enumerate(polygons):
                 rings = [[(float(point.x()), float(point.y())) for point in ring] for ring in polygon if ring]

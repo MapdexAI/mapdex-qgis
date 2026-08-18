@@ -1,6 +1,12 @@
-# Placed at .github/workflows/ci.yml in the public plugin repository by
-# scripts/sync_public_repo.sh. The public repo is a mirror, so its CI proves
-# the published tree is the tree that builds the uploaded zip.
+# The published plugin repository's own CI. It lives here at the same path it
+# occupies there, so `git subtree split` publishes it as-is; the monorepo never
+# runs it, because GitHub only discovers .github/workflows at a repository root.
+#
+# The public repo is a mirror, so this CI proves the published tree is the tree
+# that builds the uploaded zip. The monorepo runs the same checks upstream of a
+# merge (the qgis-plugin job in the root .github/workflows/ci.yml) and also
+# proves this tree passes with the monorepo absent, so a red run here should be
+# impossible rather than merely unlikely.
 name: CI
 
 on:

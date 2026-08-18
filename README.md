@@ -196,7 +196,9 @@ python3 scripts/publish.py dist/mapdex-qgis.zip v0.9.11 --dry-run
 ```
 
 `mapdex_qgis/generated_contracts.py` is generated from the Mapdex contracts
-package; do not edit it by hand.
+package; do not edit it by hand. It is a scoped excerpt -- only the symbols
+this plugin actually uses -- rather than the whole of those bindings, so that
+the plugin carries the contract surface it depends on and nothing more.
 
 ## License
 

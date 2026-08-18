@@ -17,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parents[1]
 PLUGIN_DIR_NAME = "mapdex"
 
-generated = REPO / "packages" / "contracts" / "generated_python" / "contracts.py"
+# The plugin-scoped excerpt of the Python bindings (see qgis_subset.go), not
+# the full module. Present only in the monorepo; in the public repository the
+# vendored copy in mapdex_qgis/ is the one that ships.
+generated = REPO / "packages" / "contracts" / "generated_python" / "contracts_qgis.py"
 
 # What the QGIS plugin repository expects beside the code: metadata, the icon
 # named in metadata.txt, the documentation and the licence.

@@ -50,4 +50,8 @@ imported modules, so a reinstall alone does not load your changes.
 - **Keep a reference to every `QgsTask`.** A task collected by Python while it
   is still queued crashes QGIS with an access violation.
 - **`mapdex_qgis/generated_contracts.py` is generated.** Do not edit it; it is
-  produced by the contracts package in the monorepo.
+  produced by the contracts package in the monorepo. It holds only the symbols
+  the plugin uses, so a new import from it needs the symbol added upstream
+  (`packages/contracts/codegen/qgis_subset.go`, then `make gen`) rather than
+  pasted in here. `tests/test_vendored_subset.py` fails if you forget, instead
+  of letting the ImportError reach a user's QGIS.
