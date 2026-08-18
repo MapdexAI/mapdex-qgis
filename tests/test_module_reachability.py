@@ -97,6 +97,47 @@ def test_the_allowlist_names_only_modules_that_exist():
     assert not missing, "ALLOWED names modules that are gone: {}".format(missing)
 
 
+# The server's half of the same contract. Read rather than transcribed: this
+# check used to name eight capabilities by hand, which answered the question for
+# those eight and for nothing added afterwards - the same shape of blindness the
+# module graph above exists to remove.
+CATALOGUE = (
+    PACKAGE.parents[2] / "packages" / "contracts" / "companion_capabilities.go"
+)
+
+# Catalogue entries this build knowingly cannot execute. An entry needs a reason,
+# and the reason has to be a decision.
+SERVER_SELECTABLE_BUT_UNBOUND = {
+    "report.build@1": (
+        "The only catalogue entry bound to an intent (REPORT) that nothing here "
+        "executes, so every REPORT turn is answered with 'This QGIS installation "
+        "does not support that Nivo action' - true, and it reads as the user's "
+        "install being at fault. It needs a session ledger of what was actually "
+        "measured, which no module keeps: results.py holds Mapdex run payloads, "
+        "not this session's measurements. Building a report from anything less "
+        "would be a report of things nobody measured. Tracked as sprint scope."
+    ),
+}
+
+
+def _catalogue_ids() -> set[str]:
+    import re
+
+    source = CATALOGUE.read_text(encoding="utf-8")
+    ids = set(re.findall(r'ID:\s*"([a-z_]+\.[a-z_0-9]+@[0-9]+)"', source))
+    assert ids, "{} parsed to zero capabilities; this guard is now blind".format(CATALOGUE)
+    return ids
+
+
+def _bound() -> set[str]:
+    import sys
+
+    sys.path.insert(0, str(PACKAGE.parent))
+    from mapdex_qgis.qgis_runtime import bound_capability_ids
+
+    return set(bound_capability_ids())
+
+
 def test_the_capabilities_the_server_emits_are_bound_here():
     """The registry may not advertise what the executor cannot perform.
 
@@ -105,15 +146,26 @@ def test_the_capabilities_the_server_emits_are_bound_here():
     server has a code path for and the desktop cannot run is still a hole in the
     product, and these five were exactly that.
     """
-    import sys
+    if not CATALOGUE.exists():
+        return  # standalone plugin checkout: the server catalogue is not present
+    unbound = sorted(_catalogue_ids() - _bound() - set(SERVER_SELECTABLE_BUT_UNBOUND))
+    assert not unbound, (
+        "the server may select these and nothing here executes them: {}. "
+        "Bind them, or record the decision in SERVER_SELECTABLE_BUT_UNBOUND.".format(unbound)
+    )
 
-    sys.path.insert(0, str(PACKAGE.parent))
-    from mapdex_qgis.qgis_runtime import bound_capability_ids
 
-    bound = bound_capability_ids()
-    for capability in (
-        "spatial.relate@1", "spatial.near@1", "spatial.nearest@1",
-        "spatial.count_in_polygons@1", "spatial.density@1",
-        "postgis.profile@1", "postgis.analyze@1", "postgis.spatial@1",
-    ):
-        assert capability in bound, "{} is registered and emitted, and nothing executes it".format(capability)
+def test_the_unbound_catalogue_list_does_not_outlive_its_reason():
+    if not CATALOGUE.exists():
+        return
+    bound = _bound()
+    stale = sorted(name for name in SERVER_SELECTABLE_BUT_UNBOUND if name in bound)
+    assert not stale, "these are bound now and should leave SERVER_SELECTABLE_BUT_UNBOUND: {}".format(stale)
+
+
+def test_the_unbound_catalogue_list_names_only_catalogue_entries():
+    if not CATALOGUE.exists():
+        return
+    catalogue = _catalogue_ids()
+    missing = sorted(name for name in SERVER_SELECTABLE_BUT_UNBOUND if name not in catalogue)
+    assert not missing, "SERVER_SELECTABLE_BUT_UNBOUND names non-catalogue capabilities: {}".format(missing)
