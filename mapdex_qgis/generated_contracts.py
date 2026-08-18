@@ -2680,6 +2680,26 @@ TOOLS = [
         }
     },
     {
+        "id": "spatial:inspect_seams@1",
+        "superseded_by": None,
+        "title": "Inspect the seams of a merged dataset",
+        "version": 1,
+        "category": "spatial",
+        "summary": "Report where adjacent sheets of a merged layer recorded the same feature twice and where they disagree about a boundary. Reads only; nothing is changed.",
+        "executor": "spatial:inspect_seams@1",
+        "credits": 0,
+        "capability": {
+            "visibility": "api_available",
+            "backend": "postgis",
+            "backend_fallback": "",
+            "security_profile": "read_only",
+            "requires_materialization": False,
+            "requires_verification": False,
+            "execution_location": "",
+            "execution_location_fallback": ""
+        }
+    },
+    {
         "id": "observe:inspect_view@1",
         "superseded_by": None,
         "title": "Inspect Current View",
