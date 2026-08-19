@@ -71,7 +71,7 @@ def _package_version(repo: pathlib.Path) -> str:
 
 def _manifest(repo: pathlib.Path) -> str:
     return HEADER + "\n".join((
-        "source = https://github.com/MapdexAI/nivo-gis",
+        "source = https://github.com/MapdexAI/nivo",
         "version = " + _package_version(repo),
         "commit = " + _git(repo, "rev-parse", "HEAD"),
         "committed = " + _git(repo, "log", "-1", "--format=%cI"),

@@ -8,9 +8,9 @@
 #
 # To update: re-run scripts/vendor_nivo.py against a clean nivo-gis checkout.
 
-source = https://github.com/MapdexAI/nivo-gis
+source = https://github.com/MapdexAI/nivo
 version = 0.1.0
-commit = d147cfa648d32cdfb3a16bcf3a4a720689f1166d
-committed = 2026-08-19T02:07:06+03:00
-subject = feat(nivo): make the generic core a standalone package instead of a plugin folder
+commit = 81b827877677b2977bf92efaec042a5c51026cfc
+committed = 2026-08-19T11:22:42+03:00
+subject = fix: point the project URLs at the repository that exists
 worktree = clean
