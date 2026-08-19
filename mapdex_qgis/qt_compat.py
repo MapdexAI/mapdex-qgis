@@ -12,13 +12,7 @@ except (ImportError, ModuleNotFoundError):
     try:
         from qgis.PyQt.QtWidgets import QAction  # Qt5 (QGIS 3)
     except (ImportError, ModuleNotFoundError):
-        try:
-            from PyQt6.QtGui import QAction
-        except (ImportError, ModuleNotFoundError):
-            try:
-                from PyQt5.QtWidgets import QAction
-            except (ImportError, ModuleNotFoundError):
-                QAction = None
+        QAction = None
 
 
 def enum_member(owner, *names):

@@ -2979,13 +2979,20 @@ class MapdexPlugin:
         try:
             from qgis.core import QgsWkbTypes
 
+            from .qt_compat import enum_member
+
+            # PyQt6 requires the scoped ``GeometryType`` path; PyQt5 accepts
+            # the flat form.
+            point = enum_member(QgsWkbTypes, "GeometryType", "PointGeometry")
+            line = enum_member(QgsWkbTypes, "GeometryType", "LineGeometry")
+            polygon = enum_member(QgsWkbTypes, "GeometryType", "PolygonGeometry")
             wanted = {
-                "point": QgsWkbTypes.PointGeometry,
-                "multipoint": QgsWkbTypes.PointGeometry,
-                "linestring": QgsWkbTypes.LineGeometry,
-                "multilinestring": QgsWkbTypes.LineGeometry,
-                "polygon": QgsWkbTypes.PolygonGeometry,
-                "multipolygon": QgsWkbTypes.PolygonGeometry,
+                "point": point,
+                "multipoint": point,
+                "linestring": line,
+                "multilinestring": line,
+                "polygon": polygon,
+                "multipolygon": polygon,
             }.get(geometry)
             return wanted is not None and layer.geometryType() == wanted
         except Exception:

@@ -94,12 +94,15 @@ class QGISRuntime:
         """
         from qgis.core import QgsFeatureRequest  # noqa: PLC0415 - QGIS-only import
 
+        from .qt_compat import enum_member
+
         indexes = [self._field_index(layer, name) for name in fields]
         request = QgsFeatureRequest()
         request.setSubsetOfAttributes(indexes)
         # Geometry is the expensive part of a feature and no attribute
-        # statistic needs it.
-        request.setFlags(QgsFeatureRequest.NoGeometry)
+        # statistic needs it. PyQt6 requires the scoped ``Flag`` path; PyQt5
+        # accepts the flat form, so this is resolved rather than hardcoded.
+        request.setFlags(enum_member(QgsFeatureRequest, "Flag", "NoGeometry"))
         if scope == "viewport":
             extent = self._viewport_in_layer_crs(layer)
             if extent is not None:
