@@ -36,6 +36,11 @@ from .livewire import LiveWire, TraceOptions, path_length_px, simplify
 from .qt_compat import enum_member
 
 try:  # pragma: no cover - import shape differs between QGIS builds
+    from qgis.PyQt.QtCore import QSettings
+except Exception:  # pragma: no cover - importable outside QGIS for tests
+    QSettings = None
+
+try:  # pragma: no cover - import shape differs between QGIS builds
     from qgis.gui import QgsMapTool
 except Exception:  # pragma: no cover - importable outside QGIS for tests
     QgsMapTool = object
@@ -265,14 +270,30 @@ def status_for_seed(seed: Any) -> str:
     return "Anchored. Move the cursor along the line; click to keep it."
 
 
-def status_for_trace(result: Any, geometry: str) -> str:
+def finish_hint(geometry: str, stretches: int) -> str:
+    """How this shape ends, in the words of the shape being drawn.
+
+    Said on every message rather than once at the start. "When does the drawing
+    end" is the question a person asks in the middle of drawing, which is
+    exactly when a hint shown at the beginning is no longer on screen.
+    """
+    if stretches < 1:
+        return ""
+    if geometry == "polygon":
+        return ("click back on the first corner to close the area, or press "
+                "Enter" if stretches >= 2 else "press Enter when the area is closed")
+    return "right-click or press Enter to finish the line"
+
+
+def status_for_trace(result: Any, geometry: str, stretches: int = 0) -> str:
     if result is None or not result.ok:
         reason = getattr(result, "reason", "") or "no path"
         return ("Cannot follow the line here: {}. Hold Shift and click for a "
                 "straight segment instead.".format(reason))
     length = path_length_px(result.points)
-    hint = "Enter to finish" if geometry != "polygon" else "Enter to close the shape"
-    return "Following {:.0f} px of line. Click to keep it, {}.".format(length, hint)
+    hint = finish_hint(geometry, stretches)
+    return "Following {:.0f} px of line. Click to keep it{}.".format(
+        length, "; " + hint if hint else "")
 
 
 # QGIS raster data types by their enum value, as numpy dtypes. Read from the
@@ -467,7 +488,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
 
     def deactivate(self) -> None:
         self._remove_shortcuts()
-        self._clear_bands()
+        self._discard_bands()
         self.session.cancel()
         self._wire = None
         self._window = None
@@ -502,9 +523,17 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         row, col = self._window.to_pixel(point.x(), point.y())
         if not self._window.contains_pixel(row, col):
             return
+        if self.close_target(point.x(), point.y(), CLOSE_TOLERANCE_PX) is not None:
+            # Told while the cursor is there, not after the click. A shape that
+            # finished itself without warning reads as a bug the first time.
+            self.on_status("Click here to close the area and finish it.")
+            self._draw_preview([])
+            return
         result = self._wire.path_to(row, col)
         if result.ok:
             self._draw_preview(self._window.path_to_map(result.points))
+            self.on_status(status_for_trace(
+                result, self.session.geometry, len(self.session.segments)))
         else:
             self._draw_preview([])
 
@@ -633,14 +662,17 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
                     return
                 self.on_status(
                     "Followed the boundary already drawn here, so the two "
-                    "shapes share it exactly. Click a line to carry on.")
+                    "shapes share it exactly. Carry on, or {}.".format(
+                        finish_hint(self.session.geometry,
+                                    len(self.session.segments))))
                 return
         if straight or self._wire is None or self._window is None:
             self.session.commit([anchor, (x, y)], traced=False)
             self._anchor_is_snapped = snapped
             self._redraw_committed()
             self._reseed()
-            self.on_status("Straight segment kept.")
+            self.on_status("Straight segment kept. Carry on, or {}.".format(
+                finish_hint(self.session.geometry, len(self.session.segments))))
             return
 
         row, col = self._window.to_pixel(x, y)
@@ -776,7 +808,8 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
             # shape means the second overwrites the useful one.
             return
         if kind == "incomplete":
-            self.on_status(outcome["reason"])
+            self.on_status("{}. Keep tracing, or press Esc to abandon it.".format(
+                outcome["reason"]))
 
     def crs_authid(self) -> str:
         """The frame the traced coordinates are in, or "".
@@ -859,20 +892,72 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
 
     # -- rubber bands ------------------------------------------------------
 
+    def _digitizing_style(self):
+        """The colours and width QGIS uses for digitizing, from its own settings.
+
+        Hardcoding a blue was wrong twice over. It ignored the rubber band
+        colour the user set in Settings > Digitizing, which every other tool in
+        QGIS obeys, so tracing looked like nothing else they do; and on a map
+        whose own rendering is blue the line being drawn was invisible against
+        the thing it was being drawn over. The user is entitled to have set
+        that colour for a reason.
+        """
+        from qgis.PyQt.QtGui import QColor  # noqa: PLC0415 - Qt-only import
+
+        settings = QSettings()
+
+        def channel(name, fallback):
+            try:
+                return int(settings.value("qgis/digitizing/" + name, fallback))
+            except (TypeError, ValueError):
+                return fallback
+
+        line = QColor(channel("line_color_red", 255), channel("line_color_green", 0),
+                      channel("line_color_blue", 0), channel("line_color_alpha", 200))
+        fill = QColor(channel("fill_color_red", 255), channel("fill_color_green", 0),
+                      channel("fill_color_blue", 0), channel("fill_color_alpha", 30))
+        try:
+            width = float(settings.value("qgis/digitizing/line_width", 1))
+        except (TypeError, ValueError):
+            width = 1.0
+        return line, fill, max(1.0, width)
+
     def _ensure_bands(self) -> None:
-        from qgis.core import QgsWkbTypes
+        from qgis.core import QgsWkbTypes  # noqa: PLC0415 - Qt-only import
         from qgis.gui import QgsRubberBand
         from qgis.PyQt.QtCore import Qt
         from qgis.PyQt.QtGui import QColor
 
+        line, fill, width = self._digitizing_style()
+        # An area being traced is drawn AS an area. With a line band the user
+        # watches a boundary and only finds out what it encloses once the
+        # feature exists, which is the moment they can no longer change it.
+        kind = (QgsWkbTypes.PolygonGeometry
+                if self.session.geometry == "polygon"
+                else QgsWkbTypes.LineGeometry)
+
         if self._band is None:
-            self._band = QgsRubberBand(self.canvas, QgsWkbTypes.LineGeometry)
-            self._band.setColor(QColor(0, 120, 215))
-            self._band.setWidth(3)
+            self._band = QgsRubberBand(self.canvas, kind)
+            self._band.setColor(line)
+            self._band.setFillColor(fill)
+            self._band.setWidth(width + 1.0)
+            # The vertices are what this tool produces, so they are shown. A
+            # bare line hides exactly the thing the user is deciding about.
+            try:
+                self._band.setIcon(QgsRubberBand.ICON_BOX)
+                self._band.setIconSize(7)
+            except (AttributeError, TypeError) as exc:
+                log_debug("marking the traced vertices", exc)
         if self._preview is None:
+            faded = QColor(line)
+            faded.setAlpha(max(60, line.alpha() // 2))
+            # A line, always. The preview is ONE stretch from the anchor to
+            # the cursor; as a polygon band QGIS would close it and draw a
+            # shape between those two points that the user is not making.
             self._preview = QgsRubberBand(self.canvas, QgsWkbTypes.LineGeometry)
-            self._preview.setColor(QColor(0, 120, 215, 140))
-            self._preview.setWidth(2)
+            self._preview.setColor(faded)
+            self._preview.setFillColor(QColor(0, 0, 0, 0))
+            self._preview.setWidth(width)
             self._preview.setLineStyle(enum_member(Qt, "PenStyle", "DashLine"))
 
     def _clear_bands(self) -> None:
@@ -882,6 +967,27 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
                     band.reset()
                 except Exception as exc:  # noqa: BLE001
                     log_debug("clearing a rubber band", exc)
+
+    def _discard_bands(self) -> None:
+        """Take the bands off the canvas, not just empty them.
+
+        reset() clears a rubber band's points and leaves the item in the map
+        scene. The tool is rebuilt every time it is armed, so emptying alone
+        left one more invisible item on the canvas per arm and disarm, for as
+        long as the QGIS session lasted.
+        """
+        for attribute in ("_band", "_preview"):
+            band = getattr(self, attribute, None)
+            if band is None:
+                continue
+            try:
+                band.reset()
+                scene = self.canvas.scene()
+                if scene is not None:
+                    scene.removeItem(band)
+            except Exception as exc:  # noqa: BLE001
+                log_debug("removing a rubber band from the canvas", exc)
+            setattr(self, attribute, None)
 
     def _redraw_committed(self) -> None:
         from qgis.core import QgsPointXY

@@ -198,8 +198,10 @@ class TestWhatTheUserIsTold:
         assert "10 px of line" in vectorize.status_for_trace(result, "line")
 
     def test_a_polygon_is_told_it_closes_rather_than_ends(self):
+        """Once there is something to close. Before that the hint would be a
+        lie: closing needs two stretches, and the shape has none."""
         result = TraceResult(points=[(0, 0), (0, 10)])
-        assert "close" in vectorize.status_for_trace(result, "polygon")
+        assert "close" in vectorize.status_for_trace(result, "polygon", stretches=2)
 
 
 class TestBlockReading:
@@ -403,3 +405,46 @@ class TestWhereAShapeStarted:
         session.commit([(0.0, 0.0), (10.0, 0.0)], traced=True)
         session.start(5.0, 5.0)
         assert session.first_vertex == (5.0, 5.0)
+
+
+class TestKnowingWhenTheShapeEnds:
+    """"When does the drawing end" is asked in the MIDDLE of drawing.
+
+    A hint shown once when the tool is armed is not on screen by then, and a
+    shape that finished itself without warning reads as a bug the first time it
+    happens. Founder question, verbatim.
+    """
+
+    def test_a_line_is_told_how_to_finish(self):
+        hint = vectorize.finish_hint("line", stretches=1)
+        assert "Enter" in hint
+        assert "right-click" in hint
+
+    def test_an_area_is_told_to_come_back_to_its_first_corner(self):
+        hint = vectorize.finish_hint("polygon", stretches=2)
+        assert "first corner" in hint
+        assert "close" in hint
+
+    def test_an_area_with_one_stretch_is_not_told_to_close_yet(self):
+        """Closing needs two stretches, so offering it earlier would be a lie."""
+        assert "first corner" not in vectorize.finish_hint("polygon", stretches=1)
+
+    def test_nothing_started_gets_no_finish_hint(self):
+        assert vectorize.finish_hint("line", stretches=0) == ""
+
+    def test_the_trace_message_carries_the_hint(self):
+        result = TraceResult(points=[(0, 0), (0, 10)])
+        message = vectorize.status_for_trace(result, "line", stretches=1)
+        assert "10 px of line" in message
+        assert "Enter" in message
+
+    def test_the_first_stretch_has_no_hint_appended_and_still_reads(self):
+        result = TraceResult(points=[(0, 0), (0, 10)])
+        message = vectorize.status_for_trace(result, "line", stretches=0)
+        assert message.endswith("Click to keep it.")
+
+    def test_a_failed_trace_still_names_the_override_rather_than_the_ending(self):
+        """When the tracer is wrong, how to override beats how to finish."""
+        failed = TraceResult(reason="the drawn line does not connect these two points")
+        message = vectorize.status_for_trace(failed, "polygon", stretches=3)
+        assert "Shift" in message
