@@ -372,3 +372,106 @@ class TestTheDarkThemeVariant:
         body = (ROOT / "scripts" / "make_tracer_icon.py").read_text(encoding="utf-8")
         assert "PALETTES" in body
         assert '"dark"' in body and '"light"' in body
+
+
+class TestTheWorkflowNotJustTheGesture:
+    """Digitizing a sheet is not one shape, and these are the parts that make
+    it a session rather than a demo.
+
+    Founder feedback, twice: the lines come out well and the tool is not usable
+    enough. The second time it was explicit -- think about how somebody uses
+    this, not just about drawing. Everything below came from working through
+    one real job: a cadastral sheet, parcel after parcel.
+    """
+
+    def _tool(self):
+        return (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+
+    def test_an_already_drawn_boundary_is_reused_rather_than_traced_again(self):
+        """The single biggest thing on a real sheet.
+
+        Most interior boundaries belong to two parcels. Re-tracing one from the
+        pixels is double the work and produces a second line a few pixels off
+        the first, which is exactly where slivers and overlaps come from.
+        """
+        source = self._tool()
+        assert "QgsTracer" in source, (
+            "nothing follows the geometry already digitized, so every shared "
+            "edge is drawn twice")
+        assert "findShortestPath" in source
+
+    def test_the_neighbours_are_asked_before_the_pixels(self):
+        """Order matters: an exact shared edge beats one re-derived from ink."""
+        source = self._tool()
+        click = source[source.index("    def _click("):]
+        click = click[:click.index("    def _reseed(")]
+        assert click.index("_existing_reuse") < click.index("path_to("), (
+            "the raster is searched before the neighbour is asked, so a shared "
+            "boundary gets re-traced even when it is already there")
+
+    def test_the_layer_being_edited_is_followed_first(self):
+        """On a cadastral sheet the edge worth reusing is the parcel just drawn."""
+        source = _source("_layers_to_follow")
+        assert "activeLayer()" in source
+        assert "isVisible()" in source, (
+            "a layer the user switched off is one they decided not to work "
+            "against")
+
+    def test_the_project_snapping_is_asked_before_the_ink(self):
+        source = self._tool()
+        assert "snappingUtils" in source
+        assert "snapToMap" in source
+
+    def test_a_snapped_anchor_is_not_moved_again_by_the_ink_search(self):
+        """The user put it on a neighbour's vertex; that is the whole point."""
+        source = self._tool()
+        assert "_anchor_is_snapped" in source
+        reseed = source[source.index("    def _reseed("):]
+        reseed = reseed[:reseed.index("    def _settle(")]
+        assert "if not self._anchor_is_snapped:" in reseed
+
+    def test_a_polygon_closes_on_its_own_first_vertex(self):
+        source = self._tool()
+        assert "close_target" in source
+        assert "CLOSE_TOLERANCE_PX" in source
+
+    def test_closing_needs_more_than_one_stretch(self):
+        """Otherwise the click after the anchor closes the shape onto itself."""
+        source = self._tool()
+        target = source[source.index("    def close_target("):]
+        target = target[:target.index("    def _map_units_per_pixel(")]
+        assert "len(self.session.segments) < 2" in target
+
+    def test_only_polygons_close(self):
+        source = self._tool()
+        target = source[source.index("    def close_target("):]
+        target = target[:target.index("    def _map_units_per_pixel(")]
+        assert 'self.session.geometry != "polygon"' in target
+
+
+class TestTheTargetIsSettledBeforeArming:
+    def test_a_layer_that_is_not_being_edited_is_asked_about(self):
+        """It used to fall through to a scratch layer, so a user who selected
+        their parcels layer and forgot to toggle editing got their work
+        somewhere they did not choose and would not think to look."""
+        source = _source("_resolve_trace_target")
+        assert "isEditable()" in source
+        assert "startEditing()" in source
+        assert "_ask_yes_no" in source
+
+    def test_with_no_vector_layer_the_geometry_is_asked_not_assumed(self):
+        """It used to default to a line in silence, so somebody tracing parcel
+        boundaries got a line layer and was never asked."""
+        source = _source("_resolve_trace_target")
+        assert "_ask_geometry_type()" in source
+
+    def test_a_point_is_refused_rather_than_turned_into_a_line(self):
+        source = _source("_resolve_trace_target")
+        assert '("line", "polygon")' in source
+
+    def test_arming_says_where_the_shapes_will_go(self):
+        """A tool that silently decides the destination is one you have to test
+        to understand."""
+        source = _source("_resolve_trace_target")
+        assert "Tracing into {}" in source
+        assert "will become a new" in source

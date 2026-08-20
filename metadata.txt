@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex. Includes an AI vectorizer that traces lines on a scanned map as you follow them, running entirely on your machine.
-version=0.11.4
+version=0.12.0
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,23 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.11.4
+changelog=0.12.0
+    - Shared boundaries are reused instead of traced twice. Where the edge you
+      are following has already been digitized, the tracer follows that
+      geometry, so the two parcels share the same edge rather than two
+      near-identical ones a few pixels apart. That is where slivers and
+      overlaps came from.
+    - Your QGIS snapping now applies. A click that lands on an existing vertex
+      or edge stays exactly there, and is not nudged onto the ink afterwards.
+    - Areas close themselves. Click near where the shape started and the ring
+      closes on that exact vertex and finishes.
+    - The tracer asks where the shapes should go before it arms: it offers to
+      start editing the layer you have selected, and asks whether you are
+      tracing lines or areas when no layer can answer. It used to default to a
+      line in silence, or put your work in a scratch layer you did not choose.
+    - Fixed: taking back the only stretch in a shape left the next one starting
+      from the point you had just removed.
+    0.11.4
     - The tracer icon now has a light and a dark variant, chosen from the
       actual interface palette rather than from a theme name, so it stays
       visible on Night Mapping, on a custom theme, and when the operating

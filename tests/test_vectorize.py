@@ -368,3 +368,38 @@ class TestUndoAndRedo:
         session.undo()
         session.start(5.0, 5.0)
         assert session.can_redo is False
+
+
+class TestWhereAShapeStarted:
+    """A polygon has to come back to its own first vertex, exactly.
+
+    Landing near enough leaves a gap at the corner where three holdings meet,
+    which is the same defect as a re-traced shared edge and lands in the same
+    topology report.
+    """
+
+    def _polygon(self):
+        session = vectorize.TraceSession(geometry="polygon")
+        session.start(0.0, 0.0)
+        return session
+
+    def test_the_first_vertex_is_where_the_first_stretch_began(self):
+        session = self._polygon()
+        session.commit([(0.0, 0.0), (10.0, 0.0)], traced=True)
+        session.commit([(10.0, 0.0), (10.0, 10.0)], traced=True)
+        assert session.first_vertex == (0.0, 0.0)
+
+    def test_before_any_stretch_it_is_the_anchor(self):
+        assert self._polygon().first_vertex == (0.0, 0.0)
+
+    def test_undoing_back_to_nothing_leaves_the_anchor_as_the_start(self):
+        session = self._polygon()
+        session.commit([(0.0, 0.0), (10.0, 0.0)], traced=True)
+        session.undo()
+        assert session.first_vertex == (0.0, 0.0)
+
+    def test_a_new_shape_starts_somewhere_new(self):
+        session = self._polygon()
+        session.commit([(0.0, 0.0), (10.0, 0.0)], traced=True)
+        session.start(5.0, 5.0)
+        assert session.first_vertex == (5.0, 5.0)

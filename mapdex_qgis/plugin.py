@@ -896,7 +896,11 @@ class MapdexPlugin:
                 "select it in the Layers panel, and try again.")
             return
 
-        geometry = self._trace_geometry_for_active_layer()
+        geometry = self._resolve_trace_target()
+        if not geometry:
+            self._restore_map_tool()
+            self._set_status("Nivo did not start tracing.")
+            return
         from .vectorize import VectorizeMapTool  # noqa: PLC0415 - Qt-only import
 
         self._restore_map_tool()
@@ -904,10 +908,121 @@ class MapdexPlugin:
         self._previous_map_tool = canvas.mapTool()
         self._vectorize_tool = VectorizeMapTool(
             canvas, self._raster_for_tracing, geometry, self._traced_geometry,
-            self._tracer_options(), self._set_status, self._trace_cancelled)
+            self._tracer_options(), self._set_status, self._trace_cancelled,
+            trace_existing=self._layers_to_follow)
         canvas.setMapTool(self._vectorize_tool)
         if self._vectorize_action is not None:
             self._vectorize_action.setChecked(True)
+
+    def _resolve_trace_target(self):
+        """Decide where the traced shapes will go, once, before arming.
+
+        Three situations, and the first version handled one of them.
+
+        A vector layer already being edited answers everything: the shapes go
+        in it and its geometry type says what to trace.
+
+        A vector layer that is NOT being edited used to fall through to a
+        scratch layer, so a user who had selected their parcels layer and
+        forgotten to toggle editing got their work in a layer they did not
+        choose and would not think to look in. Asking is one dialog at the
+        moment the question arises.
+
+        No vector layer at all used to default silently to a line, so somebody
+        tracing parcel boundaries got a line layer and was never asked. The
+        geometry picker the draw tool already uses answers it.
+        """
+        from qgis.core import QgsMapLayer, QgsWkbTypes  # noqa: PLC0415 - Qt-only import
+
+        layer = self.iface.activeLayer()
+        is_vector = layer is not None and layer.type() == QgsMapLayer.VectorLayer
+        if is_vector:
+            try:
+                geometry = ("polygon"
+                            if layer.geometryType() == QgsWkbTypes.PolygonGeometry
+                            else "line")
+            except (AttributeError, TypeError):
+                geometry = "line"
+            if layer.isEditable():
+                self._set_status(
+                    "Tracing into {}. Click a drawn line to start.".format(layer.name()))
+                return geometry
+            answer = self._ask_yes_no(
+                "Trace into this layer?",
+                "{} is not being edited, so traced shapes cannot go into it.\n\n"
+                "Start editing it now? Choosing No traces into a new scratch "
+                "layer instead.".format(layer.name()))
+            if answer is None:
+                return ""
+            if answer:
+                if layer.startEditing():
+                    self._set_status(
+                        "Editing {}. Click a drawn line to start.".format(layer.name()))
+                    return geometry
+                self._set_status(
+                    "{} could not be put into edit mode; tracing into a new "
+                    "layer instead.".format(layer.name()))
+                return geometry
+            return geometry
+
+        chosen = self._ask_geometry_type()
+        if not chosen or chosen not in ("line", "polygon"):
+            # A point is not something this tool can trace, and the picker
+            # offers it, so an unusable answer stops rather than becoming a
+            # line the user did not ask for.
+            if chosen:
+                self._set_status(
+                    "The tracer follows lines and areas. Pick one of those, or "
+                    "use Draw with Mapdex to place points.")
+            return ""
+        self._set_status(
+            "No layer is being edited, so the traced {} will become a new "
+            "layer. Click a drawn line to start.".format(chosen))
+        return chosen
+
+    def _layers_to_follow(self):
+        """Vector layers whose drawn boundaries the tracer may reuse.
+
+        The layer being edited first, because on a cadastral sheet the boundary
+        worth reusing is almost always the parcel traced a minute ago. Other
+        VISIBLE vector layers follow, which is the set QGIS's own tracing uses:
+        a layer the user has turned off is one they have decided not to work
+        against, and following it would attach their new boundary to geometry
+        they cannot even see.
+        """
+        from qgis.core import QgsMapLayer, QgsProject  # noqa: PLC0415 - Qt-only import
+
+        layers = []
+        active = self.iface.activeLayer()
+        if active is not None and active.type() == QgsMapLayer.VectorLayer:
+            layers.append(active)
+        try:
+            for node in QgsProject.instance().layerTreeRoot().findLayers():
+                layer = node.layer()
+                if (layer is not None and node.isVisible()
+                        and layer.type() == QgsMapLayer.VectorLayer
+                        and layer not in layers):
+                    layers.append(layer)
+        except (AttributeError, RuntimeError) as exc:
+            log_debug("listing layers the tracer may follow", exc)
+        return layers
+
+    def _ask_yes_no(self, title, question):
+        """True, False, or None when the user closed the question."""
+        from qgis.PyQt.QtWidgets import QMessageBox  # noqa: PLC0415 - Qt-only import
+
+        box = QMessageBox(self.iface.mainWindow())
+        box.setWindowTitle(title)
+        box.setText(question)
+        box.setIcon(enum_member(QMessageBox, "Icon", "Question"))
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        cancel = enum_member(QMessageBox, "StandardButton", "Cancel")
+        box.setStandardButtons(yes | no | cancel)
+        answer = box.exec() if hasattr(box, "exec") else box.exec_()
+        if answer == cancel:
+            return None
+        return answer == yes
 
     def _trace_geometry_for_active_layer(self):
         """Trace what the layer being edited holds, or a line by default.

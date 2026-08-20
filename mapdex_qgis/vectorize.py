@@ -47,6 +47,12 @@ except Exception:  # pragma: no cover - importable outside QGIS for tests
 # tracer more pixels per drawn line to work with.
 MAX_WINDOW_PX = 900
 
+# How near the first vertex a click has to be, in screen pixels, before it is
+# read as closing the ring rather than as another corner. Screen pixels rather
+# than map units because it is a question about the user's aim, and their aim
+# is in the space they can see.
+CLOSE_TOLERANCE_PX = 12.0
+
 # Geometry kinds the tool can finish into, and how many distinct vertices each
 # needs to exist. Mirrors maptools.MINIMUM_VERTICES rather than importing it:
 # the tracer produces many vertices and the question it asks is different, but
@@ -123,6 +129,10 @@ class TraceSession:
     #: the key feel dangerous, so people stop using it and click around the
     #: mistake instead.
     undone: list[Segment] = field(default_factory=list)
+    #: Where this shape began. Kept separately from the anchor because the
+    #: anchor moves with every stretch, and undoing the last one has to put the
+    #: shape back to its start rather than to the end of what was removed.
+    origin: tuple[float, float] | None = None
 
     @property
     def started(self) -> bool:
@@ -131,7 +141,8 @@ class TraceSession:
     def start(self, x: float, y: float) -> None:
         self.segments = []
         self.undone = []
-        self.anchor_map = (float(x), float(y))
+        self.origin = (float(x), float(y))
+        self.anchor_map = self.origin
 
     def commit(self, points: Sequence[tuple[float, float]], traced: bool,
                bridged_px: int = 0) -> int:
@@ -156,7 +167,12 @@ class TraceSession:
         if not self.segments:
             return False
         self.undone.append(self.segments.pop())
-        self.anchor_map = self.segments[-1].points[-1] if self.segments else self.anchor_map
+        # With nothing left, the anchor goes back to where the shape STARTED.
+        # Leaving it at the end of the stretch just removed would carry on from
+        # a point the user has taken back, and the shape would be drawn from
+        # somewhere they did not choose.
+        self.anchor_map = (self.segments[-1].points[-1] if self.segments
+                           else self.origin)
         return True
 
     def redo(self) -> bool:
@@ -167,6 +183,14 @@ class TraceSession:
         self.segments.append(segment)
         self.anchor_map = segment.points[-1]
         return True
+
+    @property
+    def first_vertex(self) -> tuple[float, float] | None:
+        """Where this shape started, which is where a polygon has to come back to."""
+        for segment in self.segments:
+            if segment.points:
+                return segment.points[0]
+        return self.origin
 
     @property
     def can_undo(self) -> bool:
@@ -213,6 +237,7 @@ class TraceSession:
         bridged = max((s.bridged_px for s in self.segments), default=0)
         self.segments = []
         self.undone = []
+        self.origin = None
         self.anchor_map = None
         return {"kind": "finish", "geometry": self.geometry, "points": points,
                 "traced_segments": traced, "bridged_px": bridged}
@@ -221,6 +246,7 @@ class TraceSession:
         discarded = len(self.segments)
         self.segments = []
         self.undone = []
+        self.origin = None
         self.anchor_map = None
         return {"kind": "cancelled", "discarded": discarded}
 
@@ -397,7 +423,9 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
                  on_finish: Callable[[str, list, str], None],
                  options: TraceOptions | None = None,
                  on_status: Callable[[str], None] | None = None,
-                 on_cancel: Callable[[int], None] | None = None):
+                 on_cancel: Callable[[int], None] | None = None,
+                 use_project_snapping: bool = True,
+                 trace_existing: Callable[[], list] | None = None):
         super().__init__(canvas)
         self.canvas = canvas
         self.raster_for = raster_for
@@ -409,6 +437,17 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self._window: RasterWindow | None = None
         self._window_extent = None
         self._shortcuts: list = []
+        self.use_project_snapping = bool(use_project_snapping)
+        #: The layers whose already-drawn boundaries may be reused. Supplied by
+        #: the plugin rather than discovered here, because which layers count is
+        #: a project question and this class is about one canvas gesture.
+        self.trace_existing = trace_existing or (lambda: [])
+        self._tracer = None
+        self._tracer_extent = None
+        #: Set when the last click landed on an existing feature through the
+        #: project's own snapping. It stops the ink search from moving an
+        #: anchor the user placed exactly on a neighbour's vertex.
+        self._anchor_is_snapped = False
         self._wire: LiveWire | None = None
         self._band = None
         self._preview = None
@@ -443,10 +482,11 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         if self._is_right_button(event):
             self._settle(self.session.finish())
             return
-        point = self.toMapCoordinates(event.pos())
+        point, snapped = self._snapped_point(event.pos())
         straight = bool(event.modifiers() & enum_member(Qt, "KeyboardModifier",
                                                         "ShiftModifier"))
-        self._click(float(point.x()), float(point.y()), straight=straight)
+        self._click(float(point.x()), float(point.y()), straight=straight,
+                    snapped=snapped)
 
     def canvasMoveEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         if not self.session.started or self._wire is None or self._window is None:
@@ -499,16 +539,105 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
 
     # -- behaviour ---------------------------------------------------------
 
-    def _click(self, x: float, y: float, straight: bool) -> None:
+    def _existing_path(self, start, end):
+        """The already-digitized boundary between two points, or None.
+
+        This is the half that makes the tool usable on a real sheet. Parcels
+        share edges: the second parcel in a row shares its whole left side with
+        the first, and most interior boundaries on a cadastral sheet are shared
+        by two holdings. Re-tracing that edge from the pixels is double the work
+        AND produces a second line a few pixels off the first, which is where
+        slivers and overlaps come from -- every topology check afterwards
+        reports them, and the reviewer pays for it.
+
+        Reusing the neighbour's geometry is the only way two parcels get an
+        edge that is the SAME edge rather than two nearly-identical ones. So
+        this is asked before the raster: an exact shared boundary is worth more
+        than one re-derived from ink.
+
+        QgsTracer is QGIS's own machinery for it, the same one the standard
+        digitizing tools use when tracing is switched on.
+        """
+        layers = [layer for layer in self.trace_existing() if layer is not None]
+        if not layers:
+            return None
+        try:
+            from qgis.core import QgsTracer  # noqa: PLC0415 - Qt-only import
+
+            extent = self.canvas.extent()
+            if self._tracer is None or self._tracer_extent != extent:
+                tracer = QgsTracer()
+                tracer.setLayers(layers)
+                tracer.setExtent(extent)
+                tracer.init()
+                self._tracer, self._tracer_extent = tracer, extent
+            found = self._tracer.findShortestPath(start, end)
+            path = found[0] if isinstance(found, tuple) else found
+            if path and len(path) >= 2:
+                return [(float(p.x()), float(p.y())) for p in path]
+        except Exception as exc:  # noqa: BLE001 - the raster path still works
+            log_debug("following an existing boundary", exc)
+        return None
+
+    def _snapped_point(self, position: Any):
+        """The click, moved onto an existing feature when the project says so.
+
+        This is QGIS's own snapping, configured in the snapping toolbar, and it
+        is asked FIRST for a reason that matters most in cadastre: two parcels
+        that share a boundary have to share its vertices exactly. A boundary
+        traced a pixel off its neighbour looks right and leaves a sliver that
+        every later topology check reports.
+
+        Returns (map point, snapped) so the caller can tell the difference. A
+        snapped anchor is never moved again by the ink search: an exact shared
+        vertex is worth more than being one pixel closer to the drawn line.
+        """
+        if self.use_project_snapping:
+            try:
+                utils = self.canvas.snappingUtils()
+                match = utils.snapToMap(position) if utils is not None else None
+                if match is not None and match.isValid():
+                    return match.point(), True
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                log_debug("asking the project for a snap", exc)
+        return self.toMapCoordinates(position), False
+
+    def _click(self, x: float, y: float, straight: bool,
+               snapped: bool = False) -> None:
         if not self.session.started:
             self.session.start(x, y)
+            self._anchor_is_snapped = snapped
             if not self._reseed():
                 self.session.cancel()
+            elif snapped:
+                self.on_status(
+                    "Anchored on an existing feature. Move along the line; "
+                    "click to keep it.")
             return
 
         anchor = self.session.anchor_map
+        closing = self.close_target(x, y, CLOSE_TOLERANCE_PX)
+        if closing is not None:
+            x, y = closing
+            snapped = True
+        if not straight and anchor is not None:
+            # Ask the neighbours first. See _existing_path for why.
+            reused = self._existing_reuse(anchor, x, y)
+            if reused is not None:
+                self.session.commit(reused, traced=True)
+                self._anchor_is_snapped = True
+                self._redraw_committed()
+                self._reseed()
+                if closing is not None:
+                    self._settle(self.session.finish())
+                    return
+                self.on_status(
+                    "Followed the boundary already drawn here, so the two "
+                    "shapes share it exactly. Click a line to carry on.")
+                return
         if straight or self._wire is None or self._window is None:
             self.session.commit([anchor, (x, y)], traced=False)
+            self._anchor_is_snapped = snapped
             self._redraw_committed()
             self._reseed()
             self.on_status("Straight segment kept.")
@@ -521,9 +650,63 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
             return
         points = self._window.path_to_map(
             simplify(result.points, self.options.clamped().simplify_px))
+        if snapped and points:
+            # End the stretch exactly on the snapped feature. The traced path
+            # stops at the nearest INK pixel to it, which is close but not the
+            # same point, and "close" is what leaves slivers between parcels.
+            points[-1] = (x, y)
         self.session.commit(points, traced=True, bridged_px=result.bridged_px)
+        self._anchor_is_snapped = snapped
         self._redraw_committed()
+        if closing is not None:
+            # The ring came back to its own first vertex, which is the whole
+            # shape. Finishing here saves the user pressing Enter to say what
+            # they have just plainly done.
+            self._settle(self.session.finish())
+            return
         self._reseed()
+
+    def close_target(self, x: float, y: float, tolerance_px: float):
+        """The shape's first vertex when the cursor is within reach of it.
+
+        A traced parcel has to come back to where it started, exactly. Landing
+        "near enough" leaves a gap at the corner where three holdings meet,
+        which is the same sliver problem as a re-traced shared edge and shows
+        up in the same topology report.
+
+        Only polygons: a line that happens to end near its own start is a line
+        the user drew that way.
+        """
+        if self.session.geometry != "polygon":
+            return None
+        start = self.session.first_vertex
+        if start is None or len(self.session.segments) < 2:
+            # Two stretches at least, or the first click after the anchor would
+            # count as closing the shape onto itself.
+            return None
+        units = self._map_units_per_pixel() * float(tolerance_px)
+        import math
+
+        if math.hypot(x - start[0], y - start[1]) <= units:
+            return start
+        return None
+
+    def _map_units_per_pixel(self) -> float:
+        try:
+            return float(self.canvas.mapUnitsPerPixel())
+        except (AttributeError, RuntimeError, TypeError):
+            return 1.0
+
+    def _existing_reuse(self, anchor, x: float, y: float):
+        """The reusable boundary between the anchor and this click, if any."""
+        try:
+            from qgis.core import QgsPointXY  # noqa: PLC0415 - Qt-only import
+
+            return self._existing_path(QgsPointXY(anchor[0], anchor[1]),
+                                       QgsPointXY(x, y))
+        except Exception as exc:  # noqa: BLE001
+            log_debug("reusing an existing boundary", exc)
+            return None
 
     def _reseed_cleared(self) -> None:
         """Forget the search after a shape is abandoned.
@@ -535,6 +718,8 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self._wire = None
         self._window = None
         self._window_extent = None
+        self._tracer = None
+        self._tracer_extent = None
 
     def _canvas_has_moved(self) -> bool:
         """Has the view changed since the window was read?"""
@@ -573,9 +758,12 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         if seed is None:
             self._wire = None
             return False
-        # Snapping moved the anchor onto the line; the shape must follow it,
-        # or the next segment starts a pixel off the boundary it is tracing.
-        self.session.anchor_map = window.to_map(seed.y, seed.x)
+        if not self._anchor_is_snapped:
+            # The ink search moved the anchor onto the drawn line; the shape
+            # follows it, or the next stretch starts a pixel off the boundary.
+            # An anchor the PROJECT snapped is left exactly where it is: the
+            # user put it on a neighbour's vertex and that is the whole point.
+            self.session.anchor_map = window.to_map(seed.y, seed.x)
         return True
 
     def _settle(self, outcome: dict[str, Any]) -> None:
