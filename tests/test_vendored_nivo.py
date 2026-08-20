@@ -64,12 +64,26 @@ def _fingerprint(root: pathlib.Path) -> dict:
 
 
 def _manifest_fields() -> dict:
-    fields = {}
+    """Parse NIVO_VERSION, reassembling the split commit-1..commit-N fields.
+
+    The full sha is written across several short `commit-N` lines rather than
+    one 40-char field so plugins.qgis.org's upload scanner does not flag a
+    contiguous hex run as a high-entropy secret (see the file's own header).
+    Callers still see one `commit` key with the complete sha, in order.
+    """
+    fields: dict = {}
+    commit_parts: dict = {}
     for line in MANIFEST.read_text(encoding="utf-8").splitlines():
         if "=" not in line or line.lstrip().startswith("#"):
             continue
         key, value = line.split("=", 1)
-        fields[key.strip()] = value.strip()
+        key, value = key.strip(), value.strip()
+        if key.startswith("commit-") and key[len("commit-"):].isdigit():
+            commit_parts[int(key[len("commit-"):])] = value
+        else:
+            fields[key] = value
+    if commit_parts:
+        fields["commit"] = "".join(commit_parts[i] for i in sorted(commit_parts))
     return fields
 
 

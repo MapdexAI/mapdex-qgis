@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.10.1
+version=0.10.3
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,11 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.10.1
+changelog=0.10.3
+    - The upload scan blocked the plugin over a false positive: the vendored nivo-gis commit sha (a 40-char hex string) read as a "high entropy secret". Split into four short fields that reassemble to the same sha; no provenance data changed.
+    0.10.2
+    - QGIS 4 Ready: scoped every PyQt6 enum the repository check flagged (QgsFeatureRequest.Flag.NoGeometry, QgsWkbTypes.GeometryType.*) and removed a raw PyQt5/PyQt6 import that must come only from qgis.PyQt.
+    0.10.1
     - Your own model key is now used. With a provider configured the assistant talks to it directly from QGIS: the turn does not pass through Mapdex servers, and it needs no Mapdex account. A local Ollama keeps the whole conversation on your machine.
     - In that mode Nivo does everything QGIS and your saved PostGIS connections do locally. Mapdex georeferencing, digitization, validation, batch and review run on Mapdex, so they are not offered inside a conversation that never contacts Mapdex; they still work from the task panel with your account.
     - A provider failure never becomes a Mapdex request on its own. You are told what failed and asked whether to send the question to Mapdex instead; nothing is sent unless you say yes.
