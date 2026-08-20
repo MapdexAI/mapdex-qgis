@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.11.0
+version=0.11.1
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,18 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.11.0
+changelog=0.11.1
+    - The tracer stayed armed only until you finished a shape. Digitizing is a
+      hundred shapes in a row, so it now stays on until you press Escape or the
+      button.
+    - Ctrl+Z removes a traced feature: it is added as one edit command instead
+      of outside the undo stack.
+    - The attribute form opens after a trace, the way every other QGIS
+      digitizing tool does, honouring the suppress setting if you turned it off.
+      Layer field defaults are applied.
+    - Zooming or panning mid-trace no longer leaves the preview following a
+      line that has moved out from under the cursor.
+    0.11.0
     - Vectorize with Mapdex: trace lines and areas on a scanned map instead of
       clicking along them. Click a drawn line and the tool follows it ahead of
       the cursor; click again to keep that stretch. Shift-click puts in a
