@@ -1750,6 +1750,191 @@ check("the draw tool arms the canvas and turns clicked positions into a shape",
 # --------------------------------------------------------------------------
 
 print()
+
+# --------------------------------------------------------------------------
+# Part N: the tracer (Vectorize with Mapdex)
+#
+# The unit tests prove the algorithm on constructed windows and the state
+# machine without Qt. What only a running QGIS can answer is whether the tool
+# is actually on the toolbar, whether it binds to the canvas, and whether a
+# real raster layer yields the pixels the search needs. That is what these ask.
+#
+# Nothing here clicks: a synthetic canvas click is not evidence about a real
+# one. These drive the tool through its own entry points and check the effects.
+# --------------------------------------------------------------------------
+
+
+def tracer_is_on_the_toolbar():
+    if PLUGIN is None:
+        raise NotRun("the plugin did not build")
+    toolbar = getattr(PLUGIN, "toolbar", None)
+    if toolbar is None:
+        raise NotRun("no Mapdex toolbar was created")
+    titles = [a.text() for a in toolbar.actions()]
+    if "Vectorize with Mapdex" not in titles:
+        raise AssertionError("toolbar carries {}".format(titles))
+    return "toolbar actions: {}".format(titles)
+
+
+check("the tracer is a button on the Mapdex toolbar", tracer_is_on_the_toolbar)
+
+
+def tracer_action_is_a_mode():
+    action = getattr(PLUGIN, "_vectorize_action", None)
+    if action is None:
+        raise NotRun("no tracer action")
+    if not action.isCheckable():
+        raise AssertionError("the tracer action is not checkable, so an armed "
+                             "canvas gives the user no sign it is armed")
+    return "checkable, currently {}".format(action.isChecked())
+
+
+check("the tracer action reports whether the canvas is armed", tracer_action_is_a_mode)
+
+
+def tracer_refuses_without_a_raster():
+    """Arming over a project with no scan must explain, not fail silently."""
+    if PLUGIN is None:
+        raise NotRun("the plugin did not build")
+    if PLUGIN._raster_for_tracing() is not None:
+        raise NotRun("this project already has a raster; the refusal path needs none")
+    before = getattr(PLUGIN, "_vectorize_tool", None)
+    PLUGIN._toggle_vectorize_tool(True)
+    if getattr(PLUGIN, "_vectorize_tool", None) is not before:
+        raise AssertionError("a tool was armed with no raster to trace")
+    return "refused and said so"
+
+
+check("arming the tracer with no scan refuses and explains",
+      tracer_refuses_without_a_raster)
+
+
+def tracer_reads_a_real_raster():
+    """The one thing no unit test can reach: pixels out of a QgsRasterLayer."""
+    import tempfile
+
+    try:
+        import numpy
+        from osgeo import gdal, osr
+    except Exception as error:  # noqa: BLE001
+        raise NotRun("needs numpy and GDAL: {}".format(error))
+
+    from qgis.core import QgsRasterLayer, QgsRectangle
+
+    from mapdex_qgis.vectorize import sample_window
+
+    path = tempfile.mktemp(suffix=".tif")
+    width = height = 64
+    pixels = numpy.full((height, width), 236, dtype=numpy.uint8)
+    pixels[32, :] = 40                      # one drawn line across the sheet
+    driver = gdal.GetDriverByName("GTiff")
+    dataset = driver.Create(path, width, height, 1, gdal.GDT_Byte)
+    dataset.SetGeoTransform((0.0, 1.0, 0.0, float(height), 0.0, -1.0))
+    reference = osr.SpatialReference()
+    reference.ImportFromEPSG(3857)
+    dataset.SetProjection(reference.ExportToWkt())
+    dataset.GetRasterBand(1).WriteArray(pixels)
+    dataset.FlushCache()
+    dataset = None
+
+    layer = QgsRasterLayer(path, "tracer-check")
+    if not layer.isValid():
+        raise NotRun("QGIS could not open the test raster")
+    window = sample_window(layer, QgsRectangle(0.0, 0.0, float(width), float(height)))
+    if window is None:
+        raise AssertionError("no pixels came back from a valid raster layer")
+    if window.values.shape != (height, width):
+        raise AssertionError("window is {}, expected {}".format(
+            window.values.shape, (height, width)))
+    dark = float(window.values.min())
+    light = float(window.values.max())
+    if light - dark < 100:
+        raise AssertionError("the drawn line did not survive the read "
+                             "(min {}, max {})".format(dark, light))
+    return "read {}x{}, tone {:.0f}..{:.0f}".format(
+        window.width, window.height, dark, light)
+
+
+check("a real raster layer yields the pixels the tracer searches",
+      tracer_reads_a_real_raster)
+
+
+def tracer_traces_that_raster():
+    """End to end on real pixels: seed on the line, follow it, stay on it."""
+    try:
+        import numpy
+    except Exception as error:  # noqa: BLE001
+        raise NotRun("needs numpy: {}".format(error))
+
+    from mapdex_qgis.livewire import LiveWire, TraceOptions
+
+    pixels = numpy.full((64, 64), 236, dtype=numpy.float32)
+    pixels[32, :] = 40
+    wire = LiveWire(pixels, TraceOptions())
+    seed = wire.seed(32, 4)
+    if seed is None:
+        raise AssertionError("could not anchor on a drawn line")
+    result = wire.path_to(32, 60)
+    if not result.ok:
+        raise AssertionError("no path along a continuous line: {}".format(result.reason))
+    off_line = [p for p in result.points if abs(p[0] - 32) > 1]
+    if off_line:
+        raise AssertionError("{} traced points left the line".format(len(off_line)))
+    return "{} points, all on the line".format(len(result.points))
+
+
+check("the tracer follows a drawn line rather than the shortest way",
+      tracer_traces_that_raster)
+
+
+def tracer_settings_round_trip():
+    """A saved setting has to come back, or the dialog is decoration."""
+    from qgis.PyQt.QtCore import QSettings
+
+    if PLUGIN is None:
+        raise NotRun("the plugin did not build")
+    settings = QSettings()
+    key = "mapdex/tracer/snap_px"
+    previous = settings.value(key)
+    try:
+        settings.setValue(key, 27)
+        if int(PLUGIN._tracer_options().snap_px) != 27:
+            raise AssertionError("the tracer did not read its own saved setting")
+    finally:
+        if previous is None:
+            settings.remove(key)
+        else:
+            settings.setValue(key, previous)
+    return "snap distance saved and read back"
+
+
+check("tracer settings are saved and read back", tracer_settings_round_trip)
+
+
+def tracer_leaves_on_unload():
+    """A toolbar the plugin never removes survives every reload.
+
+    Checked last because it unloads the plugin. The suite already unloads at
+    the end; doing it here and rebuilding would hide a leak rather than find
+    one, so this only inspects what unload() is going to remove.
+    """
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(PLUGIN_DIR) / "plugin.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "unload":
+            body = ast.get_source_segment(source, node) or ""
+            if "toolbar" not in body:
+                raise AssertionError("unload() does not remove the Mapdex toolbar")
+            return "unload() removes the toolbar and the tracer actions"
+    raise NotRun("plugin.py has no unload()")
+
+
+check("the tracer and its toolbar are removed on unload", tracer_leaves_on_unload)
+
+
 print("=" * 96)
 print("DISPATCH SWEEP — every action this build advertises to the server")
 print("-" * 96)

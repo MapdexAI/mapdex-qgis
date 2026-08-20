@@ -673,7 +673,18 @@ class MapdexPlugin:
         self.action.setToolTip("Open Mapdex for QGIS")
         self.action.triggered.connect(self.show)
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
-        self.iface.addToolBarIcon(self.action)
+        self._install_vectorize_action()
+        # Mapdex owns a toolbar rather than one icon on the shared Plugins bar.
+        # The two things on it are separate products to the person using them:
+        # the panel is where you ask Mapdex to do something, and the tracer is a
+        # canvas tool you hold down and work with for an hour. One icon cannot
+        # carry both, and a user who wants the tracer on screen with the panel
+        # out of the way can now have exactly that. QGIS shows and hides it as a
+        # unit under View > Toolbars.
+        self.toolbar = self.iface.addToolBar("Mapdex")
+        self.toolbar.setObjectName("MapdexToolbar")
+        self.toolbar.addAction(self.action)
+        self.toolbar.addAction(self._vectorize_action)
         self._install_measure_action()
         self._install_draw_action()
         self._install_layer_menu_actions()
@@ -681,6 +692,271 @@ class MapdexPlugin:
         # not as a floating overlay over the menu bar.
         self._ensure_dock()
         self.dock.hide()
+
+    def _install_vectorize_action(self):
+        """Trace a drawn line instead of clicking along it.
+
+        A second first-class tool rather than a menu entry, because that is what
+        it is. The competitor this answers sends the raster around your cursor to
+        its own servers; this reads the layer already open in QGIS and searches
+        it here, so it works on an archive that is not allowed to leave the
+        building and costs nothing per stroke.
+        """
+        self._vectorize_action = QAction(
+            plugin_icon(), "Vectorize with Mapdex", self.iface.mainWindow())
+        self._vectorize_action.setToolTip(
+            "Trace lines and areas on a scanned map: click the line and the tool follows it")
+        self._vectorize_action.setCheckable(True)
+        self._vectorize_action.triggered.connect(self._toggle_vectorize_tool)
+        self.iface.addPluginToWebMenu("&Mapdex", self._vectorize_action)
+
+        self._vectorize_settings_action = QAction(
+            "Tracer settings...", self.iface.mainWindow())
+        self._vectorize_settings_action.setToolTip(
+            "How the tracer reads a scan: snapping, gap bridging, smoothing")
+        self._vectorize_settings_action.triggered.connect(self._edit_tracer_settings)
+        self.iface.addPluginToWebMenu("&Mapdex", self._vectorize_settings_action)
+
+    def _tracer_options(self):
+        """The saved tracer settings, clamped.
+
+        Read per activation rather than cached: a user changing a setting is
+        usually mid-sheet and expects the next stroke to use it.
+        """
+        from .livewire import TraceOptions  # noqa: PLC0415 - Qt-only import
+
+        settings = QSettings()
+        prefix = "mapdex/tracer/"
+
+        def number(key, fallback, cast=float):
+            try:
+                return cast(settings.value(prefix + key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+
+        defaults = TraceOptions()
+        raw_dark = str(settings.value(prefix + "dark_ink", "true")).lower()
+        return TraceOptions(
+            max_ink_fraction=number("max_ink_fraction", defaults.max_ink_fraction),
+            min_ink_contrast=number("min_ink_contrast", defaults.min_ink_contrast),
+            bridge_px=number("bridge_px", defaults.bridge_px, int),
+            snap_px=number("snap_px", defaults.snap_px, int),
+            paper_penalty=number("paper_penalty", defaults.paper_penalty),
+            simplify_px=number("simplify_px", defaults.simplify_px),
+            dark_ink=raw_dark not in ("false", "0", "no"),
+        ).clamped()
+
+    @guarded
+    def _edit_tracer_settings(self):
+        """One dialog, in the tool own words rather than the algorithm ones."""
+        from qgis.PyQt.QtWidgets import (  # noqa: PLC0415 - Qt-only import
+            QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QSpinBox,
+        )
+
+        current = self._tracer_options()
+        dialog = QDialog(self.iface.mainWindow())
+        dialog.setWindowTitle("Mapdex tracer")
+        form = QFormLayout(dialog)
+
+        snap = QSpinBox(dialog)
+        snap.setRange(0, 64)
+        snap.setValue(int(current.snap_px))
+        form.addRow("Snap a click onto a line within (px)", snap)
+
+        bridge = QSpinBox(dialog)
+        bridge.setRange(0, 6)
+        bridge.setValue(int(current.bridge_px))
+        form.addRow("Bridge gaps in a broken line up to (px)", bridge)
+
+        smooth = QDoubleSpinBox(dialog)
+        smooth.setRange(0.0, 20.0)
+        smooth.setSingleStep(0.5)
+        smooth.setValue(float(current.simplify_px))
+        form.addRow("Smooth the traced line by (px)", smooth)
+
+        contrast = QDoubleSpinBox(dialog)
+        contrast.setRange(0.0, 255.0)
+        contrast.setValue(float(current.min_ink_contrast))
+        form.addRow("Treat a scan as blank below this ink contrast", contrast)
+
+        dark = QCheckBox("Dark ink on light paper", dialog)
+        dark.setChecked(bool(current.dark_ink))
+        form.addRow(dark)
+
+        buttons = QDialogButtonBox(
+            enum_member(QDialogButtonBox, "StandardButton", "Ok")
+            | enum_member(QDialogButtonBox, "StandardButton", "Cancel"), dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        accepted = dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+        if accepted:
+            settings = QSettings()
+            prefix = "mapdex/tracer/"
+            settings.setValue(prefix + "snap_px", int(snap.value()))
+            settings.setValue(prefix + "bridge_px", int(bridge.value()))
+            settings.setValue(prefix + "simplify_px", float(smooth.value()))
+            settings.setValue(prefix + "min_ink_contrast", float(contrast.value()))
+            settings.setValue(prefix + "dark_ink", "true" if dark.isChecked() else "false")
+            self._set_status("Tracer settings saved.")
+
+    def _raster_for_tracing(self):
+        """The scan to trace, chosen the way the user would expect.
+
+        The active layer wins when it is a raster, because selecting it is how a
+        person says which sheet they mean. Otherwise the topmost visible raster,
+        because that is the one they can see and are pointing at.
+        """
+        from qgis.core import QgsMapLayer, QgsProject  # noqa: PLC0415 - Qt-only import
+
+        active = self.iface.activeLayer()
+        if active is not None and active.type() == QgsMapLayer.RasterLayer:
+            return active
+        root = QgsProject.instance().layerTreeRoot()
+        for node in root.findLayers():
+            layer = node.layer()
+            if (layer is not None and node.isVisible()
+                    and layer.type() == QgsMapLayer.RasterLayer):
+                return layer
+        return None
+
+    @guarded
+    def _toggle_vectorize_tool(self, checked=True):
+        if not checked:
+            self._restore_map_tool()
+            return
+        if self._raster_for_tracing() is None:
+            self._restore_map_tool()
+            self._set_status(
+                "Tracing needs a scanned map. Add the raster to the project, or "
+                "select it in the Layers panel, and try again.")
+            return
+
+        geometry = self._trace_geometry_for_active_layer()
+        from .vectorize import VectorizeMapTool  # noqa: PLC0415 - Qt-only import
+
+        self._restore_map_tool()
+        canvas = self.iface.mapCanvas()
+        self._previous_map_tool = canvas.mapTool()
+        self._vectorize_tool = VectorizeMapTool(
+            canvas, self._raster_for_tracing, geometry, self._traced_geometry,
+            self._tracer_options(), self._set_status, self._trace_cancelled)
+        canvas.setMapTool(self._vectorize_tool)
+        if self._vectorize_action is not None:
+            self._vectorize_action.setChecked(True)
+
+    def _trace_geometry_for_active_layer(self):
+        """Trace what the layer being edited holds, or a line by default.
+
+        Asking would put a dialog in front of every trace. The layer already
+        answers: someone editing a polygon layer is digitizing areas.
+        """
+        from qgis.core import QgsMapLayer, QgsWkbTypes  # noqa: PLC0415 - Qt-only import
+
+        layer = self.iface.activeLayer()
+        if layer is None or layer.type() != QgsMapLayer.VectorLayer:
+            return "line"
+        try:
+            if layer.geometryType() == QgsWkbTypes.PolygonGeometry:
+                return "polygon"
+        except (AttributeError, TypeError):
+            pass
+        return "line"
+
+    @guarded
+    def _traced_geometry(self, geometry, points, crs):
+        """Keep the traced shape, in the place the user is already working.
+
+        Two destinations, and which one applies is not a preference. A layer in
+        edit mode is a digitizing session: the shape belongs in it, beside the
+        ones traced before it, inside the undo stack the user already has. With
+        no such layer there is nothing to append to, so the shape goes through
+        the same registry-validated path a drawn shape does and becomes a layer
+        of its own.
+        """
+        self._restore_map_tool()
+        if not crs:
+            # Refused here rather than at the registry, which could only say
+            # "crs is required". The reason is the project, not the request.
+            self._set_status(
+                "This map is in a coordinate system with no authority code, so "
+                "Mapdex cannot state where that shape is. Set a project CRS such "
+                "as EPSG:4326 and trace it again.")
+            return
+        if self._append_traced_feature(geometry, points):
+            return
+        self._run_capability(
+            "draw.geometry@1",
+            {"geometry": geometry, "vertices": [list(p) for p in points], "crs": crs},
+            "Trace {} from the scan".format(
+                "an area" if geometry == "polygon" else "a line"),
+        )
+
+    def _append_traced_feature(self, geometry, points):
+        """Add the shape to the layer being edited. False when there is not one.
+
+        The vertices arrive in the CANVAS crs and the layer has its own, so they
+        are transformed before they are stored. Skipping that is how a traced
+        boundary lands in the right place on screen and the wrong place in the
+        file.
+        """
+        from qgis.core import (  # noqa: PLC0415 - Qt-only import
+            QgsCoordinateTransform, QgsFeature, QgsGeometry, QgsMapLayer,
+            QgsPointXY, QgsProject, QgsWkbTypes,
+        )
+
+        layer = self.iface.activeLayer()
+        if layer is None or layer.type() != QgsMapLayer.VectorLayer:
+            return False
+        if not layer.isEditable():
+            return False
+        wants_polygon = geometry == "polygon"
+        try:
+            is_polygon = layer.geometryType() == QgsWkbTypes.PolygonGeometry
+        except (AttributeError, TypeError):
+            return False
+        if wants_polygon != is_polygon:
+            self._set_status(
+                "The layer being edited holds {}, and this trace is {}. Finish it "
+                "into a new layer or switch layers.".format(
+                    "areas" if is_polygon else "lines",
+                    "an area" if wants_polygon else "a line"))
+            return False
+
+        canvas_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        target_crs = layer.crs()
+        vertices = [QgsPointXY(float(x), float(y)) for x, y in points]
+        if canvas_crs != target_crs and canvas_crs.isValid() and target_crs.isValid():
+            transform = QgsCoordinateTransform(canvas_crs, target_crs, QgsProject.instance())
+            vertices = [transform.transform(point) for point in vertices]
+
+        if wants_polygon:
+            shape = QgsGeometry.fromPolygonXY([vertices])
+        else:
+            shape = QgsGeometry.fromPolylineXY(vertices)
+        if shape is None or shape.isEmpty():
+            self._set_status("That trace did not make a usable shape.")
+            return False
+
+        feature = QgsFeature(layer.fields())
+        feature.setGeometry(shape)
+        if not layer.addFeature(feature):
+            self._set_status("The layer refused the traced feature.")
+            return False
+        layer.triggerRepaint()
+        self._set_status(
+            "Traced {} added to {}. It is in the layer edit buffer; save the "
+            "layer to keep it.".format(
+                "area" if wants_polygon else "line", layer.name()))
+        return True
+
+    @guarded
+    def _trace_cancelled(self, discarded):
+        self._restore_map_tool()
+        self._set_status(
+            "Tracing cancelled; {} stretch(es) discarded.".format(discarded)
+            if discarded else "Tracing cancelled.")
 
     def _install_measure_action(self):
         """Let a person point at two places, rather than already know them.
@@ -1025,11 +1301,19 @@ class MapdexPlugin:
         # A map tool outlives the plugin that set it: leaving it active means
         # clicking the canvas after an unload calls into a dead plugin.
         self._restore_map_tool()
-        for attribute in ("_measure_action", "_draw_action"):
+        for attribute in ("_measure_action", "_draw_action", "_vectorize_action",
+                          "_vectorize_settings_action"):
             action = getattr(self, attribute, None)
             if action is not None:
                 self.iface.removePluginWebMenu("&Mapdex", action)
                 setattr(self, attribute, None)
+        # The toolbar is ours, so it goes with us. QGIS keeps it on the main
+        # window otherwise, and every reload leaves another empty Mapdex bar
+        # behind, the same way the layer context entries did.
+        toolbar = getattr(self, "toolbar", None)
+        if toolbar is not None:
+            toolbar.setParent(None)
+            self.toolbar = None
         self.poll_timer.stop()
         self.progress_timer.stop()
         for task in list(self._tasks):
