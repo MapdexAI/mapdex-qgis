@@ -3285,8 +3285,15 @@ class MapdexPlugin:
         if self.device_code:
             try:
                 self.api.revoke_device(self.device_code)
-            except Exception:  # noqa: BLE001 - disconnect must always complete
-                pass
+            except Exception as exc:  # noqa: BLE001 - disconnect must always complete
+                # Recorded rather than swallowed: the disconnect proceeds either
+                # way, but a code that could not be cancelled is worth knowing
+                # about, because it stays approvable until it expires.
+                QgsMessageLog.logMessage(
+                    "Could not cancel the pending device authorization: {}".format(exc),
+                    "Mapdex",
+                    enum_member(Qgis, "MessageLevel", "Warning"),
+                )
         # Disconnecting clears the session, it does not assign a password.
         self.api.token = ""  # nosec B105
         self.device_code = ""
