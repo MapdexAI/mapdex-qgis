@@ -127,3 +127,75 @@ class TestTheTracerAsksTheLayerRatherThanTheUser:
         source = _source("_append_traced_feature")
         assert "geometryType()" in source
         assert "switch layers" in source
+
+
+class TestTheToolStaysUsable:
+    """The four things that decide whether a person can work with it for an hour.
+
+    Every one of these was wrong in the first version, and all four came from
+    modelling the tracer on the draw tool, which makes one layer and is
+    finished. A digitizer is a hundred shapes in a row.
+    """
+
+    def test_finishing_a_shape_does_not_put_the_tracer_away(self):
+        """The bug that made it unusable: re-arming between every parcel."""
+        source = _source("_traced_geometry")
+        assert "_restore_map_tool" not in source, (
+            "finishing a traced shape disarms the tool, so the user has to "
+            "click the toolbar again for every single feature")
+
+    def test_cancelling_does_put_it_away(self):
+        """Escape means stop, and it has to actually stop."""
+        assert "_restore_map_tool" in _source("_trace_cancelled")
+
+    def test_putting_a_mapdex_tool_away_also_unchecks_the_tracer(self):
+        """Otherwise the button stays lit over a canvas it no longer receives."""
+        source = _source("_restore_map_tool")
+        assert "_vectorize_tool" in source
+        assert "_vectorize_action" in source
+
+    def test_the_traced_feature_lands_in_the_layer_undo_stack(self):
+        """Ctrl+Z has to remove the shape the user just traced."""
+        source = _source("_append_traced_feature")
+        assert "beginEditCommand" in source
+        assert "endEditCommand" in source
+        assert "destroyEditCommand" in source, (
+            "a failed add must not leave an open edit command behind")
+
+    def test_the_attribute_form_is_offered_and_can_be_suppressed(self):
+        """Cadastre is digitized with the parcel number typed as you go.
+
+        And a user who turned the form off did it to trace faster, which is
+        this tool whole point, so the setting is respected rather than
+        overridden.
+        """
+        source = _source("_confirm_traced_attributes")
+        assert "openFeatureForm" in source
+        assert "suppress" in source
+
+    def test_the_layer_defaults_are_applied(self):
+        assert "QgsVectorLayerUtils" in _source("_traced_feature")
+
+    def test_a_traced_ring_is_closed(self):
+        source = _source("_append_traced_feature")
+        assert "vertices[0] != vertices[-1]" in source
+
+
+class TestTheWindowFollowsTheCanvas:
+    def test_the_preview_re_reads_after_the_view_moves(self):
+        """A window read at the last anchor maps the wrong pixels after a zoom.
+
+        Without this the preview follows a line that is no longer under the
+        cursor, which looks like the tracer being wrong rather than the view
+        having moved.
+        """
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        assert "_canvas_has_moved" in source
+        move_event = source[source.index("def canvasMoveEvent"):]
+        move_event = move_event[:move_event.index("def keyPressEvent")]
+        assert "_canvas_has_moved" in move_event
+        assert "_reseed" in move_event
+
+    def test_the_extent_the_window_came_from_is_remembered(self):
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        assert "_window_extent" in source

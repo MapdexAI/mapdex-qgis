@@ -874,8 +874,13 @@ class MapdexPlugin:
         no such layer there is nothing to append to, so the shape goes through
         the same registry-validated path a drawn shape does and becomes a layer
         of its own.
+
+        The tool STAYS ARMED. Digitizing a sheet is a hundred shapes in a row,
+        and the first version put the tracer away after each one because it was
+        modelled on the draw tool, which makes a layer and is finished. Having
+        to re-arm between parcels is the difference between a tool someone works
+        with for an hour and one they try once.
         """
-        self._restore_map_tool()
         if not crs:
             # Refused here rather than at the registry, which could only say
             # "crs is required". The reason is the project, not the request.
@@ -902,7 +907,7 @@ class MapdexPlugin:
         file.
         """
         from qgis.core import (  # noqa: PLC0415 - Qt-only import
-            QgsCoordinateTransform, QgsFeature, QgsGeometry, QgsMapLayer,
+            QgsCoordinateTransform, QgsGeometry, QgsMapLayer,
             QgsPointXY, QgsProject, QgsWkbTypes,
         )
 
@@ -932,6 +937,11 @@ class MapdexPlugin:
             vertices = [transform.transform(point) for point in vertices]
 
         if wants_polygon:
+            # Close the ring explicitly. QGIS will close it anyway, but doing it
+            # here means the vertex count the user is told about is the one the
+            # layer stores.
+            if vertices and vertices[0] != vertices[-1]:
+                vertices = vertices + [vertices[0]]
             shape = QgsGeometry.fromPolygonXY([vertices])
         else:
             shape = QgsGeometry.fromPolylineXY(vertices)
@@ -939,17 +949,78 @@ class MapdexPlugin:
             self._set_status("That trace did not make a usable shape.")
             return False
 
-        feature = QgsFeature(layer.fields())
-        feature.setGeometry(shape)
-        if not layer.addFeature(feature):
-            self._set_status("The layer refused the traced feature.")
-            return False
+        feature = self._traced_feature(layer, shape)
+        # One edit command, so the user Ctrl+Z removes the whole traced shape.
+        # Without it the feature lands outside the layer undo stack and their
+        # undo does something else, or nothing, at the moment they most expect
+        # it to work.
+        layer.beginEditCommand("Trace with Mapdex")
+        try:
+            if not self._confirm_traced_attributes(layer, feature):
+                layer.destroyEditCommand()
+                self._set_status("Traced shape discarded at the attribute form.")
+                return True
+            if not layer.addFeature(feature):
+                layer.destroyEditCommand()
+                self._set_status("The layer refused the traced feature.")
+                return False
+        except Exception:
+            layer.destroyEditCommand()
+            raise
+        layer.endEditCommand()
         layer.triggerRepaint()
         self._set_status(
-            "Traced {} added to {}. It is in the layer edit buffer; save the "
-            "layer to keep it.".format(
+            "Traced {} added to {}. Click a line to start the next one; save "
+            "the layer to keep them.".format(
                 "area" if wants_polygon else "line", layer.name()))
         return True
+
+    def _traced_feature(self, layer, shape):
+        """A feature with the layer own defaults already applied.
+
+        A traced parcel that arrives with every field empty ignores defaults the
+        user set up for exactly this, and QgsVectorLayerUtils is what every
+        other digitizing path in QGIS uses to honour them.
+        """
+        from qgis.core import QgsFeature  # noqa: PLC0415 - Qt-only import
+
+        try:
+            from qgis.core import QgsVectorLayerUtils  # noqa: PLC0415
+
+            feature = QgsVectorLayerUtils.createFeature(layer)
+        except Exception as exc:  # noqa: BLE001 - defaults are a nicety, not the shape
+            log_debug("applying layer defaults to a traced feature", exc)
+            feature = QgsFeature(layer.fields())
+        feature.setGeometry(shape)
+        return feature
+
+    def _confirm_traced_attributes(self, layer, feature) -> bool:
+        """Show the attribute form, unless this layer or QGIS says not to.
+
+        Someone digitizing cadastre types the parcel number as they go, and a
+        tool that stores a shape with no attributes makes them find it again
+        afterwards. The suppression setting is respected because a user who
+        turned the form off did so to trace faster, which is this tool whole
+        point.
+
+        Returning True with no form shown is the normal path; False means the
+        user cancelled the form and the shape should not be stored.
+        """
+        from qgis.core import QgsEditFormConfig  # noqa: PLC0415 - Qt-only import
+
+        try:
+            suppress = layer.editFormConfig().suppress()
+            if suppress == QgsEditFormConfig.SuppressOn:
+                return True
+            if suppress == QgsEditFormConfig.SuppressDefault:
+                setting = QSettings().value(
+                    "qgis/digitizing/disable_enter_attribute_values_dialog", False)
+                if str(setting).lower() in ("true", "1"):
+                    return True
+            return bool(self.iface.openFeatureForm(layer, feature))
+        except Exception as exc:  # noqa: BLE001 - never lose a trace to the form
+            log_debug("showing the attribute form for a traced feature", exc)
+            return True
 
     @guarded
     def _trace_cancelled(self, discarded):
@@ -1167,7 +1238,7 @@ class MapdexPlugin:
 
     def _restore_map_tool(self):
         canvas = self.iface.mapCanvas()
-        for attribute in ("_measure_tool", "_draw_tool"):
+        for attribute in ("_measure_tool", "_draw_tool", "_vectorize_tool"):
             tool = getattr(self, attribute, None)
             if tool is None:
                 continue
@@ -1182,7 +1253,7 @@ class MapdexPlugin:
             except (AttributeError, RuntimeError):
                 pass
             self._previous_map_tool = None
-        for attribute in ("_measure_action", "_draw_action"):
+        for attribute in ("_measure_action", "_draw_action", "_vectorize_action"):
             action = getattr(self, attribute, None)
             if action is not None:
                 action.setChecked(False)

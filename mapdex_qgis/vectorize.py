@@ -381,6 +381,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self.on_status = on_status or (lambda _message: None)
         self.on_cancel = on_cancel or (lambda _discarded: None)
         self._window: RasterWindow | None = None
+        self._window_extent = None
         self._wire: LiveWire | None = None
         self._band = None
         self._preview = None
@@ -419,6 +420,13 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
     def canvasMoveEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         if not self.session.started or self._wire is None or self._window is None:
             return
+        # The window was read from one canvas extent, so every pixel in it is
+        # tied to that view. Zooming or panning mid-trace makes the mapping
+        # wrong, and the preview would follow a line that is no longer under the
+        # cursor. Re-read rather than draw a confident wrong path.
+        if self._canvas_has_moved():
+            if not self._reseed():
+                return
         point = self.toMapCoordinates(event.pos())
         row, col = self._window.to_pixel(point.x(), point.y())
         if not self._window.contains_pixel(row, col):
@@ -479,6 +487,19 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self._redraw_committed()
         self._reseed()
 
+    def _canvas_has_moved(self) -> bool:
+        """Has the view changed since the window was read?"""
+        try:
+            extent = self.canvas.extent()
+        except (AttributeError, RuntimeError):
+            return False
+        if self._window_extent is None:
+            return True
+        try:
+            return not self._window_extent == extent
+        except (AttributeError, TypeError):
+            return True
+
     def _reseed(self) -> bool:
         """Read the window under the anchor and run the search from it."""
         anchor = self.session.anchor_map
@@ -489,7 +510,8 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
             self.on_status("Tracing needs a raster layer. Select the scanned "
                            "map in the Layers panel.")
             return False
-        window = sample_window(layer, self.canvas.extent())
+        extent = self.canvas.extent()
+        window = sample_window(layer, extent)
         if window is None:
             self.on_status("Could not read pixels from that raster here.")
             return False
@@ -497,6 +519,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         row, col = window.to_pixel(anchor[0], anchor[1])
         seed = wire.seed(row, col) if window.contains_pixel(row, col) else None
         self._window, self._wire = window, wire
+        self._window_extent = extent
         self.on_status(status_for_seed(seed))
         if seed is None:
             self._wire = None
@@ -511,7 +534,9 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         if kind == "finish":
             self._clear_bands()
             self.on_finish(outcome["geometry"], outcome["points"], self.crs_authid())
-            self.on_status("Traced {} written.".format(outcome["geometry"]))
+            # Deliberately no status line here: the handler that stored the
+            # shape knows where it went and says so, and two messages about one
+            # shape means the second overwrites the useful one.
             return
         if kind == "incomplete":
             self.on_status(outcome["reason"])
