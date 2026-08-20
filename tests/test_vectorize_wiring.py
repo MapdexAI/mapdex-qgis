@@ -102,33 +102,65 @@ class TestUnloadIsSymmetric:
             "leave a second copy of each: {}".format(missing))
 
 
-class TestTheTracerAsksTheLayerRatherThanTheUser:
-    def test_the_geometry_comes_from_the_layer_being_edited(self):
-        """A dialog in front of every trace would cost more than it settles."""
-        source = _source("_trace_geometry_for_active_layer")
-        assert "PolygonGeometry" in source
-        assert "polygon" in source and "line" in source
+class TestTheDestinationIsTheActiveLayer:
+    """One destination, and no questions in front of it.
 
-    def test_a_trace_prefers_the_open_editing_session(self):
-        """Tracing a sheet means adding to the layer being digitized.
+    An earlier version asked which geometry to trace when no layer could
+    answer, and put the result in a layer it invented. Founder verdict: the
+    layer creation was silly, use whatever the active layer is. That is also
+    how QGIS's own Add Feature tool behaves, so nobody has to be told.
+    """
 
-        Creating a new layer per traced parcel would make the tool unusable for
-        the job it exists for.
+    def test_the_geometry_comes_from_the_active_layer(self):
+        source = _source("_resolve_trace_target")
+        assert "activeLayer()" in source
+        assert "PolygonGeometry" in source and "LineGeometry" in source
+
+    def test_nothing_invents_a_layer(self):
+        """The traced shape goes where the user is working or nowhere."""
+        traced = _source("_traced_geometry")
+        assert "draw.geometry@1" not in traced, (
+            "a traced shape still falls back to a layer the user did not "
+            "choose")
+        assert "_append_traced_feature" in traced
+
+    def test_editing_is_started_rather_than_demanded(self):
+        """Picking this tool over a layer you selected is not ambiguous.
+
+        A dialog asking permission to do the obvious thing is a step in front
+        of the answer, and QGIS still asks before anything reaches disk.
         """
-        source = _source("_traced_geometry")
-        assert "_append_traced_feature" in source
-        assert "draw.geometry@1" in source     # the fallback still exists
+        source = _source("_resolve_trace_target")
+        assert "startEditing()" in source
+        assert "_ask_yes_no" not in source
+
+    def test_a_layer_that_cannot_be_edited_says_so(self):
+        source = _source("_resolve_trace_target")
+        assert "cannot be edited" in source
+
+    def test_no_layer_selected_names_the_remedy(self):
+        source = _source("_resolve_trace_target")
+        assert "Select the layer" in source
+
+    def test_a_raster_active_layer_is_refused_by_name(self):
+        """The scan is what you trace, not what you trace INTO."""
+        source = _source("_resolve_trace_target")
+        assert "is not a vector layer" in source
+
+    def test_a_point_layer_is_refused_rather_than_traced_as_a_line(self):
+        source = _source("_resolve_trace_target")
+        assert "holds points" in source
+        assert "Draw with Mapdex" in source
+
+    def test_arming_says_which_layer_the_shapes_will_go_into(self):
+        source = _source("_resolve_trace_target")
+        assert "Tracing into {}" in source
 
     def test_the_vertices_are_transformed_into_the_layer_crs(self):
         """On screen in the right place and in the file in the wrong one."""
         source = _source("_append_traced_feature")
         assert "QgsCoordinateTransform" in source
         assert "layer.crs()" in source
-
-    def test_a_mismatched_layer_is_explained_rather_than_forced(self):
-        source = _source("_append_traced_feature")
-        assert "geometryType()" in source
-        assert "switch layers" in source
 
 
 class TestTheToolStaysUsable:
@@ -447,31 +479,3 @@ class TestTheWorkflowNotJustTheGesture:
         target = source[source.index("    def close_target("):]
         target = target[:target.index("    def _map_units_per_pixel(")]
         assert 'self.session.geometry != "polygon"' in target
-
-
-class TestTheTargetIsSettledBeforeArming:
-    def test_a_layer_that_is_not_being_edited_is_asked_about(self):
-        """It used to fall through to a scratch layer, so a user who selected
-        their parcels layer and forgot to toggle editing got their work
-        somewhere they did not choose and would not think to look."""
-        source = _source("_resolve_trace_target")
-        assert "isEditable()" in source
-        assert "startEditing()" in source
-        assert "_ask_yes_no" in source
-
-    def test_with_no_vector_layer_the_geometry_is_asked_not_assumed(self):
-        """It used to default to a line in silence, so somebody tracing parcel
-        boundaries got a line layer and was never asked."""
-        source = _source("_resolve_trace_target")
-        assert "_ask_geometry_type()" in source
-
-    def test_a_point_is_refused_rather_than_turned_into_a_line(self):
-        source = _source("_resolve_trace_target")
-        assert '("line", "polygon")' in source
-
-    def test_arming_says_where_the_shapes_will_go(self):
-        """A tool that silently decides the destination is one you have to test
-        to understand."""
-        source = _source("_resolve_trace_target")
-        assert "Tracing into {}" in source
-        assert "will become a new" in source

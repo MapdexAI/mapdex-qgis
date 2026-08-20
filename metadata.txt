@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex. Includes an AI vectorizer that traces lines on a scanned map as you follow them, running entirely on your machine.
-version=0.12.0
+version=0.12.1
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,12 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.12.0
+changelog=0.12.1
+    - The tracer traces into whatever layer you have selected, and nothing
+      else. It no longer asks which geometry you meant or creates a layer of
+      its own: pick the layer you are digitizing into, pick the tracer, and it
+      starts editing that layer for you.
+    0.12.0
     - Shared boundaries are reused instead of traced twice. Where the edge you
       are following has already been digitized, the tracer follows that
       geometry, so the two parcels share the same edge rather than two

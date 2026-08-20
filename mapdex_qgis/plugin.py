@@ -915,70 +915,63 @@ class MapdexPlugin:
             self._vectorize_action.setChecked(True)
 
     def _resolve_trace_target(self):
-        """Decide where the traced shapes will go, once, before arming.
+        """The active layer, or the reason it cannot take a traced shape.
 
-        Three situations, and the first version handled one of them.
+        Deliberately no picker and no scratch layer. The traced shape belongs
+        in the layer the user is working in, which is the one they selected;
+        QGIS's own Add Feature tool works exactly this way and nobody has to be
+        told how. An earlier version asked which geometry to trace when no
+        layer could answer, and put the result in a layer it invented. Both
+        were extra steps in front of the obvious answer, and the invented layer
+        was somewhere the user had not chosen to look.
 
-        A vector layer already being edited answers everything: the shapes go
-        in it and its geometry type says what to trace.
+        Editing is started rather than demanded. Picking this tool over a layer
+        you have selected is not ambiguous, and QGIS will still ask before
+        anything is written to disk when the session is closed.
 
-        A vector layer that is NOT being edited used to fall through to a
-        scratch layer, so a user who had selected their parcels layer and
-        forgotten to toggle editing got their work in a layer they did not
-        choose and would not think to look in. Asking is one dialog at the
-        moment the question arises.
-
-        No vector layer at all used to default silently to a line, so somebody
-        tracing parcel boundaries got a line layer and was never asked. The
-        geometry picker the draw tool already uses answers it.
+        Returns the geometry to trace, or "" with the reason already said.
         """
         from qgis.core import QgsMapLayer, QgsWkbTypes  # noqa: PLC0415 - Qt-only import
 
         layer = self.iface.activeLayer()
-        is_vector = layer is not None and layer.type() == QgsMapLayer.VectorLayer
-        if is_vector:
-            try:
-                geometry = ("polygon"
-                            if layer.geometryType() == QgsWkbTypes.PolygonGeometry
-                            else "line")
-            except (AttributeError, TypeError):
-                geometry = "line"
-            if layer.isEditable():
+        if layer is None:
+            self._set_status(
+                "Select the layer the traced shapes should go into, in the "
+                "Layers panel, then start the tracer.")
+            return ""
+        if layer.type() != QgsMapLayer.VectorLayer:
+            self._set_status(
+                "{} is not a vector layer, so a traced shape cannot go into "
+                "it. Select the line or area layer you are digitizing "
+                "into.".format(layer.name()))
+            return ""
+        try:
+            kind = layer.geometryType()
+        except (AttributeError, TypeError):
+            kind = None
+        if kind == QgsWkbTypes.PolygonGeometry:
+            geometry = "polygon"
+        elif kind == QgsWkbTypes.LineGeometry:
+            geometry = "line"
+        else:
+            self._set_status(
+                "{} holds points, and the tracer follows lines and areas. Use "
+                "Draw with Mapdex to place points.".format(layer.name()))
+            return ""
+
+        if not layer.isEditable():
+            if not layer.startEditing():
                 self._set_status(
-                    "Tracing into {}. Click a drawn line to start.".format(layer.name()))
-                return geometry
-            answer = self._ask_yes_no(
-                "Trace into this layer?",
-                "{} is not being edited, so traced shapes cannot go into it.\n\n"
-                "Start editing it now? Choosing No traces into a new scratch "
-                "layer instead.".format(layer.name()))
-            if answer is None:
+                    "{} cannot be edited, so traced shapes cannot go into it. "
+                    "Check the layer is writable.".format(layer.name()))
                 return ""
-            if answer:
-                if layer.startEditing():
-                    self._set_status(
-                        "Editing {}. Click a drawn line to start.".format(layer.name()))
-                    return geometry
-                self._set_status(
-                    "{} could not be put into edit mode; tracing into a new "
-                    "layer instead.".format(layer.name()))
-                return geometry
+            self._set_status(
+                "Editing {}. Click a drawn line to start tracing.".format(layer.name()))
             return geometry
 
-        chosen = self._ask_geometry_type()
-        if not chosen or chosen not in ("line", "polygon"):
-            # A point is not something this tool can trace, and the picker
-            # offers it, so an unusable answer stops rather than becoming a
-            # line the user did not ask for.
-            if chosen:
-                self._set_status(
-                    "The tracer follows lines and areas. Pick one of those, or "
-                    "use Draw with Mapdex to place points.")
-            return ""
         self._set_status(
-            "No layer is being edited, so the traced {} will become a new "
-            "layer. Click a drawn line to start.".format(chosen))
-        return chosen
+            "Tracing into {}. Click a drawn line to start.".format(layer.name()))
+        return geometry
 
     def _layers_to_follow(self):
         """Vector layers whose drawn boundaries the tracer may reuse.
@@ -1007,51 +1000,14 @@ class MapdexPlugin:
             log_debug("listing layers the tracer may follow", exc)
         return layers
 
-    def _ask_yes_no(self, title, question):
-        """True, False, or None when the user closed the question."""
-        from qgis.PyQt.QtWidgets import QMessageBox  # noqa: PLC0415 - Qt-only import
-
-        box = QMessageBox(self.iface.mainWindow())
-        box.setWindowTitle(title)
-        box.setText(question)
-        box.setIcon(enum_member(QMessageBox, "Icon", "Question"))
-        yes = enum_member(QMessageBox, "StandardButton", "Yes")
-        no = enum_member(QMessageBox, "StandardButton", "No")
-        cancel = enum_member(QMessageBox, "StandardButton", "Cancel")
-        box.setStandardButtons(yes | no | cancel)
-        answer = box.exec() if hasattr(box, "exec") else box.exec_()
-        if answer == cancel:
-            return None
-        return answer == yes
-
-    def _trace_geometry_for_active_layer(self):
-        """Trace what the layer being edited holds, or a line by default.
-
-        Asking would put a dialog in front of every trace. The layer already
-        answers: someone editing a polygon layer is digitizing areas.
-        """
-        from qgis.core import QgsMapLayer, QgsWkbTypes  # noqa: PLC0415 - Qt-only import
-
-        layer = self.iface.activeLayer()
-        if layer is None or layer.type() != QgsMapLayer.VectorLayer:
-            return "line"
-        try:
-            if layer.geometryType() == QgsWkbTypes.PolygonGeometry:
-                return "polygon"
-        except (AttributeError, TypeError):
-            pass
-        return "line"
-
     @guarded
     def _traced_geometry(self, geometry, points, crs):
         """Keep the traced shape, in the place the user is already working.
 
-        Two destinations, and which one applies is not a preference. A layer in
-        edit mode is a digitizing session: the shape belongs in it, beside the
-        ones traced before it, inside the undo stack the user already has. With
-        no such layer there is nothing to append to, so the shape goes through
-        the same registry-validated path a drawn shape does and becomes a layer
-        of its own.
+        There is one destination: the layer being edited. The shape belongs
+        beside the ones traced before it, in the undo stack the user already
+        has. Creating a layer of its own instead was an answer to a question
+        nobody asked, and it put the work somewhere they had not chosen.
 
         The tool STAYS ARMED. Digitizing a sheet is a hundred shapes in a row,
         and the first version put the tracer away after each one because it was
@@ -1067,14 +1023,7 @@ class MapdexPlugin:
                 "Mapdex cannot state where that shape is. Set a project CRS such "
                 "as EPSG:4326 and trace it again.")
             return
-        if self._append_traced_feature(geometry, points):
-            return
-        self._run_capability(
-            "draw.geometry@1",
-            {"geometry": geometry, "vertices": [list(p) for p in points], "crs": crs},
-            "Trace {} from the scan".format(
-                "an area" if geometry == "polygon" else "a line"),
-        )
+        self._append_traced_feature(geometry, points)
 
     def _append_traced_feature(self, geometry, points):
         """Add the shape to the layer being edited. False when there is not one.
