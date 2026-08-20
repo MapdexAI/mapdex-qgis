@@ -3754,6 +3754,28 @@ class MapdexPlugin:
     def disconnect(self, *args):
         self.poll_timer.stop()
         self.progress_timer.stop()
+        # Disconnecting while the browser approval is still outstanding leaves a
+        # pending authorization on the server that this plugin has stopped
+        # polling for. Cancel it, so a code the user abandoned cannot be
+        # approved afterwards by anyone who saw it on screen.
+        #
+        # Best effort: the session is ending either way, and a failure here must
+        # not leave the plugin half-disconnected with a token it has stopped
+        # using. Once a token has been issued the authorization is already
+        # `consumed` and there is nothing left to cancel, so this only matters
+        # for the pending case -- which is exactly when `device_code` is set.
+        if self.device_code:
+            try:
+                self.api.revoke_device(self.device_code)
+            except Exception as exc:  # noqa: BLE001 - disconnect must always complete
+                # Recorded rather than swallowed: the disconnect proceeds either
+                # way, but a code that could not be cancelled is worth knowing
+                # about, because it stays approvable until it expires.
+                QgsMessageLog.logMessage(
+                    "Could not cancel the pending device authorization: {}".format(exc),
+                    "Mapdex",
+                    enum_member(Qgis, "MessageLevel", "Warning"),
+                )
         # Disconnecting clears the session, it does not assign a password.
         self.api.token = ""  # nosec B105
         self.device_code = ""
