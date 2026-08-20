@@ -249,6 +249,49 @@ def asset_icon(name: str) -> QIcon:
     return QIcon(path) if os.path.isfile(path) else plugin_icon()
 
 
+def interface_is_dark() -> bool:
+    """Is the QGIS window dark? Measured from the palette, not from its name.
+
+    QGIS ships Night Mapping and Blend of Gray, users install their own, and on
+    macOS and Windows the system theme can darken the application without any
+    QGIS setting changing at all. Matching theme NAMES would be a hardcoded
+    list that is wrong for every theme nobody thought of, which is a mistake
+    this repository has paid for elsewhere and has one answer: read the value.
+
+    The window background lightness is that value. Below the midpoint the bar
+    behind the toolbar is dark, whatever anyone called the theme.
+    """
+    try:
+        from qgis.PyQt.QtGui import QPalette  # noqa: PLC0415 - Qt-only import
+        from qgis.PyQt.QtWidgets import QApplication  # noqa: PLC0415
+
+        application = QApplication.instance()
+        if application is None:
+            return False
+        window = application.palette().color(
+            enum_member(QPalette, "ColorRole", "Window"))
+        return window.lightness() < 128
+    except Exception as exc:  # noqa: BLE001 - a wrong icon beats no toolbar
+        log_debug("reading the interface palette", exc)
+        return False
+
+
+def themed_asset_icon(name: str) -> QIcon:
+    """The dark variant of an asset on a dark interface, else the light one.
+
+    Falls back through the light variant to the Mapdex mark, so a build missing
+    the dark file shows a wrong-but-visible icon rather than an empty button.
+    """
+    if interface_is_dark():
+        stem, _, extension = name.rpartition(".")
+        dark = "{}_dark.{}".format(stem or name, extension or "png")
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", dark)
+        if os.path.isfile(path):
+            return QIcon(path)
+    return asset_icon(name)
+
+
 # --------------------------------------------------------------------------
 # Reporting a capability result
 # --------------------------------------------------------------------------
@@ -722,7 +765,7 @@ class MapdexPlugin:
         building and costs nothing per stroke.
         """
         self._vectorize_action = QAction(
-            asset_icon("icon_vectorize.png"), "Vectorize with Mapdex",
+            themed_asset_icon("icon_vectorize.png"), "Vectorize with Mapdex",
             self.iface.mainWindow())
         self._vectorize_action.setToolTip(
             "Trace lines and areas on a scanned map: click the line and the tool follows it")

@@ -300,3 +300,75 @@ class TestTheTwoButtonsLookDifferent:
         with Image.open(icon) as handle:
             assert handle.size == (128, 128)
             assert handle.mode == "RGBA", "a toolbar icon needs transparency"
+
+
+class TestTheDarkThemeVariant:
+    """A near-black icon on the Night Mapping toolbar is the same as no icon."""
+
+    def _assets(self):
+        return ROOT / "mapdex_qgis" / "assets"
+
+    def test_both_variants_ship(self):
+        for name in ("icon_vectorize.png", "icon_vectorize_dark.png"):
+            assert (self._assets() / name).is_file(), name
+
+    def test_the_dark_variant_is_actually_light(self):
+        """Measured, because two files with the same name pattern prove nothing.
+
+        A copy of the light icon under the dark name would pass every other
+        check here and be invisible on the bar it exists for.
+        """
+        Image = pytest.importorskip("PIL.Image", reason="PIL not present here")
+
+        def mean_ink(path):
+            with Image.open(path) as handle:
+                pixels = handle.convert("RGBA").load()
+                width, height = handle.size
+                values = [
+                    sum(pixels[x, y][:3]) / 3.0
+                    for y in range(height) for x in range(width)
+                    if pixels[x, y][3] >= 170
+                ]
+            return sum(values) / max(1, len(values))
+
+        light = mean_ink(self._assets() / "icon_vectorize.png")
+        dark = mean_ink(self._assets() / "icon_vectorize_dark.png")
+        assert dark > light + 80, (
+            "the dark variant is not lighter than the light one, so it will "
+            "disappear on a dark toolbar (light {:.0f}, dark {:.0f})".format(
+                light, dark))
+
+    def test_the_theme_is_read_from_the_palette_not_from_its_name(self):
+        """QGIS ships several themes, users install more, and the OS can darken
+        the application without any QGIS setting changing at all. A list of
+        theme names is wrong for every theme nobody thought of."""
+        source = _source("interface_is_dark")
+        assert "palette()" in source
+        assert "lightness()" in source
+        # The docstring NAMES the themes in order to explain why it does not
+        # match on them, so the check has to read the code and not the prose.
+        code = ast.get_source_segment(PLUGIN, _function("interface_is_dark"))
+        tree = ast.parse(code.strip().replace("def interface_is_dark",
+                                              "def interface_is_dark", 1))
+        function = tree.body[0]
+        if (function.body and isinstance(function.body[0], ast.Expr)
+                and isinstance(function.body[0].value, ast.Constant)):
+            function.body = function.body[1:]
+        body = ast.unparse(function)
+        for name in ("Night Mapping", "Blend of Gray", "UITheme"):
+            assert name not in body, (
+                "matching a theme by name: {}".format(name))
+
+    def test_a_missing_dark_file_falls_back_to_the_visible_one(self):
+        """Wrong-but-visible beats an empty button."""
+        source = _source("themed_asset_icon")
+        assert "isfile" in source
+        assert "asset_icon(name)" in source
+
+    def test_the_action_asks_for_the_themed_icon(self):
+        assert "themed_asset_icon(" in _source("_install_vectorize_action")
+
+    def test_one_generator_produces_both(self):
+        body = (ROOT / "scripts" / "make_tracer_icon.py").read_text(encoding="utf-8")
+        assert "PALETTES" in body
+        assert '"dark"' in body and '"light"' in body
