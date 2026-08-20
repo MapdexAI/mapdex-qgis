@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.11.2
+version=0.11.3
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,11 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.11.2
+changelog=0.11.3
+    - The tracer has its own toolbar icon. It shared the Mapdex mark with the
+      panel button beside it, so the only way to tell the two apart was to
+      hover over them.
+    0.11.2
     - Ctrl+Z now takes back the last traced stretch while you are tracing, and
       Ctrl+Shift+Z puts it back. It could not before: QGIS undo is a main-window
       shortcut and took the key first, so pressing it mid-shape undid a feature

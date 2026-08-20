@@ -19,6 +19,8 @@ import ast
 import pathlib
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -257,3 +259,44 @@ class TestUndoActuallyReachesTheTool:
         keys = keys[:keys.index("# -- behaviour")]
         assert "if self.session.started:" in keys
         assert "Esc again" in keys
+
+
+class TestTheTwoButtonsLookDifferent:
+    """A toolbar with two identical icons is a guess, not a toolbar.
+
+    The panel and the tracer sit next to each other, and until the tracer had
+    its own glyph both were plugin_icon(): the user could tell them apart only
+    by hovering, which is exactly the cost a toolbar exists to remove.
+    """
+
+    def test_the_tracer_does_not_reuse_the_mapdex_mark(self):
+        install = _source("_install_vectorize_action")
+        assert "asset_icon(" in install
+        assert "plugin_icon()" not in install, (
+            "the tracer button carries the same mark as the panel button "
+            "beside it")
+
+    def test_the_panel_still_carries_the_mark(self):
+        assert "plugin_icon()" in _source("initGui")
+
+    def test_a_missing_asset_falls_back_instead_of_drawing_nothing(self):
+        """A QIcon with no file is invisible, and an invisible button is worse
+        than the wrong picture on it."""
+        source = _source("asset_icon")
+        assert "plugin_icon()" in source
+        assert "isfile" in source
+
+    def test_the_icon_is_generated_rather_than_a_mystery_binary(self):
+        generator = ROOT / "scripts" / "make_tracer_icon.py"
+        assert generator.is_file(), (
+            "the icon ships as a PNG nobody can regenerate")
+        body = generator.read_text(encoding="utf-8")
+        assert "GRID = 24" in body, "designed at some size other than the one drawn"
+
+    def test_the_asset_exists_and_is_the_size_a_toolbar_wants(self):
+        icon = ROOT / "mapdex_qgis" / "assets" / "icon_vectorize.png"
+        assert icon.is_file()
+        Image = pytest.importorskip("PIL.Image", reason="PIL not present here")
+        with Image.open(icon) as handle:
+            assert handle.size == (128, 128)
+            assert handle.mode == "RGBA", "a toolbar icon needs transparency"
