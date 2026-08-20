@@ -266,6 +266,15 @@ class MapdexAPI:
     def poll_device_token(self, device_code: str):
         return self._request("POST", "/v1/auth/device/token", {"device_code": device_code})
 
+    def revoke_device(self, device_code: str):
+        """Cancel a device authorization the user walked away from.
+
+        Sent without a token on purpose: while the authorization is pending this
+        plugin has no token yet, and the device code is the proof — the same
+        proof the polling call above exchanges for one.
+        """
+        return self._request("POST", "/v1/auth/device/revoke", {"device_code": device_code})
+
     def projects(self):
         response = self._request("GET", "/v1/projects")
         # API returns a bare JSON array (see ListProjects). Older clients used
