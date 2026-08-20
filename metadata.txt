@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.11.1
+version=0.11.2
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,18 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.11.1
+changelog=0.11.2
+    - Ctrl+Z now takes back the last traced stretch while you are tracing, and
+      Ctrl+Shift+Z puts it back. It could not before: QGIS undo is a main-window
+      shortcut and took the key first, so pressing it mid-shape undid a feature
+      you had finished earlier instead. The tracer holds the key only while the
+      canvas is armed and gives it straight back.
+    - Backspace and Delete do the same thing, as they do elsewhere in QGIS.
+    - Escape is two steps: the first abandons the shape you are drawing and
+      leaves the tracer on, the second closes the tracer.
+    - Undo with nothing traced in the current shape says so rather than
+      reaching back into your finished features.
+    0.11.1
     - The tracer stayed armed only until you finished a shape. Digitizing is a
       hundred shapes in a row, so it now stays on until you press Escape or the
       button.

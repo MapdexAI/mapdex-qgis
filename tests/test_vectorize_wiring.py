@@ -199,3 +199,61 @@ class TestTheWindowFollowsTheCanvas:
     def test_the_extent_the_window_came_from_is_remembered(self):
         source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
         assert "_window_extent" in source
+
+
+class TestUndoActuallyReachesTheTool:
+    """Ctrl+Z cannot arrive through keyPressEvent, and that is the whole point.
+
+    Undo in QGIS is a QAction on the main window with a window-level shortcut
+    context. Qt gives that action the key before the focus widget sees it, so a
+    map tool handling Ctrl+Z in keyPressEvent silently never runs -- and the
+    user gets the LAYER undo in the middle of a shape they have not finished,
+    which removes a feature they stored ten minutes ago.
+    """
+
+    def test_the_tool_owns_the_shortcut_on_the_canvas(self):
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        assert "QShortcut" in source
+        assert "WidgetWithChildrenShortcut" in source, (
+            "a window-context shortcut loses to the QGIS undo action; only a "
+            "canvas-owned one with widget context wins while tracing")
+
+    def test_the_shortcut_is_given_back_when_the_tool_is_put_away(self):
+        """Otherwise Ctrl+Z stops being QGIS undo for the rest of the session."""
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        assert "_remove_shortcuts" in source
+        deactivate = source[source.index("def deactivate"):]
+        deactivate = deactivate[:deactivate.index("def canvasReleaseEvent")]
+        assert "_remove_shortcuts" in deactivate
+
+    def test_redo_is_bound_as_well_as_undo(self):
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        assert '"Redo"' in source
+
+    def test_backspace_and_delete_do_the_same_thing_as_ctrl_z(self):
+        """QGIS digitizing uses Backspace, so both have to work."""
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        keys = source[source.index("def keyPressEvent"):]
+        keys = keys[:keys.index("# -- behaviour")]
+        assert "Key_Backspace" in keys and "Key_Delete" in keys
+        assert "_undo_stretch" in keys
+
+    def test_undo_with_nothing_traced_does_not_fall_through_to_the_layer(self):
+        """The worst possible reading of the key.
+
+        Mid-shape, undo means the stretch just traced. Removing a finished
+        feature instead, because this shape has nothing left, would destroy
+        work the user was not thinking about.
+        """
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        handler = source[source.index("def _undo_stretch"):]
+        handler = handler[:handler.index("def _redo_stretch")]
+        assert "Nothing left to take back" in handler
+
+    def test_escape_abandons_the_shape_before_it_closes_the_tool(self):
+        """One key doing two jobs at once is how people lose work."""
+        source = (ROOT / "mapdex_qgis" / "vectorize.py").read_text(encoding="utf-8")
+        keys = source[source.index("def keyPressEvent"):]
+        keys = keys[:keys.index("# -- behaviour")]
+        assert "if self.session.started:" in keys
+        assert "Esc again" in keys

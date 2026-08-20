@@ -119,6 +119,10 @@ class TraceSession:
     geometry: str = "line"
     segments: list[Segment] = field(default_factory=list)
     anchor_map: tuple[float, float] | None = None
+    #: Stretches taken back, newest last. Undo without redo is a trap: it makes
+    #: the key feel dangerous, so people stop using it and click around the
+    #: mistake instead.
+    undone: list[Segment] = field(default_factory=list)
 
     @property
     def started(self) -> bool:
@@ -126,6 +130,7 @@ class TraceSession:
 
     def start(self, x: float, y: float) -> None:
         self.segments = []
+        self.undone = []
         self.anchor_map = (float(x), float(y))
 
     def commit(self, points: Sequence[tuple[float, float]], traced: bool,
@@ -136,6 +141,8 @@ class TraceSession:
             return len(self.segments)
         self.segments.append(Segment(points=cleaned, traced=traced,
                                      bridged_px=int(bridged_px)))
+        # New work invalidates the redo stack, as it does in every editor.
+        self.undone = []
         self.anchor_map = cleaned[-1]
         return len(self.segments)
 
@@ -148,9 +155,26 @@ class TraceSession:
         """
         if not self.segments:
             return False
-        self.segments.pop()
+        self.undone.append(self.segments.pop())
         self.anchor_map = self.segments[-1].points[-1] if self.segments else self.anchor_map
         return True
+
+    def redo(self) -> bool:
+        """Put back the last stretch undo took away."""
+        if not self.undone:
+            return False
+        segment = self.undone.pop()
+        self.segments.append(segment)
+        self.anchor_map = segment.points[-1]
+        return True
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self.segments)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self.undone)
 
     def vertices(self) -> list[tuple[float, float]]:
         """Every committed vertex, with the joins between segments de-duplicated.
@@ -188,6 +212,7 @@ class TraceSession:
         traced = sum(1 for s in self.segments if s.traced)
         bridged = max((s.bridged_px for s in self.segments), default=0)
         self.segments = []
+        self.undone = []
         self.anchor_map = None
         return {"kind": "finish", "geometry": self.geometry, "points": points,
                 "traced_segments": traced, "bridged_px": bridged}
@@ -195,6 +220,7 @@ class TraceSession:
     def cancel(self) -> dict[str, Any]:
         discarded = len(self.segments)
         self.segments = []
+        self.undone = []
         self.anchor_map = None
         return {"kind": "cancelled", "discarded": discarded}
 
@@ -382,6 +408,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self.on_cancel = on_cancel or (lambda _discarded: None)
         self._window: RasterWindow | None = None
         self._window_extent = None
+        self._shortcuts: list = []
         self._wire: LiveWire | None = None
         self._band = None
         self._preview = None
@@ -394,9 +421,13 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         except Exception as exc:  # noqa: BLE001
             log_debug("activating the vectorize tool", exc)
         self._ensure_bands()
-        self.on_status("Click on a drawn line to start tracing.")
+        self._install_shortcuts()
+        self.on_status(
+            "Click a drawn line to start. Shift-click for a straight segment, "
+            "Ctrl+Z to take one back, Enter to finish, Esc to cancel.")
 
     def deactivate(self) -> None:
+        self._remove_shortcuts()
         self._clear_bands()
         self.session.cancel()
         self._wire = None
@@ -442,18 +473,25 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
 
         key = event.key()
         if key == enum_member(Qt, "Key", "Key_Escape"):
-            outcome = self.session.cancel()
-            self._clear_bands()
-            self.on_status("Tracing cancelled.")
-            self.on_cancel(int(outcome["discarded"]))
+            # Two stages, because one key doing two jobs at once is how people
+            # lose work: the first Escape abandons the shape in progress and
+            # leaves the tool armed for the next one, and only an Escape with
+            # nothing in progress puts the tool away.
+            if self.session.started:
+                outcome = self.session.cancel()
+                self._clear_bands()
+                self.on_status(
+                    "Shape abandoned. Click a line to start another, or press "
+                    "Esc again to put the tracer away.")
+                self._reseed_cleared()
+                _ = outcome
+                return
+            self.on_status("Tracer closed.")
+            self.on_cancel(0)
             return
-        if key == enum_member(Qt, "Key", "Key_Backspace"):
-            if self.session.undo():
-                self._redraw_committed()
-                self._reseed()
-                self.on_status("Last stretch removed.")
-            else:
-                self.on_status("Nothing to undo yet.")
+        if key in (enum_member(Qt, "Key", "Key_Backspace"),
+                   enum_member(Qt, "Key", "Key_Delete")):
+            self._undo_stretch()
             return
         if key in (enum_member(Qt, "Key", "Key_Return"),
                    enum_member(Qt, "Key", "Key_Enter")):
@@ -486,6 +524,17 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         self.session.commit(points, traced=True, bridged_px=result.bridged_px)
         self._redraw_committed()
         self._reseed()
+
+    def _reseed_cleared(self) -> None:
+        """Forget the search after a shape is abandoned.
+
+        The wire is anchored to a point that no longer belongs to anything, and
+        leaving it would let the next cursor move draw a preview from the shape
+        the user just gave up on.
+        """
+        self._wire = None
+        self._window = None
+        self._window_extent = None
 
     def _canvas_has_moved(self) -> bool:
         """Has the view changed since the window was read?"""
@@ -550,6 +599,75 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         """
         crs = self.canvas.mapSettings().destinationCrs()
         return str(crs.authid()) if crs.isValid() else ""
+
+    # -- keys --------------------------------------------------------------
+
+    def _install_shortcuts(self) -> None:
+        """Own Ctrl+Z and Ctrl+Shift+Z while the canvas is armed.
+
+        A map tool cannot get these through keyPressEvent. Undo is a QAction on
+        the QGIS main window with a window-level shortcut context, and Qt gives
+        that action the key before the focus widget ever sees it -- so a tool
+        that handles Ctrl+Z in keyPressEvent silently never runs, and the user
+        gets the LAYER undo in the middle of a shape they have not finished.
+
+        A shortcut owned by the canvas with WidgetWithChildrenShortcut context
+        wins while the canvas has focus, and is deleted the moment the tool is
+        put away so QGIS gets its own undo back.
+        """
+        from qgis.PyQt.QtCore import Qt
+        from qgis.PyQt.QtGui import QKeySequence
+        from qgis.PyQt.QtWidgets import QShortcut
+
+        self._remove_shortcuts()
+        context = enum_member(Qt, "ShortcutContext", "WidgetWithChildrenShortcut")
+        for sequence, handler in (
+            (enum_member(QKeySequence, "StandardKey", "Undo"), self._undo_stretch),
+            (enum_member(QKeySequence, "StandardKey", "Redo"), self._redo_stretch),
+        ):
+            try:
+                shortcut = QShortcut(QKeySequence(sequence), self.canvas)
+                shortcut.setContext(context)
+                shortcut.activated.connect(handler)
+                self._shortcuts.append(shortcut)
+            except Exception as exc:  # noqa: BLE001 - Backspace still works
+                log_debug("installing a tracer shortcut", exc)
+
+    def _remove_shortcuts(self) -> None:
+        for shortcut in getattr(self, "_shortcuts", []):
+            try:
+                shortcut.setEnabled(False)
+                shortcut.setParent(None)
+            except Exception as exc:  # noqa: BLE001
+                log_debug("removing a tracer shortcut", exc)
+        self._shortcuts = []
+
+    def _undo_stretch(self) -> None:
+        """Ctrl+Z and Backspace, and what to say when there is nothing left.
+
+        With no stretch in the current shape this deliberately does NOT fall
+        through to the layer undo. A user mid-shape pressing undo means the
+        stretch they just traced; removing a feature they finished ten minutes
+        ago instead would be the worst possible reading of the key.
+        """
+        if not self.session.started:
+            self.on_status("Nothing is being traced. Click a line to start.")
+            return
+        if self.session.undo():
+            self._redraw_committed()
+            self._reseed()
+            self.on_status("Took back one stretch. Ctrl+Shift+Z puts it back.")
+        else:
+            self.on_status(
+                "Nothing left to take back in this shape. Esc abandons it.")
+
+    def _redo_stretch(self) -> None:
+        if self.session.redo():
+            self._redraw_committed()
+            self._reseed()
+            self.on_status("Stretch restored.")
+        else:
+            self.on_status("Nothing to put back.")
 
     # -- rubber bands ------------------------------------------------------
 

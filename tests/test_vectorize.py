@@ -306,3 +306,65 @@ class TestColourSheets:
             np.array([[255.0, 0.0]]), np.array([[0.0, 0.0]]), np.array([[0.0, 255.0]]))
         assert float(response.min()) >= 0.0
         assert float(response.max()) <= 255.0
+
+
+class TestUndoAndRedo:
+    """Undo has to be safe to press, or people stop pressing it.
+
+    The founder feedback that produced this was one line: the tool works and
+    the undo UX is painful. Undo without redo makes the key feel dangerous, so
+    a user clicks around a mistake instead of taking it back, and the shape
+    they end up with is worse than the one they were trying to fix.
+    """
+
+    def _two_stretch_session(self):
+        session = vectorize.TraceSession()
+        session.start(0.0, 0.0)
+        session.commit([(0.0, 0.0), (1.0, 0.0)], traced=True)
+        session.commit([(1.0, 0.0), (2.0, 0.0)], traced=True)
+        return session
+
+    def test_a_stretch_taken_back_can_be_put_back(self):
+        session = self._two_stretch_session()
+        assert session.undo() is True
+        assert session.can_redo is True
+        assert session.redo() is True
+        assert session.vertices() == [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]
+        assert session.anchor_map == (2.0, 0.0)
+
+    def test_redo_with_nothing_undone_says_so(self):
+        assert self._two_stretch_session().redo() is False
+
+    def test_tracing_after_an_undo_clears_the_redo_stack(self):
+        """As in every editor: new work makes the old redo meaningless."""
+        session = self._two_stretch_session()
+        session.undo()
+        assert session.can_redo is True
+        session.commit([(1.0, 0.0), (9.0, 9.0)], traced=True)
+        assert session.can_redo is False
+
+    def test_undo_all_the_way_back_leaves_the_shape_empty_not_broken(self):
+        session = self._two_stretch_session()
+        assert session.undo() and session.undo()
+        assert session.can_undo is False
+        assert session.vertices() == []
+        assert session.started            # the anchor survives; the shape does not
+
+    def test_finishing_clears_what_could_be_redone(self):
+        """A stored shape must not be reachable through the next one's redo."""
+        session = self._two_stretch_session()
+        session.undo()
+        session.finish()
+        assert session.can_redo is False
+
+    def test_cancelling_clears_it_too(self):
+        session = self._two_stretch_session()
+        session.undo()
+        session.cancel()
+        assert session.can_redo is False
+
+    def test_starting_a_shape_clears_the_previous_redo(self):
+        session = self._two_stretch_session()
+        session.undo()
+        session.start(5.0, 5.0)
+        assert session.can_redo is False
