@@ -640,6 +640,41 @@ _POINT_PAIR = {
     "from_lon": {"type": "number", "required": True, "min": -180, "max": 180},
 }
 
+# One position, written every way somebody else's system asks for it. The
+# precision is the caller's: an MGRS reference truncated to three digits is a
+# 100 m square, and handing back five when three were asked for claims a
+# precision the request did not.
+_c("coordinate.write@1", "survey", "Write a position as DMS, UTM and MGRS.",
+   params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "mgrs_digits": {"type": "integer", "min": 0, "max": 5, "default": 5},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+# Reading is where the refusal lives: a coordinate with no sign and no
+# hemisphere is a position AND its mirror image.
+_c("coordinate.read@1", "survey", "Read a coordinate written in degrees, minutes and seconds.",
+   params={"latitude": {"type": "string", "required": True},
+           "longitude": {"type": "string", "required": True}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+# The two factors are reported apart because they are different problems: a
+# discrepancy at a zone edge is fixed by a projection and one on a mountain by
+# a height.
+_c("survey.scale_factor@1", "survey", "Grid scale, elevation factor and their combination at a point.",
+   params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "height_m": {"type": "number", "min": -500, "max": 20000, "default": 0},
+           "height_reference": {"type": "string",
+                                "enum": ["orthometric", "ellipsoidal"],
+                                "default": "orthometric"},
+           "geoid_separation_m": {"type": "number", "min": -200, "max": 200, "default": 0},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("survey.inverse@1", "survey", "Bearing and distance between two coordinates, on a named ellipsoid.",
    params=dict(_POINT_PAIR, **_ELLIPSOID, **{
        "to_lat": {"type": "number", "required": True, "min": -90, "max": 90},

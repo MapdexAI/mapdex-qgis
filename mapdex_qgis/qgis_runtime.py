@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from ._vendor.nivo import analytics, postgis, presentation, spatial, survey
+from ._vendor.nivo import analytics, coordinates, postgis, presentation, spatial, survey
 from ._vendor.nivo.capabilities import CapabilityError
 from .guard import log_debug
 
@@ -1803,6 +1803,25 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         # arithmetic over numbers in the request, so they answer with the
         # project closed and the network down, and they can be tested without
         # a QGIS at all.
+        "coordinate.write@1": lambda p: {
+            "lat": p["lat"], "lon": p["lon"],
+            "dms": {"latitude": coordinates.format_dms(p["lat"], True),
+                    "longitude": coordinates.format_dms(p["lon"], False)},
+            "utm": coordinates.to_utm(
+                p["lat"], p["lon"], survey.ellipsoid_by_name(p.get("ellipsoid"))),
+            "mgrs": coordinates.to_mgrs(
+                p["lat"], p["lon"], int(p.get("mgrs_digits", 5)),
+                survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        },
+        "coordinate.read@1": lambda p: {
+            "lat": coordinates.parse_dms(p["latitude"]),
+            "lon": coordinates.parse_dms(p["longitude"]),
+        },
+        "survey.scale_factor@1": lambda p: coordinates.combined_scale(
+            p["lat"], p["lon"], float(p.get("height_m", 0)),
+            str(p.get("height_reference", "orthometric")),
+            float(p.get("geoid_separation_m", 0)),
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "survey.inverse@1": lambda p: survey.inverse(
             p["from_lat"], p["from_lon"], p["to_lat"], p["to_lon"],
             survey.ellipsoid_by_name(p.get("ellipsoid"))),
