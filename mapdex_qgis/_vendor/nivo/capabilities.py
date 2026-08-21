@@ -644,6 +644,25 @@ _POINT_PAIR = {
 # precision is the caller's: an MGRS reference truncated to three digits is a
 # 100 m square, and handing back five when three were asked for claims a
 # precision the request did not.
+# Which paths exist between two datums and how good each one is. A
+# reprojection between datums is not one operation with one answer: PROJ
+# usually knows several, they differ by metres, and which one runs depends on
+# whether a grid file is installed.
+# Contradictions only: a file whose declared system cannot hold the numbers in
+# it is wrong whatever anyone intended, and saying so needs no external
+# knowledge. Guessing what the system SHOULD be needs a hint, and without one a
+# ranked list of candidates is a list of coincidences.
+_c("crs.diagnose@1", "survey", "Check whether a layer's declared reference system can hold its coordinates.",
+   params=dict(_LAYER),
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("crs.transformations@1", "survey", "List the datum transformations between two systems, with their accuracies.",
+   params={"source_crs": {"type": "string", "required": True},
+           "target_crs": {"type": "string", "required": True}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("coordinate.write@1", "survey", "Write a position as DMS, UTM and MGRS.",
    params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "lon": {"type": "number", "required": True, "min": -180, "max": 180},

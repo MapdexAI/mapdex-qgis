@@ -1563,6 +1563,133 @@ class QGISRuntime:
             "features": layer.featureCount(), "bytes": os.path.getsize(path),
         }
 
+    def diagnose_layer_crs(self, layer_id: str) -> dict[str, Any]:
+        """Whether a layer's declared reference system can hold its coordinates.
+
+        Contradictions only. Guessing what the system SHOULD be is a different
+        question that needs a hint - a place, an expected extent - and without
+        one a ranked list of candidates is a list of coincidences.
+
+        QGIS supplies the facts, `crs_diagnose` decides. Keeping the rules in a
+        module with no QGIS import is what lets them be tested at all: the
+        interesting cases are coordinates nobody has a project for.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsCoordinateReferenceSystem,
+            QgsCoordinateTransform,
+            QgsProject,
+        )
+
+        from ._vendor.nivo import crs_diagnose
+
+        layer = self.vector(layer_id)
+        crs = layer.crs()
+        extent = layer.extent()
+        if extent.isEmpty():
+            raise CapabilityError(
+                "that layer has no extent to check: it may be empty")
+        bounds = (extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum())
+
+        declared = crs.authid() if crs.isValid() else ""
+        kind = None
+        if crs.isValid():
+            kind = "geographic" if crs.isGeographic() else "projected"
+
+        area = None
+        wgs84_bounds = None
+        if crs.isValid():
+            try:
+                box = crs.bounds()
+                if not box.isEmpty():
+                    area = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
+            except Exception:  # noqa: BLE001 - a CRS without bounds is not fatal
+                area = None
+            try:
+                wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+                transform = QgsCoordinateTransform(crs, wgs84, QgsProject.instance())
+                projected = transform.transformBoundingBox(extent)
+                if not projected.isEmpty():
+                    wgs84_bounds = (projected.xMinimum(), projected.yMinimum(),
+                                    projected.xMaximum(), projected.yMaximum())
+            except Exception:  # noqa: BLE001 - an untransformable extent is a finding, not a crash
+                wgs84_bounds = None
+
+        findings = crs_diagnose.contradictions(bounds, kind, area, wgs84_bounds)
+        return {
+            "kind": "crs_diagnosis",
+            "layer_id": layer.id(),
+            "declared_crs": declared,
+            "crs_kind": kind,
+            "bounds": list(bounds),
+            "findings": findings,
+            "verdict": crs_diagnose.verdict(declared, findings),
+        }
+
+    def datum_transformations(self, source_crs: str, target_crs: str,
+                             lat: float = 0.0, lon: float = 0.0) -> dict[str, Any]:
+        """Which paths exist between two systems, and how good each one is.
+
+        A reprojection between datums is not one operation with one answer: PROJ
+        usually knows several, they differ by metres, and which one runs depends
+        on whether a grid file is installed. Applying one silently and reporting
+        success is how a survey moves by two metres between two people who both
+        think they used "the same" transformation.
+
+        So this reports the CANDIDATES with their accuracies and says which are
+        actually available here. An operation whose grid is missing is listed as
+        unavailable rather than omitted: knowing that the good path exists and
+        is not installed is what tells a surveyor to go and fetch it, and
+        hiding it leaves them accepting a worse answer without knowing there
+        was a better one.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsCoordinateReferenceSystem,
+            QgsDatumTransform,
+        )
+
+        source = QgsCoordinateReferenceSystem(str(source_crs or "").strip())
+        target = QgsCoordinateReferenceSystem(str(target_crs or "").strip())
+        if not source.isValid():
+            raise CapabilityError("{} is not a coordinate reference system QGIS knows".format(source_crs))
+        if not target.isValid():
+            raise CapabilityError("{} is not a coordinate reference system QGIS knows".format(target_crs))
+
+        operations = []
+        try:
+            candidates = QgsDatumTransform.operations(source, target)
+        except Exception as error:  # noqa: BLE001 - PROJ may raise anything
+            raise CapabilityError("PROJ could not list the transformations: {}".format(error))
+        for candidate in candidates:
+            accuracy = getattr(candidate, "accuracy", -1.0)
+            missing = [
+                {"name": getattr(grid, "shortName", ""), "url": getattr(grid, "url", ""),
+                 "available": bool(getattr(grid, "isAvailable", False))}
+                for grid in (getattr(candidate, "grids", None) or [])
+                if not getattr(grid, "isAvailable", False)
+            ]
+            operations.append({
+                "name": getattr(candidate, "name", ""),
+                "proj": getattr(candidate, "proj", ""),
+                # PROJ reports -1 when it does not know, and that is NOT zero
+                # metres. Reporting an unknown accuracy as perfect is the
+                # specific lie this capability exists to prevent.
+                "accuracy_m": accuracy if accuracy is not None and accuracy >= 0 else None,
+                "available": bool(getattr(candidate, "isAvailable", True)),
+                "missing_grids": missing,
+            })
+
+        # PROJ orders by preference, so the first available one is what a
+        # reprojection would actually use.
+        chosen = next((op for op in operations if op["available"]), None)
+        return {
+            "kind": "datum_transformations",
+            "source_crs": source.authid() or str(source_crs),
+            "target_crs": target.authid() or str(target_crs),
+            "operations": operations,
+            "would_use": chosen,
+            "count": len(operations),
+        }
+
     def show_layer_legend(self, layer_id: str, visible: bool = True) -> dict[str, Any]:
         """Expand or collapse a layer's classes in the legend.
 
@@ -1978,6 +2105,9 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "export.layer@1": lambda p: runtime.export_layer(
             p["layer_id"], p.get("target_format", "gpkg"),
         ),
+        "crs.diagnose@1": lambda p: runtime.diagnose_layer_crs(p["layer_id"]),
+        "crs.transformations@1": lambda p: runtime.datum_transformations(
+            p["source_crs"], p["target_crs"]),
         "map.legend@1": lambda p: runtime.show_layer_legend(
             p["layer_id"], bool(p.get("visible", True))),
         "field.import_points@1": lambda p: runtime.import_field_points(
