@@ -1555,6 +1555,130 @@ class QGISRuntime:
             "features": layer.featureCount(), "bytes": os.path.getsize(path),
         }
 
+    def show_layer_legend(self, layer_id: str, visible: bool = True) -> dict[str, Any]:
+        """Expand or collapse a layer's classes in the legend.
+
+        QGIS has no separate legend to open: the layer tree IS the legend, and
+        it is always on screen. What a person asking to "show the legend" wants
+        is the CLASSES under the layer - the colours and their labels - which
+        are collapsed by default on a categorized or graduated layer and are
+        the part that explains the map.
+
+        Returning the entries as well as setting the state means the assistant
+        can read the legend back rather than only toggling it, which is what a
+        question like "what do these colours mean" actually needs.
+        """
+        from qgis.core import QgsProject  # noqa: PLC0415
+
+        layer = self.vector(layer_id)
+        root = QgsProject.instance().layerTreeRoot()
+        node = root.findLayer(layer.id())
+        if node is None:
+            raise CapabilityError("that layer is not in the project's layer tree")
+        node.setExpanded(bool(visible))
+
+        entries = []
+        try:
+            renderer = layer.renderer()
+            for item in renderer.legendSymbolItems():
+                entries.append({"label": item.label(), "key": item.ruleKey()})
+        except Exception:  # noqa: BLE001 - a renderer without legend items is not fatal
+            entries = []
+        return {
+            "kind": "legend",
+            "layer_id": layer.id(),
+            "name": layer.name(),
+            "expanded": bool(visible),
+            "entries": entries,
+        }
+
+    def import_field_points(
+        self,
+        path: str,
+        crs: str,
+        easting_field: str,
+        northing_field: str,
+        name: str = "",
+        elevation_field: str = "",
+        delimiter: str = "",
+    ) -> dict[str, Any]:
+        """A total station's point list, as a layer, with nothing guessed.
+
+        The reference system is REQUIRED. A field point list is eastings and
+        northings in some projected system, and the one thing that cannot be
+        recovered from the numbers is which. QGIS's delimited-text provider is
+        happy to be told EPSG:4326 and will place a survey in the Gulf of
+        Guinea; refusing is the only honest answer to a file that does not say.
+
+        The columns are named by the caller for the same reason. `X` and `Y`,
+        `E` and `N`, `Sag` and `Yukari` - the header is whatever the instrument
+        wrote, and picking one by position puts northings in the easting.
+        """
+        import os  # noqa: PLC0415
+
+        from qgis.core import (  # noqa: PLC0415
+            QgsCoordinateReferenceSystem,
+            QgsProject,
+            QgsVectorLayer,
+        )
+
+        source = str(path or "").strip()
+        if not source or not os.path.exists(source):
+            raise CapabilityError("no file at {}".format(source or "(no path given)"))
+        reference = str(crs or "").strip()
+        if not reference:
+            raise CapabilityError(
+                "a coordinate reference system is required: a point list's numbers "
+                "cannot say which system they are in")
+        system = QgsCoordinateReferenceSystem(reference)
+        if not system.isValid():
+            raise CapabilityError("{} is not a coordinate reference system QGIS knows".format(reference))
+        easting = str(easting_field or "").strip()
+        northing = str(northing_field or "").strip()
+        if not easting or not northing:
+            # Naming one and not the other is refused rather than half-applied:
+            # a guess for the second one is a guess about which axis is which.
+            raise CapabilityError("both the easting and the northing column must be named")
+
+        options = [
+            "type=csv",
+            "xField={}".format(easting),
+            "yField={}".format(northing),
+            "crs={}".format(system.authid() or reference),
+            "spatialIndex=no",
+            "subsetIndex=no",
+            "watchFile=no",
+        ]
+        if delimiter:
+            options.insert(1, "delimiter={}".format(delimiter))
+        uri = "file://{}?{}".format(os.path.abspath(source), "&".join(options))
+
+        label = str(name or "").strip() or os.path.splitext(os.path.basename(source))[0]
+        layer = QgsVectorLayer(uri, label, "delimitedtext")
+        if not layer.isValid():
+            raise CapabilityError(
+                "QGIS could not read {} as a point list. Check the delimiter and that "
+                "{} and {} are column names in it.".format(
+                    os.path.basename(source), easting, northing))
+        count = layer.featureCount()
+        if count == 0:
+            # A layer with no points is not an import; reporting success would
+            # leave the user looking for features that were never read.
+            raise CapabilityError(
+                "{} produced no points: the columns may name the wrong fields".format(
+                    os.path.basename(source)))
+        QgsProject.instance().addMapLayer(layer)
+        return {
+            "kind": "field_points_imported",
+            "layer_id": layer.id(),
+            "name": label,
+            "feature_count": count,
+            "crs": system.authid() or reference,
+            "easting_field": easting,
+            "northing_field": northing,
+            "elevation_field": str(elevation_field or "").strip(),
+        }
+
     def calculate_field(
         self,
         layer_id: str,
@@ -1838,6 +1962,12 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "export.layer@1": lambda p: runtime.export_layer(
             p["layer_id"], p.get("target_format", "gpkg"),
         ),
+        "map.legend@1": lambda p: runtime.show_layer_legend(
+            p["layer_id"], bool(p.get("visible", True))),
+        "field.import_points@1": lambda p: runtime.import_field_points(
+            p["path"], p["crs"], p["easting_field"], p["northing_field"],
+            str(p.get("name", "")), str(p.get("elevation_field", "")),
+            str(p.get("delimiter", ""))),
         "field.calculate@1": lambda p: runtime.calculate_field(
             p["layer_id"], p["field"], p["expression"],
             p.get("field_type", "number"), bool(p.get("preview"))),

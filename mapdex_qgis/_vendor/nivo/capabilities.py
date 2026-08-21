@@ -915,6 +915,23 @@ _c("draw.geometry@1", "draw",
 # is parsed by nivo.expressions, a grammar that can only express
 # arithmetic over the layer's own fields. That grammar, not a prompt
 # instruction, is what stops a calculation reaching outside the row.
+# A field point list becoming a layer. The parameter names are the server's
+# `data:field_points@1` vocabulary so one request is one request on both
+# surfaces.
+#
+# `crs` is required and nothing about it is inferred. The numbers in a point
+# list cannot say which projected system they are in, and a provider told the
+# wrong one places a survey in the Gulf of Guinea without complaining.
+_c("field.import_points@1", "field", "Read a coordinate list into a layer, with an explicit reference system.",
+   params={"path": {"type": "string", "required": True},
+           "crs": {"type": "string", "required": True},
+           "easting_field": {"type": "string", "required": True},
+           "northing_field": {"type": "string", "required": True},
+           "elevation_field": {"type": "string"},
+           "name": {"type": "string"},
+           "delimiter": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("layer",), reversible=True,
+   clients=(CLIENT_QGIS,))
 _c("field.calculate@1", "field", "Add a field computed from the layer's existing fields.",
    params={"layer_id": {"type": "string", "required": True},
            "field": {"type": "string", "required": True},
@@ -922,6 +939,13 @@ _c("field.calculate@1", "field", "Add a field computed from the layer's existing
            "field_type": {"type": "string", "enum": ["number", "integer", "text"], "default": "number"}},
    targets=("vector",), risk=RISK_CONSEQUENTIAL, execution=EXEC_LOCAL,
    produces=("layer_change",), reversible=False, previewable=True)
+# The layer tree IS the legend in QGIS, so this expands a layer's classes
+# rather than opening a panel. It hands the entries back as well as setting the
+# state, because "what do these colours mean" is the question underneath.
+_c("map.legend@1", "map", "Show or hide a layer's classes in the legend, and read them back.",
+   params=dict(_LAYER, **{"visible": {"type": "boolean", "default": True}}),
+   execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect", "analysis"),
+   clients=(CLIENT_QGIS,))
 _c("layer.reorder@1", "layer", "Move a layer up or down in the drawing order.",
    params=dict(_LAYER, **{"position": {"type": "string",
                                        "enum": ["top", "bottom", "up", "down"],
