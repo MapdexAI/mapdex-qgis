@@ -352,12 +352,21 @@ _c("analytics.outliers@1", "analytics", "Find unusually high or low values with 
    params=dict(_LAYER, **_FIELD, **{"method": {"type": "string", "enum": ["iqr", "zscore"], "default": "iqr"}}),
    targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+# The parameter names are the SERVER's, deliberately.
+#
+# All three used to differ - `group_field` for `group_by`, `value_field` for
+# `field`, `statistic` for `stat` - so an assistant that learned a grouped
+# aggregation on one surface got every argument wrong on the other, and both
+# registries refuse an unexpected parameter, so the call was rejected outright
+# rather than degraded. `packages/contracts` is the source of truth for the
+# vocabulary (RULES.md), so the desktop adopts it rather than the other way
+# round, and the drift gate no longer has to carry the divergence as accepted.
 _c("analytics.group@1", "analytics", "Aggregate a field by group: count, sum, mean, min, max or median.",
-   params=dict(_LAYER, **{"group_field": {"type": "string", "required": True},
-                          "value_field": {"type": "string"},
-                          "statistic": {"type": "string",
-                                        "enum": ["count", "sum", "mean", "min", "max", "median", "distinct"],
-                                        "default": "count"}}),
+   params=dict(_LAYER, **{"group_by": {"type": "string", "required": True},
+                          "field": {"type": "string"},
+                          "stat": {"type": "string",
+                                   "enum": ["count", "sum", "mean", "min", "max", "median", "distinct"],
+                                   "default": "count"}}),
    targets=("vector",), produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 #
 # Measuring the shape rather than a column. Everything above this line answers a
@@ -420,9 +429,15 @@ _c("spatial.near@1", "spatial", "Select features within a real-world distance of
            "unit": {"type": "string", "enum": ["m", "km", "ft", "mi"], "default": "m"}},
    targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+# `k` rather than `limit`, for the same reason the grouped aggregation adopted
+# the server's names: an assistant that learned one surface should not have to
+# unlearn the count's name on the other. What remains different is real and not
+# a spelling - the server takes an explicit lon/lat and the desktop takes the
+# point from the current selection, because a QGIS user has clicked - and the
+# drift gate carries that difference with its reason.
 _c("spatial.nearest@1", "spatial", "Find the N nearest features to a point or to the current selection.",
    params={"layer_id": {"type": "string", "required": True},
-           "limit": {"type": "integer", "min": 1, "max": 500, "default": 10}},
+           "k": {"type": "integer", "min": 1, "max": 500, "default": 10}},
    targets=("vector",), produces=("analysis", "selection"), reversible=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 

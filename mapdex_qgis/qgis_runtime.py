@@ -1842,8 +1842,11 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             ),
             p["layer_id"],
         ),
+        # The wire names are the server's; the runtime keeps its own signature,
+        # so the adaptation lives here where the boundary is rather than being
+        # spread through the analytics kernel.
         "analytics.group@1": lambda p: runtime.group(
-            p["layer_id"], p["group_field"], p.get("value_field"), p.get("statistic", "count"),
+            p["layer_id"], p["group_by"], p.get("field"), p.get("stat", "count"),
         ),
         "analytics.compare@1": lambda p: runtime.compare(
             p["layer_id"], p["field"], p.get("scope", "selection_vs_all"),
@@ -1862,7 +1865,7 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "spatial.near@1": lambda p: runtime.near(
             p["layer_id"], p["other_layer_id"], p["distance"], p.get("unit", "m"),
         ),
-        "spatial.nearest@1": lambda p: runtime.nearest(p["layer_id"], p.get("limit", 10)),
+        "spatial.nearest@1": lambda p: runtime.nearest(p["layer_id"], p.get("k", 10)),
         "spatial.count_in_polygons@1": lambda p: _visualized_groups(
             runtime,
             runtime.count_in_polygons(p["polygon_layer_id"], p["point_layer_id"], p.get("group_field", "")),
