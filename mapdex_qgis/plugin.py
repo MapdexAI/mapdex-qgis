@@ -2660,6 +2660,12 @@ class MapdexPlugin:
             notice = str(outcome.get("notice") or "")
             budget = budget_label(response)
             self.nivo_status.setText(notice or budget or "Ready")
+        # A computed answer whose output is POSITIONS goes on the canvas. A
+        # bearing is a number and stays in the reply; a traverse is a walk
+        # between stations, and handing somebody six coordinate pairs in a chat
+        # bubble makes them copy the work in by hand, which is the work this
+        # plugin exists to remove.
+        self._draw_survey_result(response)
         self._nivo_action_results = []
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
@@ -2668,6 +2674,86 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
         self._continue_objective(response)
+
+
+    @guarded
+    def _draw_survey_result(self, response):
+        """Put a survey answer's positions on the canvas as memory layers.
+
+        Everything that can be wrong with the payload was decided in
+        `survey_drawing`, which is pure and tested; what is left here is
+        creating the layers. A memory layer, deliberately, for the same reason
+        a drawn shape uses one: it appears immediately and asks nobody for a
+        path or a format while they are in the middle of a question.
+
+        Nothing the user already had is touched, so this is safe rather than
+        consequential and needs no confirmation.
+        """
+        from qgis.core import (  # noqa: PLC0415 - Qt-only import
+            QgsCoordinateReferenceSystem,
+            QgsFeature,
+            QgsField,
+            QgsGeometry,
+            QgsJsonUtils,
+            QgsProject,
+            QgsVectorLayer,
+        )
+        from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415 - Qt-only import
+
+        from .survey_drawing import attribute_names, layer_specs  # noqa: PLC0415
+
+        if not isinstance(response, dict):
+            return
+        specs = layer_specs(response.get("spatial_tool_result"))
+        if not specs:
+            return
+
+        created = []
+        for spec in specs:
+            layer = QgsVectorLayer(
+                "{}?crs=EPSG:4326&index=yes".format(spec.geometry_type),
+                self._unique_layer_name(spec.name), "memory")
+            if not layer.isValid():
+                continue
+            names = attribute_names(spec.features)
+            if names:
+                # Declared before the features go in, and from the UNION of the
+                # properties: a traverse labels its stations unevenly, and
+                # taking the first feature's keys would drop a label.
+                #
+                # Every property is carried as text. A station number is a
+                # number and a label is not, and guessing per column would make
+                # the schema depend on which answer arrived first.
+                text_type = enum_member(QVariant, "Type", "String")
+                layer.dataProvider().addAttributes(
+                    [QgsField(name, text_type) for name in names])
+                layer.updateFields()
+            features = []
+            for entry in spec.features:
+                geometry = QgsGeometry.fromWkt(
+                    QgsJsonUtils.geometryFromGeoJson(json.dumps(entry["geometry"])).asWkt())
+                if geometry.isEmpty():
+                    continue
+                feature = QgsFeature(layer.fields())
+                feature.setGeometry(geometry)
+                for name in names:
+                    value = entry["properties"].get(name)
+                    feature.setAttribute(name, "" if value is None else str(value))
+                features.append(feature)
+            if not features:
+                continue
+            layer.dataProvider().addFeatures(features)
+            layer.updateExtents()
+            QgsProject.instance().addMapLayer(layer)
+            layer.triggerRepaint()
+            created.append(layer)
+
+        if not created:
+            return
+        self.iface.setActiveLayer(created[-1])
+        # The assistant has to learn about the layers in this turn, or the next
+        # question is asked about something it cannot see.
+        self._refresh_nivo_context()
 
     @guarded
     def _continue_objective(self, response):
