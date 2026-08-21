@@ -170,3 +170,34 @@ def attribute_names(features: list[dict]) -> list[str]:
             if text not in names:
                 names.append(text)
     return sorted(names)
+
+
+def drawings_from_run(run: object) -> list[SurveyLayerSpec]:
+    """The survey drawings a completed run produced, if any.
+
+    A planned computation - a traverse, a resection - reaches the desktop
+    through the run rather than through the conversation, and its positions
+    arrive with the step that produced them rather than as a Layer. Nothing is
+    materialized on the server and nothing should be: the answer belongs to the
+    turn rather than to the project. So the run is walked for them here, by the
+    same rules a conversational answer goes through, and a user who asks for a
+    traverse gets the same picture whichever way they asked.
+    """
+    if not isinstance(run, dict):
+        return []
+    steps = run.get("steps")
+    if not isinstance(steps, list):
+        return []
+    specs: list[SurveyLayerSpec] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        drawing = step.get("drawing")
+        if not drawing:
+            continue
+        specs.extend(layer_specs({
+            "render": "drawing",
+            "drawing": drawing,
+            "operation": step.get("operation"),
+        }))
+    return specs

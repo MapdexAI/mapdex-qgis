@@ -2689,8 +2689,21 @@ class MapdexPlugin:
         Nothing the user already had is touched, so this is safe rather than
         consequential and needs no confirmation.
         """
+        from .survey_drawing import layer_specs  # noqa: PLC0415
+
+        if not isinstance(response, dict):
+            return
+        self._create_survey_layers(layer_specs(response.get("spatial_tool_result")))
+
+    @guarded
+    def _create_survey_layers(self, specs):
+        """Create one memory layer per geometry type a survey answer produced.
+
+        Shared by the two ways an answer arrives: a conversational turn and a
+        planned run. A user who asks for a traverse should get the same picture
+        whichever way they asked, and one creation path is how that stays true.
+        """
         from qgis.core import (  # noqa: PLC0415 - Qt-only import
-            QgsCoordinateReferenceSystem,
             QgsFeature,
             QgsField,
             QgsGeometry,
@@ -2700,11 +2713,8 @@ class MapdexPlugin:
         )
         from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415 - Qt-only import
 
-        from .survey_drawing import attribute_names, layer_specs  # noqa: PLC0415
+        from .survey_drawing import attribute_names  # noqa: PLC0415
 
-        if not isinstance(response, dict):
-            return
-        specs = layer_specs(response.get("spatial_tool_result"))
         if not specs:
             return
 
@@ -4453,6 +4463,14 @@ class MapdexPlugin:
         for run_id in run_ids:
             draft = run_id in draft_runs
             run = self.api.run(run_id, project_id)
+            # A survey computation's positions are not a Layer and never will
+            # be: nothing is materialized on the server, because the answer
+            # belongs to the turn rather than to the project. They arrive with
+            # the step that produced them, so they are drawn here rather than
+            # imported below.
+            from .survey_drawing import drawings_from_run  # noqa: PLC0415
+
+            self._create_survey_layers(drawings_from_run(run))
             for layer in collect_layer_imports(run):
                 layer_id = layer["layer_id"]
                 if layer_id in self.imported_layer_ids:

@@ -7,6 +7,7 @@ QGIS.
 from mapdex_qgis.survey_drawing import (
     MAX_FEATURES,
     attribute_names,
+    drawings_from_run,
     layer_specs,
 )
 
@@ -154,3 +155,34 @@ def test_an_unknown_operation_still_draws_under_a_general_name():
     result["operation"] = "some_new_computation"
     specs = layer_specs(result)
     assert specs and specs[0].name.startswith("Survey result")
+
+
+def test_a_completed_run_yields_its_survey_drawings():
+    """A planned traverse reaches the desktop through the run, not the reply."""
+    run = {
+        "id": "run_1",
+        "steps": [
+            {"id": "s1", "name": "data:convert@1", "status": "succeeded"},
+            {
+                "id": "s2",
+                "name": "spatial:cogo@1",
+                "status": "succeeded",
+                "operation": "traverse",
+                "drawing": traverse_result()["drawing"],
+            },
+        ],
+    }
+    specs = drawings_from_run(run)
+    assert {spec.geometry_type for spec in specs} == {"Point", "LineString"}
+    assert all(spec.name.startswith("Traverse") for spec in specs)
+
+
+def test_a_run_with_no_drawing_yields_nothing():
+    for run in (
+        {"id": "run_1", "steps": [{"id": "s1", "name": "data:convert@1"}]},
+        {"id": "run_1", "steps": []},
+        {"id": "run_1"},
+        None,
+        "not a run",
+    ):
+        assert drawings_from_run(run) == []
