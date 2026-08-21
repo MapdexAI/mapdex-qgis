@@ -467,6 +467,15 @@ class MapdexAPI:
     def batch(self, project_id: str, batch_id: str):
         return self._request("GET", f"/v1/batches/{batch_id}", project_id=project_id)
 
+    def cancel_run(self, project_id: str, run_id: str):
+        """Stop a run the panel started.
+
+        The server answers 409 when the run is already terminal, which is the
+        ordinary race between pressing Cancel and the run finishing on its own
+        rather than a fault. The caller reports that as "it already finished".
+        """
+        return self._request("POST", f"/v1/runs/{run_id}/cancel", {}, project_id)
+
     def cancel_batch(self, project_id: str, batch_id: str):
         return self._request("POST", f"/v1/batches/{batch_id}/cancel", {}, project_id)
 

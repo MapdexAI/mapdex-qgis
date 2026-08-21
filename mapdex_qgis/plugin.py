@@ -2311,9 +2311,21 @@ class MapdexPlugin:
             self.nivo_send_button.setEnabled(not busy)
         if self.nivo_input is not None:
             self.nivo_input.setEnabled(not busy)
-        if self.nivo_stop_button is not None:
-            self.nivo_stop_button.setVisible(busy)
-            self.nivo_stop_button.setEnabled(busy)
+        self._refresh_stop_button()
+
+    def _refresh_stop_button(self):
+        """Stop is offered whenever there is something to stop.
+
+        Two things now qualify: a compose stream, and a plan run this panel
+        started. They used to be one, and the run begins after the stream ends,
+        so the control vanished at exactly the moment a person watching credits
+        drain would reach for it.
+        """
+        if self.nivo_stop_button is None:
+            return
+        stoppable = self._nivo_compose_task is not None or bool(self.plan_run_id)
+        self.nivo_stop_button.setVisible(stoppable)
+        self.nivo_stop_button.setEnabled(stoppable)
 
     def assistant_runtime(self) -> dict:
         """Which runtime this turn will actually take, from stored settings.
@@ -2606,6 +2618,9 @@ class MapdexPlugin:
 
     @guarded
     def stop_nivo(self, *args):
+        if self.plan_run_id:
+            self._cancel_plan_run()
+            return
         if self._nivo_compose_task is None:
             return
         self._nivo_request_id += 1
@@ -4327,8 +4342,42 @@ class MapdexPlugin:
             self._say("Mapdex accepted the plan but returned no run to follow.")
             return
         self.plan_run_id = run_id
+        self._refresh_stop_button()
         self._say("Running it in Mapdex now. I will tell you when it finishes.")
         self.plan_timer.start(3000)
+
+    @guarded
+    def _cancel_plan_run(self):
+        """Ask Mapdex to stop the run this panel started.
+
+        Nothing is reported as stopped before the server says so. Announcing it
+        locally and then discovering the run had already finished would tell
+        somebody their work was thrown away when it was delivered.
+        """
+        run_id = self.plan_run_id
+        if not run_id:
+            return
+        project_id = self._active_project_id()
+        self._set_status("Asking Mapdex to stop the run…")
+        self._task(
+            "Cancel Mapdex run",
+            lambda: self.api.cancel_run(project_id, run_id),
+            self._plan_run_cancelled,
+            busy=False,
+        )
+
+    @guarded
+    def _plan_run_cancelled(self, exception, _payload):
+        if exception is not None:
+            # A run that reached a terminal state a moment before the request
+            # answers 409. That is the ordinary race between pressing Stop and
+            # the run finishing, not a fault, and the next poll reports the
+            # real outcome, so nothing is said here beyond letting it land.
+            self._set_status("The run had already finished; showing its result.")
+            return
+        # The poll owns the transition to terminal, so the state is not written
+        # twice from two places.
+        self._say("Cancelling that run in Mapdex.")
 
     @guarded
     def _poll_plan_run(self):
@@ -4355,6 +4404,7 @@ class MapdexPlugin:
         self.plan_timer.stop()
         finished_run = self.plan_run_id
         self.plan_run_id = ""
+        self._refresh_stop_button()
         self._say(report["message"])
         self._set_status("Ready")
         self._nivo_state = transition(
