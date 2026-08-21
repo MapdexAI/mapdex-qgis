@@ -122,6 +122,7 @@ from .panel import build_companion_panel, build_thread_history_dialog
 from ._vendor.nivo.processing import (
     NAMED_GEOPROCESSING_OPERATIONS,
     PROCESSING_OPERATION_CATALOG,
+    PROCESSING_OUTPUT_ORDER,
     build_algorithm_parameters,
     describe_empty_input,
     describe_processing_outcome,
@@ -3347,6 +3348,12 @@ class MapdexPlugin:
             "geoprocessing.centroid@1": self._named_processing_capability("centroid"),
             "geoprocessing.convex_hull@1": self._named_processing_capability("convex_hull"),
             "geoprocessing.reproject@1": self._named_processing_capability("reproject"),
+            "geoprocessing.spatial_join@1": self._named_processing_capability("spatial_join"),
+            "geoprocessing.simplify@1": self._named_processing_capability("simplify"),
+            "geoprocessing.repair@1": self._named_processing_capability("repair"),
+            "geoprocessing.validate@1": self._named_processing_capability("validate"),
+            "geoprocessing.split@1": self._named_processing_capability("split"),
+            "geoprocessing.zonal_statistics@1": self._named_processing_capability("zonal_statistics"),
             # Both read the project's runs through this plugin's API client, so
             # neither can live in the runtime, which has no session and no
             # project. Until they were bound, seeing a job list or opening a
@@ -3960,7 +3967,11 @@ class MapdexPlugin:
                 return
             output_layer = None
             if isinstance(results, dict):
-                for key in ("OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"):
+                # From the shared order rather than a copy of it: this list and
+                # the one the parameters are built from have to name the same
+                # keys, or an output the algorithm was asked to write is never
+                # looked for.
+                for key in PROCESSING_OUTPUT_ORDER:
                     if key in results:
                         val = results[key]
                         if hasattr(val, "isValid") and val.isValid():

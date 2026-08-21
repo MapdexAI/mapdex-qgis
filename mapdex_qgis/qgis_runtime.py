@@ -1982,6 +1982,12 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     "geoprocessing.centroid@1",
     "geoprocessing.convex_hull@1",
     "geoprocessing.reproject@1",
+    "geoprocessing.spatial_join@1",
+    "geoprocessing.simplify@1",
+    "geoprocessing.repair@1",
+    "geoprocessing.validate@1",
+    "geoprocessing.split@1",
+    "geoprocessing.zonal_statistics@1",
     # The two server-side surfaces a desktop user otherwise had to leave QGIS to
     # reach: which runs exist and why one failed, and the review of a run that is
     # waiting on a person. Both need the plugin's API client, its project scope

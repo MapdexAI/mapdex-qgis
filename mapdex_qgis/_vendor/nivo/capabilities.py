@@ -689,6 +689,47 @@ _c("geoprocessing.reproject@1", "geoprocessing", "Rewrite a layer in a different
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
+_c("geoprocessing.spatial_join@1", "geoprocessing", "Attach one layer's attributes to another by where the features sit.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER, **{
+       "predicate": {"type": "string",
+                     "enum": ["intersects", "within", "contains", "overlaps", "touches", "crosses"]}}),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+# The tolerance is the request: without it the algorithm's own default decides
+# how much detail a customer's boundary loses.
+_c("geoprocessing.simplify@1", "geoprocessing", "Reduce the number of vertices, keeping the shape within a tolerance.",
+   params=dict(_LAYER_IN, **{
+       "tolerance": {"type": "number", "required": True, "min": 0, "max": 1_000_000}}),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+# Safe because it writes a NEW layer. The amber risk class the server applies to
+# repair is about strategies that DELETE features; fixing geometry in a copy
+# removes nothing from the original.
+_c("geoprocessing.repair@1", "geoprocessing", "Fix invalid geometry into a new layer, leaving the original alone.",
+   params=dict(_LAYER_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+# Checking is not repairing, and the two are different requests: this one
+# changes nothing and hands back the features that FAILED, which is what a
+# reviewer needs. `geoprocessing.repair@1` is the other half.
+_c("geoprocessing.validate@1", "geoprocessing", "Check geometry validity and hand back the features that fail.",
+   params=dict(_LAYER_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.split@1", "geoprocessing", "Cut every feature along the lines of another layer.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.zonal_statistics@1", "geoprocessing", "Summarize a raster's values inside each polygon of a layer.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector", "raster"), clients=(CLIENT_QGIS,))
+
 _c("processing.discover@1", "processing", "List the installed Processing algorithms that fit an objective.",
    params={"objective": {"type": "string", "required": True}},
    execution=EXEC_LOCAL, produces=("catalog",))

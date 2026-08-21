@@ -33,6 +33,10 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "convex_hull": ("native:convexhull", "qgis:convexhull"),
     "split": ("native:splitwithlines", "qgis:splitwithlines"),
     "zonal_statistics": ("native:zonalstatisticsfb", "qgis:zonalstatistics"),
+    "spatial_join": ("native:joinattributesbylocation", "qgis:joinattributesbylocation"),
+    "simplify": ("native:simplifygeometries", "qgis:simplifygeometries"),
+    "repair": ("native:fixgeometries", "qgis:fixgeometries"),
+    "validate": ("qgis:checkvalidity", "native:checkvalidity"),
 }
 
 # The operations that have a capability of their own rather than being reached
@@ -43,6 +47,7 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
 NAMED_GEOPROCESSING_OPERATIONS: tuple[str, ...] = (
     "buffer", "clip", "intersection", "union", "difference",
     "dissolve", "merge", "centroid", "convex_hull", "reproject",
+    "spatial_join", "simplify", "repair", "validate", "split", "zonal_statistics",
 )
 
 # Operations that combine two layers. Naming them makes the requirement
@@ -52,6 +57,7 @@ NAMED_GEOPROCESSING_OPERATIONS: tuple[str, ...] = (
 TWO_LAYER_OPERATIONS = frozenset({
     "clip", "intersection", "union", "difference", "merge",
     "select_by_location", "nearest_neighbor", "split", "zonal_statistics",
+    "spatial_join",
 })
 
 # Operations that need a destination reference system. Reprojection is the
@@ -61,7 +67,16 @@ TWO_LAYER_OPERATIONS = frozenset({
 # reference system it started in.
 CRS_REQUIRED_OPERATIONS = frozenset({"reproject"})
 
-PROCESSING_OUTPUT_KEYS = frozenset({"OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"})
+# The parameter names an algorithm writes its result to. Ordered rather than a
+# set, because the ORDER decides which layer is loaded when an algorithm writes
+# several: `checkvalidity` writes valid, invalid and error layers, and the
+# invalid one is the answer - loading the features that passed tells a reviewer
+# nothing they can act on.
+PROCESSING_OUTPUT_ORDER: tuple[str, ...] = (
+    "OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER", "INVALID_OUTPUT",
+)
+
+PROCESSING_OUTPUT_KEYS = frozenset(PROCESSING_OUTPUT_ORDER)
 
 # What the person who asked for a buffer calls it. `native:buffer` is how QGIS
 # spells the algorithm internally: it is developer data, it is untranslatable,
@@ -83,6 +98,10 @@ OPERATION_LABELS: dict[str, str] = {
     "convex_hull": "convex hull",
     "split": "split",
     "zonal_statistics": "zonal statistics",
+    "spatial_join": "spatial join",
+    "simplify": "simplification",
+    "repair": "geometry repair",
+    "validate": "geometry check",
 }
 
 
@@ -145,6 +164,14 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         if distance <= 0 or distance > 1000000:
             return {}
         safe["distance"] = distance
+    if "tolerance" in params:
+        try:
+            tolerance = float(params.get("tolerance"))
+        except (TypeError, ValueError):
+            return {}
+        if tolerance <= 0 or tolerance > 1000000:
+            return {}
+        safe["tolerance"] = tolerance
     if "segments" in params:
         try:
             segments = int(params.get("segments"))
@@ -191,6 +218,40 @@ def normalize_crs_reference(value: Any) -> str:
     return "{}:{}".format(authority, code)
 
 
+
+def predicate_index(algorithm: Any, requested: Any) -> int | None:
+    """Where this algorithm keeps the named relationship in its own options.
+
+    Returns None when the algorithm does not offer it. Absent means the
+    algorithm's own first option, which is what a caller who named no
+    relationship is asking for.
+    """
+    name = str(requested or "").strip().lower()
+    options: list[str] = []
+    try:
+        definition = algorithm.parameterDefinition("PREDICATE")
+        options = [str(option).strip().lower() for option in (definition.options() or [])]
+    except Exception:  # noqa: BLE001 - a definition without options is not fatal
+        options = []
+    if not name:
+        return 0
+    if not options:
+        # Nothing to match against. Refusing is right: guessing an index here
+        # is how the constant [0] survived.
+        return None
+    for index, option in enumerate(options):
+        # QGIS spells them "intersect", "are within", "contain"; the contract
+        # spells them "intersects", "within", "contains". Dropping the leading
+        # "are " and letting either string be a prefix of the other matches
+        # every pair exactly, with no character count to get wrong: a first
+        # version compared six-character stems and silently refused "within"
+        # against "are within".
+        candidate = option[4:] if option.startswith("are ") else option
+        if candidate and (name.startswith(candidate) or candidate.startswith(name)):
+            return index
+    return None
+
+
 def resolve_processing_algorithm(registry: Any, operation: str) -> tuple[str, Any] | tuple[str, None]:
     """Resolve a trusted operation name to an installed QGIS algorithm."""
     for algorithm_id in PROCESSING_OPERATION_CATALOG.get(operation, ()):
@@ -229,8 +290,33 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
         payload["LINES"] = params["target_layer"]
     if "FIELD" in names and params.get("field"):
         payload["FIELD"] = params["field"]
+    if "TOLERANCE" in names:
+        # Simplification is entirely this number: without it the algorithm's
+        # own default decides how much detail a customer's boundary loses.
+        payload["TOLERANCE"] = float(params.get("tolerance") or 1.0)
+    if "JOIN" in names and params.get("target_layer"):
+        # `native:joinattributesbylocation` names the second layer JOIN rather
+        # than OVERLAY or INTERSECT.
+        payload["JOIN"] = params["target_layer"]
     if "PREDICATE" in names:
-        payload["PREDICATE"] = [0]
+        # The requested relationship, matched against THIS algorithm's own
+        # option list.
+        #
+        # It used to be the constant [0], so every spatial relationship
+        # question ran as `intersects` whatever was asked - the parameter was
+        # accepted, validated against an enum, and then thrown away. An index
+        # table would not fix it either: `native:selectbylocation` and
+        # `native:joinattributesbylocation` do not order their options the
+        # same way, and the versions move. Reading the live options is the only
+        # way the index means what the name says.
+        index = predicate_index(algorithm, params.get("predicate"))
+        if index is None:
+            # A relationship this algorithm does not offer. Refused by
+            # returning nothing for it, so the caller sees the algorithm
+            # decline rather than a confident answer about a different
+            # relationship.
+            return {}
+        payload["PREDICATE"] = [index]
     for key in PROCESSING_OUTPUT_KEYS:
         if key in names:
             payload[key] = "TEMPORARY_OUTPUT"
