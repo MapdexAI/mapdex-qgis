@@ -921,6 +921,16 @@ _c("terrain.roughness@1", "terrain", "The range of elevation within each cell's 
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
+# The one terrain product that leaves as vector data: a layer of lines a person
+# can style, label and export, rather than a surface they look at.
+_c("terrain.contours@1", "terrain", "Trace contour lines from an elevation surface at a stated height interval.",
+   params={"layer_id": {"type": "string"},
+           "interval": {"type": "number", "required": True, "min": 0.000001, "max": 1000000},
+           "base": {"type": "number"},
+           "band": {"type": "integer", "min": 1, "max": 512}},
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
 _c("geoprocessing.merge@1", "geoprocessing", "Stack two layers into one without changing their shapes.",
    params=dict(_LAYER_IN, **_OTHER_LAYER),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,

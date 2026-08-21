@@ -47,6 +47,9 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "hillshade": ("native:hillshade", "gdal:hillshade"),
     "ruggedness": ("native:ruggednessindex",),
     "roughness": ("gdal:roughness",),
+    # The one terrain product that leaves as VECTOR data, which is why it is not
+    # in TERRAIN_OPERATIONS: it writes a feature layer rather than a surface.
+    "contours": ("gdal:contour",),
 }
 
 # The three terrain measurements that are a RATIO of vertical to horizontal
@@ -129,6 +132,7 @@ OPERATION_LABELS: dict[str, str] = {
     "hillshade": "hillshade",
     "ruggedness": "ruggedness index",
     "roughness": "surface roughness",
+    "contours": "contour lines",
 }
 
 
@@ -221,6 +225,19 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         if tolerance <= 0 or tolerance > 1000000:
             return {}
         safe["tolerance"] = tolerance
+    if operation == "contours":
+        try:
+            interval = float(params.get("interval"))
+        except (TypeError, ValueError):
+            return {}
+        if interval <= 0 or interval > 1_000_000:
+            return {}
+        safe["interval"] = interval
+        if "base" in params:
+            try:
+                safe["base"] = float(params.get("base"))
+            except (TypeError, ValueError):
+                return {}
     if "z_factor" in params:
         try:
             z_factor = float(params.get("z_factor"))
@@ -355,6 +372,18 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
         payload["LINES"] = params["target_layer"]
     if "FIELD" in names and params.get("field"):
         payload["FIELD"] = params["field"]
+    if "INTERVAL" in names:
+        # The height between lines. There is no sensible default - 10 m is right
+        # for a hillside and absurd for a building site - so the absence of one
+        # is refused by safe_processing_params before this is reached.
+        payload["INTERVAL"] = float(params.get("interval") or 0)
+    if "OFFSET" in names and params.get("base") is not None:
+        # gdal:contour spells the base OFFSET.
+        payload["OFFSET"] = float(params["base"])
+    if "FIELD_NAME" in names:
+        # Without it the lines carry no elevation, which is most of what a
+        # contour is for: nobody can label them.
+        payload["FIELD_NAME"] = "elevation"
     if "Z_FACTOR" in names:
         # How many horizontal units one vertical unit is. 1.0 means the
         # elevation is already in the horizontal unit; a surface in feet on a

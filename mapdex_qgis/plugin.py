@@ -3363,6 +3363,7 @@ class MapdexPlugin:
             "terrain.hillshade@1": self._named_processing_capability("hillshade"),
             "terrain.ruggedness@1": self._named_processing_capability("ruggedness"),
             "terrain.roughness@1": self._named_processing_capability("roughness"),
+            "terrain.contours@1": self._named_processing_capability("contours"),
             # Both read the project's runs through this plugin's API client, so
             # neither can live in the runtime, which has no session and no
             # project. Until they were bound, seeing a job list or opening a
