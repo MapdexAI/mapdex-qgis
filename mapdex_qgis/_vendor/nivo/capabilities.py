@@ -698,6 +698,31 @@ _c("survey.traverse@1", "survey", "Walk a traverse and report its misclosure and
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
+_c("survey.intersect@1", "survey", "Fix a point from two bearings, on the ellipsoid.",
+   params={"first_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "first_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "first_azimuth_deg": {"type": "number", "required": True, "min": -360, "max": 360},
+           "second_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "second_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "second_azimuth_deg": {"type": "number", "required": True, "min": -360, "max": 360},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+# Station and offset. A point past the end of the line is reported as past the
+# end rather than clamped to the endpoint: it is a real measurement and the
+# surveyor needs to know where it actually fell.
+_c("survey.station_offset@1", "survey", "How far along a line a point sits, and how far off it.",
+   params={"start_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "start_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "end_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "end_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "point_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "point_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("survey.closure@1", "survey", "Close a deed description and report its area and misclosure.",
    params=dict(_ELLIPSOID, **{"legs": {"type": "legs", "required": True}}),
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,

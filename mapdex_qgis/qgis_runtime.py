@@ -20,7 +20,15 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from ._vendor.nivo import analytics, coordinates, postgis, presentation, spatial, survey
+from ._vendor.nivo import (
+    analytics,
+    coordinates,
+    intersect,
+    postgis,
+    presentation,
+    spatial,
+    survey,
+)
 from ._vendor.nivo.capabilities import CapabilityError
 from .guard import log_debug
 
@@ -1954,6 +1962,14 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "survey.traverse@1": lambda p: survey.traverse(
             p["from_lat"], p["from_lon"], p["legs"], bool(p.get("closed")),
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.intersect@1": lambda p: intersect.intersect_bearings(
+            p["first_lat"], p["first_lon"], p["first_azimuth_deg"],
+            p["second_lat"], p["second_lon"], p["second_azimuth_deg"],
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.station_offset@1": lambda p: intersect.project_onto_line(
+            p["start_lat"], p["start_lon"], p["end_lat"], p["end_lon"],
+            p["point_lat"], p["point_lon"],
             survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "survey.closure@1": lambda p: survey.closure(
             p["legs"], survey.ellipsoid_by_name(p.get("ellipsoid"))),

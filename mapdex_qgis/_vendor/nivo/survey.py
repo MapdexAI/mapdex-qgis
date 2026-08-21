@@ -172,9 +172,15 @@ def inverse(from_lat: float, from_lon: float, to_lat: float, to_lon: float,
 
 def forward(lat: float, lon: float, azimuth_deg: float, distance_m: float,
             ellipsoid: Ellipsoid = WGS84) -> dict[str, Any]:
-    """The point at an azimuth and distance: setting out."""
-    if distance_m < 0:
-        raise SurveyError("distance must not be negative")
+    """The point at an azimuth and distance: setting out.
+
+    A NEGATIVE distance walks backwards along the azimuth, and that is not a
+    mistake to guard against here: a station before the start of a line is
+    exactly that, and `project_onto_line` depends on it. A guard added here
+    refused a legitimate internal caller while the capability declaration
+    already bounds what a person can ask for, which is the layer the bound
+    belongs at.
+    """
     a, f = ellipsoid.a, ellipsoid.f
     b = ellipsoid.b
 
