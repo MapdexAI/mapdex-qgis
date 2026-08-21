@@ -552,10 +552,29 @@ _c("style.single@1", "style", "Apply a single symbol with a colour, stroke and s
                           "size": {"type": "number", "min": 0, "max": 50},
                           "opacity": {"type": "number", "min": 0, "max": 100}}),
    execution=EXEC_CLIENT_UI, reversible=True, previewable=True, produces=("map_effect",))
-_c("style.labels@1", "style", "Label a layer from one of its existing fields.",
+# The halo is on by default and its colour is COMPUTED from the text colour.
+# QGIS labels a layer with plain text and no halo, which is legible on a white
+# page and invisible over a satellite basemap, a hillshade or a choropleth - and
+# a person asking to label a layer is asking to be able to read the labels.
+_c("style.labels@1", "style", "Label a layer from one of its existing fields, legibly: "
+   "a contrasting halo by default and a placement chosen for the geometry.",
    params=dict(_LAYER, **{"field": {"type": "string", "required": True},
                           "size": {"type": "number", "min": 4, "max": 48, "default": 9},
-                          "enabled": {"type": "boolean", "default": True}}),
+                          "enabled": {"type": "boolean", "default": True},
+                          "color": {"type": "string"},
+                          "halo": {"type": "boolean", "default": True},
+                          "halo_size": {"type": "number", "min": 0.2, "max": 3},
+                          "halo_color": {"type": "string"},
+                          "placement": {"type": "string"}}),
+   execution=EXEC_CLIENT_UI, reversible=True, previewable=True, produces=("map_effect",),
+   clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+# Scale-dependent visibility. A layer drawn at every zoom is what turns a city
+# map into a smear of labels.
+_c("layer.scale_range@1", "layer", "Draw a layer only between two map scales.",
+   params=dict(_LAYER, **{
+       "minimum_scale": {"type": "number", "required": True, "min": 1, "max": 500000000},
+       "maximum_scale": {"type": "number", "required": True, "min": 1, "max": 500000000}}),
    execution=EXEC_CLIENT_UI, reversible=True, previewable=True, produces=("map_effect",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("style.raster@1", "style", "Set raster band rendering, stretch and opacity.",

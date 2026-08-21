@@ -46,6 +46,176 @@ DEFAULT_SEQUENTIAL = "Viridis"
 DEFAULT_CATEGORICAL = "Categorical"
 
 
+# -- Label legibility ---------------------------------------------------------
+#
+# The single cartographic decision that matters most and that no default makes
+# for you. QGIS labels a layer with plain text and no halo, which is legible on
+# a white page and unreadable the moment the map has a satellite basemap, a
+# hillshade, or a choropleth under it - which is to say, on every map anybody
+# publishes. Adding one is not a preference; it is the difference between a map
+# and a screenshot.
+
+# Placements a caller may ask for. Closed, and each is the sensible arrangement
+# for one geometry kind: a road label follows the road, a parcel label sits
+# inside the parcel, a point label sits beside the point.
+LABEL_PLACEMENTS = ("around_point", "over_point", "along_line", "horizontal", "inside_polygon")
+
+GEOMETRY_DEFAULT_PLACEMENT = {
+    "point": "around_point",
+    "line": "along_line",
+    "polygon": "horizontal",
+}
+
+# Millimetres. Under about 0.2 the halo stops separating the glyph from what is
+# behind it; over about 3 it becomes a blob with a letter in it.
+MIN_HALO_MM = 0.2
+MAX_HALO_MM = 3.0
+DEFAULT_HALO_MM = 1.0
+
+DEFAULT_LABEL_COLOR = "#1A1A1A"
+
+
+def _channel(value: float) -> float:
+    """One sRGB channel, linearised. The step every luminance formula needs."""
+    value = value / 255.0
+    return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+
+def relative_luminance(color: str) -> float:
+    """WCAG relative luminance of a hex colour, 0 for black and 1 for white.
+
+    The coefficients are the standard ones and are not interchangeable with a
+    simple average: the eye is far more sensitive to green than to blue, so
+    averaging calls pure blue a mid-tone and puts a white halo on it.
+    """
+    text = str(color or "").strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(character * 2 for character in text)
+    if len(text) != 6:
+        raise ValueError("a colour must be a hex triple, got {!r}".format(color))
+    try:
+        red, green, blue = (int(text[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        raise ValueError("a colour must be a hex triple, got {!r}".format(color)) from None
+    return 0.2126 * _channel(red) + 0.7152 * _channel(green) + 0.0722 * _channel(blue)
+
+
+def contrasting_halo(color: str) -> str:
+    """The halo colour for this text, computed rather than asked for.
+
+    Dark text takes a white halo and light text a near-black one. This is the
+    decision a cartographer makes without thinking and that a form never asks,
+    so making it here is most of the value: a caller who says nothing about the
+    halo still gets a legible label.
+
+    The threshold is 0.5 rather than a WCAG contrast ratio because both
+    candidates are fixed - the question is only which of two is further away,
+    and luminance answers it directly.
+    """
+    return "#FFFFFF" if relative_luminance(color) < 0.5 else "#1A1A1A"
+
+
+def label_settings(
+    field: str,
+    size: float = 9.0,
+    color: str = DEFAULT_LABEL_COLOR,
+    halo: bool = True,
+    halo_size_mm: Any = None,
+    halo_color: str = "",
+    placement: str = "",
+    geometry: str = "",
+) -> dict[str, Any]:
+    """A complete, legible label specification from what little a caller said.
+
+    Pure, so both surfaces can be tested without a canvas and can be checked
+    against each other.
+
+    The halo defaults to ON. That reverses QGIS's own default deliberately: its
+    default produces text that disappears over any basemap, and a person asking
+    to label a layer is asking to be able to read the labels.
+    """
+    if not str(field or "").strip():
+        raise ValueError("a label needs a field to read")
+    size = max(4.0, min(48.0, float(size)))
+    color = str(color or DEFAULT_LABEL_COLOR).strip() or DEFAULT_LABEL_COLOR
+    relative_luminance(color)  # refuses a colour that is not a hex triple
+
+    resolved_placement = str(placement or "").strip().lower()
+    if resolved_placement and resolved_placement not in LABEL_PLACEMENTS:
+        raise ValueError(
+            "unknown label placement {!r}; available: {}".format(
+                placement, ", ".join(LABEL_PLACEMENTS)))
+    if not resolved_placement:
+        # From the geometry when the caller did not say. A road label sitting
+        # horizontally beside the road instead of following it is the second
+        # most common way a map reads as automatic.
+        resolved_placement = GEOMETRY_DEFAULT_PLACEMENT.get(
+            str(geometry or "").strip().lower(), "around_point")
+
+    halo_mm = DEFAULT_HALO_MM if halo_size_mm is None else float(halo_size_mm)
+    halo_mm = max(MIN_HALO_MM, min(MAX_HALO_MM, halo_mm))
+    resolved_halo_color = str(halo_color or "").strip() or contrasting_halo(color)
+    relative_luminance(resolved_halo_color)
+
+    return {
+        "field": str(field).strip(),
+        "size": size,
+        "color": color,
+        "halo": bool(halo),
+        "halo_size_mm": halo_mm if halo else 0.0,
+        "halo_color": resolved_halo_color,
+        "placement": resolved_placement,
+    }
+
+
+# -- Scale-dependent visibility ----------------------------------------------
+#
+# A layer drawn at every zoom is a layer that turns a city map into a smear of
+# labels. Naming the range it belongs in is what separates a map somebody
+# designed from a stack of everything they had.
+
+# Scale denominators: 1:N. The bounds are the practical ends of a web map, not
+# a limit of the arithmetic.
+MIN_SCALE_DENOMINATOR = 1
+MAX_SCALE_DENOMINATOR = 500000000
+
+
+def scale_range(minimum: Any, maximum: Any) -> dict[str, Any]:
+    """The zoom band a layer is drawn in, as scale DENOMINATORS.
+
+    Named the way a cartographer names them - 1:1000 is a LARGER scale than
+    1:100000 and shows less ground - so `minimum` here is the smallest
+    denominator, meaning the most zoomed in. Getting that backwards hides the
+    layer at exactly the zooms it was meant for, and it looks like nothing
+    happened.
+    """
+    try:
+        low = float(minimum)
+        high = float(maximum)
+    except (TypeError, ValueError):
+        raise ValueError("a scale range needs two numbers") from None
+    if low <= 0 or high <= 0:
+        raise ValueError("a scale denominator is greater than zero")
+    if low > high:
+        # Swapping silently would be guessing at intent. A person who typed
+        # them the other way round meant the same band and should be told, so
+        # the next one they type is right.
+        raise ValueError(
+            "the first number is the most zoomed-in end, so it must be smaller: "
+            "1:{:g} to 1:{:g} is inverted".format(low, high))
+    if low < MIN_SCALE_DENOMINATOR or high > MAX_SCALE_DENOMINATOR:
+        raise ValueError(
+            "a scale denominator must be between {} and {}".format(
+                MIN_SCALE_DENOMINATOR, MAX_SCALE_DENOMINATOR))
+    return {"minimum_scale": low, "maximum_scale": high}
+
+
+def describe_scale_range(band: Mapping[str, Any]) -> str:
+    """One line a person can check the band against."""
+    return "Drawn between 1:{:,.0f} and 1:{:,.0f}.".format(
+        band["minimum_scale"], band["maximum_scale"])
+
+
 def _interpolate(ramp: Sequence[str], count: int) -> list[str]:
     """Sample ``count`` evenly spaced colours from a ramp."""
     if count <= 0:

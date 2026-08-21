@@ -1399,28 +1399,151 @@ class QGISRuntime:
         value = low + (high - low) * (index / float(max(count - 1, 1)))
         return QgsColorRampShader.ColorRampItem(value, QColor(color), "{:g}".format(value))
 
-    def set_labels(self, layer_id: str, field: str, size: float = 9.0, enabled: bool = True) -> dict[str, Any]:
-        from qgis.core import QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling  # noqa: PLC0415
+    # How this module names a placement, and what QGIS calls it. The pairs are
+    # resolved through `enum_member` because the enum moved from
+    # QgsPalLayerSettings to Qgis between versions, and a hard reference to
+    # either spelling breaks on the other.
+    _LABEL_PLACEMENT_NAMES = {
+        "around_point": "AroundPoint",
+        "over_point": "OverPoint",
+        "along_line": "Line",
+        "horizontal": "Horizontal",
+        "inside_polygon": "OverPoint",
+    }
+
+    def geometry_kind(self, layer: Any) -> str:
+        """point, line or polygon, or empty when the layer will not say.
+
+        Used only to CHOOSE A DEFAULT placement, so an unknown answer is not a
+        failure: it falls through to the point arrangement, which is the least
+        wrong thing to do with a label whose geometry nobody could name.
+        """
+        try:
+            from qgis.core import QgsWkbTypes  # noqa: PLC0415
+
+            return {
+                QgsWkbTypes.PointGeometry: "point",
+                QgsWkbTypes.LineGeometry: "line",
+                QgsWkbTypes.PolygonGeometry: "polygon",
+            }.get(layer.geometryType(), "")
+        except Exception:  # noqa: BLE001 - a default is not worth failing over
+            return ""
+
+    def _label_placement(self, settings_class: Any, placement: str) -> Any:
+        """The QGIS placement value, or None when this build has no such name.
+
+        None means "leave the algorithm's own default", which is the honest
+        outcome: a placement nobody can apply is better skipped than replaced
+        with a different one that happens to resolve.
+        """
+        from .qt_compat import enum_member  # noqa: PLC0415
+
+        name = self._LABEL_PLACEMENT_NAMES.get(placement)
+        if not name:
+            return None
+        for owner, path in ((settings_class, ("Placement", name)), (settings_class, (name,))):
+            try:
+                return enum_member(owner, *path)
+            except AttributeError:
+                continue
+        return None
+
+    def set_labels(self, layer_id: str, field: str, size: float = 9.0, enabled: bool = True,
+                   color: str = "", halo: bool = True, halo_size: Any = None,
+                   halo_color: str = "", placement: str = "") -> dict[str, Any]:
+        """Label a layer legibly, which is not the same as labelling it.
+
+        The halo is ON by default and its colour is COMPUTED from the text
+        colour rather than asked for. QGIS's own default is plain text with no
+        halo: legible on a white page and invisible the moment the map has a
+        satellite basemap, a hillshade or a choropleth under it, which is every
+        map anybody publishes. A person asking to label a layer is asking to be
+        able to read the labels.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsPalLayerSettings, QgsTextBufferSettings, QgsTextFormat,
+            QgsUnitTypes, QgsVectorLayerSimpleLabeling,
+        )
+        from qgis.PyQt.QtGui import QColor  # noqa: PLC0415
+
+        from .qt_compat import enum_member  # noqa: PLC0415
 
         layer = self.vector(layer_id)
         # Only an existing field may label a layer; a made-up field name would
         # silently render nothing and look like a broken map.
         _require(field in self.field_names(layer), "the field '{}' is not in that layer".format(field))
+        try:
+            specification = presentation.label_settings(
+                field, size=size, color=color or presentation.DEFAULT_LABEL_COLOR,
+                halo=halo, halo_size_mm=halo_size, halo_color=halo_color,
+                placement=placement, geometry=self.geometry_kind(layer))
+        except ValueError as error:
+            raise CapabilityError(str(error)) from error
+
         self._push_undo({"kind": "labels", "layer_id": layer.id(),
                          "labeling": layer.labeling().clone() if layer.labeling() else None,
                          "enabled": layer.labelsEnabled()})
         settings = QgsPalLayerSettings()
-        settings.fieldName = field
+        settings.fieldName = specification["field"]
         text_format = QgsTextFormat()
         font = text_format.font()
-        font.setPointSizeF(max(4.0, min(48.0, float(size))))
+        font.setPointSizeF(specification["size"])
         text_format.setFont(font)
-        text_format.setSize(max(4.0, min(48.0, float(size))))
+        text_format.setSize(specification["size"])
+        text_format.setColor(QColor(specification["color"]))
+        if specification["halo"]:
+            buffer_settings = QgsTextBufferSettings()
+            buffer_settings.setEnabled(True)
+            buffer_settings.setSize(specification["halo_size_mm"])
+            try:
+                buffer_settings.setSizeUnit(
+                    enum_member(QgsUnitTypes, "RenderUnit", "RenderMillimeters"))
+            except AttributeError:
+                # The size is still applied in whatever unit this build
+                # defaults to. Losing the unit costs a slightly different halo
+                # width; refusing would cost the halo.
+                pass
+            buffer_settings.setColor(QColor(specification["halo_color"]))
+            text_format.setBuffer(buffer_settings)
         settings.setFormat(text_format)
+        resolved = self._label_placement(QgsPalLayerSettings, specification["placement"])
+        if resolved is not None:
+            settings.placement = resolved
         layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
         layer.setLabelsEnabled(bool(enabled))
         layer.triggerRepaint()
-        return {"kind": "labels_applied", "field": field, "enabled": bool(enabled)}
+        return {"kind": "labels_applied", "enabled": bool(enabled), **specification}
+
+    def set_scale_range(self, layer_id: str, minimum_scale: Any, maximum_scale: Any) -> dict[str, Any]:
+        """Draw a layer only between two scales.
+
+        A layer drawn at every zoom is what turns a city map into a smear of
+        labels, and naming the band it belongs in is most of what separates a
+        map somebody designed from a stack of everything they had.
+        """
+        layer = self.layer(layer_id)
+        try:
+            band = presentation.scale_range(minimum_scale, maximum_scale)
+        except ValueError as error:
+            raise CapabilityError(str(error)) from error
+        self._push_undo({
+            "kind": "scale_range", "layer_id": layer.id(),
+            "minimum": layer.minimumScale(), "maximum": layer.maximumScale(),
+            "enabled": layer.hasScaleBasedVisibility(),
+        })
+        # QGIS names them the other way round from a cartographer: its MAXIMUM
+        # scale is the most zoomed-IN end, the smallest denominator. Crossing
+        # these hides the layer at exactly the zooms it was meant for, and it
+        # looks like nothing happened.
+        layer.setMaximumScale(band["minimum_scale"])
+        layer.setMinimumScale(band["maximum_scale"])
+        layer.setScaleBasedVisibility(True)
+        layer.triggerRepaint()
+        return {
+            "kind": "scale_range_applied",
+            "description": presentation.describe_scale_range(band),
+            **band,
+        }
 
     def preview_filter(self, layer_id: str, field: str, operator: str, value: str = "") -> dict[str, Any]:
         """Apply a validated subset filter built from typed parts, not free text.
@@ -2352,8 +2475,11 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             p["layer_id"], p["field"],
         ),
         "style.labels@1": lambda p: runtime.set_labels(
-            p["layer_id"], p["field"], p.get("size", 9), p.get("enabled", True),
-        ),
+            p["layer_id"], p["field"], p.get("size", 9.0), p.get("enabled", True),
+            p.get("color", ""), p.get("halo", True), p.get("halo_size"),
+            p.get("halo_color", ""), p.get("placement", "")),
+        "layer.scale_range@1": lambda p: runtime.set_scale_range(
+            p["layer_id"], p["minimum_scale"], p["maximum_scale"]),
         "style.single@1": lambda p: runtime.style_single(
             p["layer_id"], p.get("color", ""), p.get("stroke_width"), p.get("size"), p.get("opacity"),
         ),
