@@ -599,7 +599,16 @@ _c("processing.run@1", "processing", "Run an installed QGIS Processing algorithm
            "unit": {"type": "string", "enum": ["m", "km", "ft", "mi"], "default": "m"},
            "segments": {"type": "integer", "min": 1, "max": 96},
            "predicate": {"type": "string",
-                         "enum": ["intersects", "within", "contains", "overlaps", "touches", "crosses", "disjoint"]}},
+                         "enum": ["intersects", "within", "contains", "overlaps", "touches", "crosses", "disjoint"]},
+           # Which attribute a dissolve groups by. Without it the operation
+           # merges the whole layer into one shape, which is a different
+           # request from the one that named a field.
+           "field": {"type": "string"},
+           # Where a reprojection is going. Required for it in practice:
+           # `safe_processing_params` refuses a reproject without one,
+           # because the default was the layer's OWN system and made the
+           # operation a no-op that reported success.
+           "target_crs": {"type": "string"}},
    risk=RISK_CONSEQUENTIAL, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=False)
 _c("processing.discover@1", "processing", "List the installed Processing algorithms that fit an objective.",
    params={"objective": {"type": "string", "required": True}},

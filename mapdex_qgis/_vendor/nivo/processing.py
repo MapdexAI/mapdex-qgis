@@ -44,6 +44,13 @@ TWO_LAYER_OPERATIONS = frozenset({
     "select_by_location", "nearest_neighbor", "split", "zonal_statistics",
 })
 
+# Operations that need a destination reference system. Reprojection is the
+# whole request here: without one there is nothing to reproject TO, and the
+# algorithm's TARGET_CRS used to be filled with the layer's OWN crs, so a
+# reprojection ran, reported success and added a duplicate layer in the
+# reference system it started in.
+CRS_REQUIRED_OPERATIONS = frozenset({"reproject"})
+
 PROCESSING_OUTPUT_KEYS = frozenset({"OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER"})
 
 # What the person who asked for a buffer calls it. `native:buffer` is how QGIS
@@ -141,7 +148,37 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
             value = str(params.get(key) or "").strip()[:MAX_PARAM_TEXT]
             if value:
                 safe[key] = value
+    if "target_crs" in params:
+        crs = normalize_crs_reference(params.get("target_crs"))
+        if not crs:
+            return {}
+        safe["target_crs"] = crs
+    if operation in CRS_REQUIRED_OPERATIONS and "target_crs" not in safe:
+        # Refused rather than defaulted to the layer's own system. That default
+        # is what made a reprojection a no-op that reported success.
+        return {}
     return safe
+
+
+def normalize_crs_reference(value: Any) -> str:
+    """An authority:code reference, or empty when it is not one.
+
+    Only the FORM is checked here; whether the code exists is QGIS's question
+    and it answers it when the string is resolved. Accepting free text would
+    hand an unresolvable reference to the algorithm and turn a typo into a
+    silently wrong projection.
+    """
+    text = str(value or "").strip().upper()
+    if ":" not in text:
+        return ""
+    authority, _, code = text.partition(":")
+    authority = authority.strip()
+    code = code.strip()
+    if not authority.isalpha() or len(authority) > 16:
+        return ""
+    if not code.isdigit() or len(code) > 12:
+        return ""
+    return "{}:{}".format(authority, code)
 
 
 def resolve_processing_algorithm(registry: Any, operation: str) -> tuple[str, Any] | tuple[str, None]:
@@ -170,7 +207,11 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
     if "SEGMENTS" in names:
         payload["SEGMENTS"] = int(params.get("segments") or 16)
     if "TARGET_CRS" in names:
-        payload["TARGET_CRS"] = layer.crs()
+        # The destination the caller asked for. Falling back to the layer's own
+        # crs is kept only for algorithms where TARGET_CRS is incidental output
+        # metadata rather than the request; `reproject` can no longer reach here
+        # without one, because safe_processing_params refuses it.
+        payload["TARGET_CRS"] = params.get("target_crs") or layer.crs()
     if "LAYERS" in names:
         # native:mergevectorlayers takes a list rather than INPUT/OVERLAY.
         payload["LAYERS"] = [layer] + ([params["target_layer"]] if params.get("target_layer") else [])

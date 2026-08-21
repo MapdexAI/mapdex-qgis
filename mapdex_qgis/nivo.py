@@ -152,8 +152,13 @@ SAFE_PARAM_KEYS = {
     "qgis:set_layer_visibility@1": frozenset({"visible"}),
     "qgis:set_layer_opacity@1": frozenset({"opacity"}),
     "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),
+    # `field` and `target_crs` were missing, and both are the REQUEST rather
+    # than a detail of it: a dissolve whose field is stripped merges the whole
+    # layer into one shape, and a reprojection with no destination used to be
+    # filled with the layer's own crs and reported success.
     "qgis:processing_operation@1": frozenset(
-        {"operation", "distance", "segments", "predicate", "target_layer", "input_layer"}
+        {"operation", "distance", "segments", "predicate", "target_layer",
+         "input_layer", "field", "target_crs"}
     ),
     "qgis:add_xyz_basemap@1": frozenset({"provider"}),
     "qgis:create_layer@1": frozenset({"geometry", "crs", "name"}),
