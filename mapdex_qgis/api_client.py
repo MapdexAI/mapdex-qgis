@@ -473,6 +473,23 @@ class MapdexAPI:
     def retry_failed(self, project_id: str, batch_id: str):
         return self._request("POST", f"/v1/batches/{batch_id}/retry-failed", {}, project_id)
 
+    def create_run(self, project_id: str, text: str, plan: dict[str, Any],
+                   plan_hash: str) -> dict[str, Any]:
+        """Execute a plan the server already composed, unchanged.
+
+        The plan and its hash travel together and neither is rebuilt here.
+        `docs/MEMORY.md` states the rule: compose returns the complete
+        configured DAG plus a content-addressed hash, and the server verifies
+        that hash before executing, so a client that reassembles a plan from
+        tool names is asking for something nobody approved. This method
+        therefore takes the plan as an opaque object and does not inspect it.
+        """
+        return self._request("POST", "/v1/runs", {
+            "input": text,
+            "plan": plan,
+            "plan_hash": plan_hash,
+        }, project_id)
+
     def run(self, run_id: str, project_id: str = "") -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}", project_id=project_id)
 

@@ -147,6 +147,7 @@ from .results import (
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
 from .continuation import action_result, continuation_budget, should_continue
+from .plan_offer import offer_prompt, plan_offer, plan_run_report
 from .trace_view import budget_label, step_rows
 from .source_info import inspect_paths
 from .workspace import review_workspace_path, task_workspace_path
@@ -661,6 +662,14 @@ class MapdexPlugin:
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._poll_batch)
         self.progress_pending = False
+        # A plan the panel ran directly. It belongs to no batch, so it needs its
+        # own follow: without one, a turn that needed a Run showed the work,
+        # started it, and then went quiet until the user thought to look in the
+        # browser.
+        self.plan_timer = QTimer()
+        self.plan_timer.timeout.connect(self._poll_plan_run)
+        self.plan_run_id = ""
+        self.plan_run_pending = False
         # Whether the server has actually started the child run, and since when
         # it has been waiting. None means "not reported"; the panel then keeps
         # its neutral wording instead of guessing.
@@ -2674,6 +2683,10 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
         self._continue_objective(response)
+        # Last, because everything above is what the turn ALREADY did and this
+        # is what it is asking to do next. Offering first would put a dialog in
+        # front of an answer the person has not read.
+        self._offer_plan_run(response)
 
 
     @guarded
@@ -4247,6 +4260,117 @@ class MapdexPlugin:
         self.progress_timer.start(3000)
 
     @guarded
+    def _offer_plan_run(self, response):
+        """Ask whether to run the plan this turn proposed, and then run it.
+
+        The desktop could not do this at all. A compose turn needing a Run came
+        back as a description of the work with no way to start it, so a
+        traverse, a resection, a geoid height or validating a layer was
+        understood, planned, and then sat in the panel. See the `run a server
+        plan` row in the capability matrix.
+
+        Nothing here reads the plan. It travels to the server exactly as it
+        arrived, with the hash that proves it: a client that rebuilds a plan
+        from tool names runs something nobody approved.
+        """
+        offer = plan_offer(response)
+        if offer is None:
+            return
+        if self.plan_run_id:
+            # One plan at a time. Starting a second while the first is running
+            # spends credits on work whose result the panel cannot attribute.
+            self._say("There is already a plan running. I will offer this one when it finishes.")
+            return
+        try:
+            project_id = self._require_mapdex_session()
+        except CapabilityError as error:
+            self._say(str(error))
+            return
+
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(), "Run this in Mapdex?",
+            offer_prompt(offer), yes | no, no,
+        )
+        if answer != yes:
+            self._say("Not run. The plan is still here if you change your mind.")
+            return
+
+        self._nivo_state = transition(self._nivo_state, "action")
+        text = str((response or {}).get("text") or "")
+        plan, plan_hash = offer["plan"], offer["plan_hash"]
+        self._set_status("Running in Mapdex…")
+        self._task(
+            "Run Mapdex plan",
+            lambda: self.api.create_run(project_id, text, plan, plan_hash),
+            self._plan_run_created,
+        )
+
+    @guarded
+    def _plan_run_created(self, exception, payload):
+        # The request has been made, so the turn is executing whatever the
+        # answer is. The closed state table has no edge from `action_ready` to
+        # `error`, so reporting a failure without this step leaves the turn
+        # sitting in `action_ready` while the panel says the run failed.
+        self._nivo_state = transition(self._nivo_state, "execute")
+        if exception is not None:
+            self._nivo_state = transition(self._nivo_state, "error")
+            self._say("Mapdex could not start that run: {}".format(describe_exception(exception)))
+            self._set_status("The run did not start")
+            return
+        run_id = str((payload or {}).get("id") or "")
+        if not run_id:
+            # A created run with no id cannot be followed, and reporting it as
+            # started would leave the user watching a run nobody can find.
+            self._nivo_state = transition(self._nivo_state, "error")
+            self._say("Mapdex accepted the plan but returned no run to follow.")
+            return
+        self.plan_run_id = run_id
+        self._say("Running it in Mapdex now. I will tell you when it finishes.")
+        self.plan_timer.start(3000)
+
+    @guarded
+    def _poll_plan_run(self):
+        if self.plan_run_pending or not self.plan_run_id:
+            return
+        self.plan_run_pending = True
+        project_id = self._active_project_id()
+        run_id = self.plan_run_id
+        self._task(
+            "Follow Mapdex run", lambda: self.api.run(run_id, project_id),
+            self._plan_run_polled, busy=False,
+        )
+
+    @guarded
+    def _plan_run_polled(self, exception, payload):
+        self.plan_run_pending = False
+        if exception is not None:
+            # One failed poll is a network blip, not a failed run. Stopping
+            # here would report a run as lost while it is still executing.
+            return
+        report = plan_run_report(payload)
+        if not report["terminal"]:
+            return
+        self.plan_timer.stop()
+        finished_run = self.plan_run_id
+        self.plan_run_id = ""
+        self._say(report["message"])
+        self._set_status("Ready")
+        self._nivo_state = transition(
+            self._nivo_state, "error" if report["state"] in {"failed", "cancelled"} else "done")
+        if not report["layers"]:
+            return
+        # The result is the point. Announcing a finished run and leaving its
+        # layers in the browser is the same silence this whole path removes.
+        self._set_status("Bringing the result into QGIS…")
+        self._task(
+            "Import Mapdex results into QGIS",
+            lambda: self._fetch_result_files({}, only_runs=(finished_run,)),
+            self._results_imported,
+        )
+
+    @guarded
     def _poll_batch(self):
         if self.progress_pending or not self.batch_id or self._busy:
             return
@@ -4453,16 +4577,32 @@ class MapdexPlugin:
             )
         return prepared
 
-    def _fetch_result_files(self, detail: dict, include_review: bool = False):
+    def _fetch_result_files(self, detail: dict, include_review: bool = False,
+                            only_runs: tuple[str, ...] = ()):
+        """Bring the results of a batch, or of named runs, into QGIS.
+
+        `only_runs` is the second entry point: a plan the panel ran directly is
+        one run and belongs to no batch, and giving it its own copy of this
+        method would leave two places that decide how a raster result differs
+        from a vector one and what a draft review layer looks like.
+        """
         project_id = self._active_project_id()
         prepared = []
-        run_ids = list(succeeded_run_ids(detail))
-        draft_runs = set()
-        if include_review:
-            for run_id in review_run_ids(detail):
-                if run_id not in run_ids:
-                    run_ids.append(run_id)
-                    draft_runs.add(run_id)
+        if only_runs:
+            run_ids = list(only_runs)
+            # A named run is imported as it stands. `include_review` exists to
+            # decide whether to reach past a batch's approved items into its
+            # unfinished ones; there is nothing to reach past here, and a run
+            # the caller asked for by id is not a draft it did not ask for.
+            draft_runs: set[str] = set()
+        else:
+            run_ids = list(succeeded_run_ids(detail))
+            draft_runs = set()
+            if include_review:
+                for run_id in review_run_ids(detail):
+                    if run_id not in run_ids:
+                        run_ids.append(run_id)
+                        draft_runs.add(run_id)
         for run_id in run_ids:
             draft = run_id in draft_runs
             run = self.api.run(run_id, project_id)
