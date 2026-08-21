@@ -27,6 +27,7 @@ from ._vendor.nivo import (
     postgis,
     presentation,
     resection,
+    sheet,
     spatial,
     survey,
 )
@@ -1545,6 +1546,133 @@ class QGISRuntime:
             **band,
         }
 
+    def compose_sheet(self, page: str = "A3", orientation: str = "landscape",
+                      scale: Any = None, margin_mm: Any = None, title: str = "",
+                      legend: bool = True, scale_bar: bool = True,
+                      north_arrow: bool = True, layer_id: str = "",
+                      export_path: str = "") -> dict[str, Any]:
+        """A printable plan sheet from the current map, and optionally a file.
+
+        The composition itself is arithmetic and lives in `sheet.py`, where it
+        can be checked without a rendering engine. This applies it.
+
+        The ground the sheet must show comes from a named layer's extent, or
+        from the canvas when none is named. That extent is what makes a stated
+        scale checkable: at 1:1000 an A3 frame covers a specific rectangle, and
+        a request that does not fit is refused with the scale that would rather
+        than cropping a third of the site off a plan somebody will sign.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsLayoutExporter, QgsLayoutItemLabel, QgsLayoutItemLegend,
+            QgsLayoutItemMap, QgsLayoutItemPage, QgsLayoutItemScaleBar,
+            QgsLayoutPoint, QgsLayoutSize, QgsPrintLayout, QgsProject, QgsUnitTypes,
+        )
+
+        from .qt_compat import enum_member  # noqa: PLC0415
+
+        canvas = self.iface.mapCanvas()
+        extent = canvas.extent()
+        if layer_id:
+            target = self.layer(layer_id)
+            extent = target.extent()
+        _require(extent is not None and extent.width() > 0 and extent.height() > 0,
+                 "there is nothing on the map to put on a sheet yet")
+
+        # The canvas reports its extent in the project's own units. Only a metre
+        # grid makes a printed scale mean anything: 1:1000 on a sheet whose
+        # extent is measured in degrees is a number with no length behind it.
+        project = QgsProject.instance()
+        crs = project.crs()
+        if crs is not None and crs.isValid() and crs.isGeographic():
+            raise CapabilityError(
+                "This project's coordinates are in degrees, and a printed scale is a ratio of "
+                "page millimetres to ground metres - so 1:1000 would mean nothing on the "
+                "sheet. Set the project to a metre-based system first, then ask again.")
+
+        try:
+            composition = sheet.compose_sheet(
+                page=page, orientation=orientation, margin_mm=margin_mm, scale=scale,
+                extent_m=(extent.width(), extent.height()),
+                legend=legend, scale_bar=scale_bar, north_arrow=north_arrow, title=title)
+        except ValueError as error:
+            raise CapabilityError(str(error)) from error
+
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+        page_item = layout.pageCollection().page(0)
+        try:
+            page_item.setPageSize(
+                composition["page"],
+                enum_member(QgsLayoutItemPage, "Orientation",
+                            "Landscape" if composition["orientation"] == "landscape" else "Portrait"))
+        except AttributeError:
+            # An older build without the scoped enum. The explicit size below is
+            # what the arithmetic used, so the page is still right.
+            page_item.setPageSize(QgsLayoutSize(
+                composition["page_width_mm"], composition["page_height_mm"],
+                enum_member(QgsUnitTypes, "LayoutUnit", "LayoutMillimeters")))
+
+        millimetres = enum_member(QgsUnitTypes, "LayoutUnit", "LayoutMillimeters")
+        map_item = None
+        for item in composition["items"]:
+            placed: Any = None
+            if item["kind"] == "map":
+                placed = map_item = QgsLayoutItemMap(layout)
+                placed.setExtent(extent)
+                placed.setScale(float(composition["scale"]))
+            elif item["kind"] == "legend":
+                placed = QgsLayoutItemLegend(layout)
+            elif item["kind"] == "scale_bar":
+                placed = QgsLayoutItemScaleBar(layout)
+                placed.applyDefaultSize()
+            elif item["kind"] == "title":
+                placed = QgsLayoutItemLabel(layout)
+                placed.setText(item.get("text", ""))
+            elif item["kind"] == "north_arrow":
+                # Deliberately a label rather than a picture: the arrow QGIS
+                # ships is an SVG whose path differs between installs, and a
+                # missing file draws an empty box on a plan somebody signs.
+                placed = QgsLayoutItemLabel(layout)
+                placed.setText("N")
+            if placed is None:
+                continue
+            layout.addLayoutItem(placed)
+            placed.attemptMove(QgsLayoutPoint(item["x_mm"], item["y_mm"], millimetres))
+            placed.attemptResize(QgsLayoutSize(item["width_mm"], item["height_mm"], millimetres))
+
+        # The legend and the scale bar describe a MAP, so they are linked to the
+        # frame rather than left to guess. An unlinked scale bar reports the
+        # layout's default scale, which is a number on the page that does not
+        # match the map beside it.
+        if map_item is not None:
+            for item in layout.items():
+                if isinstance(item, (QgsLayoutItemLegend, QgsLayoutItemScaleBar)):
+                    item.setLinkedMap(map_item)
+
+        exported = ""
+        if export_path:
+            exporter = QgsLayoutExporter(layout)
+            lowered = str(export_path).lower()
+            if lowered.endswith(".pdf"):
+                result = exporter.exportToPdf(export_path, QgsLayoutExporter.PdfExportSettings())
+            elif lowered.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff")):
+                result = exporter.exportToImage(export_path, QgsLayoutExporter.ImageExportSettings())
+            else:
+                raise CapabilityError(
+                    "a sheet is exported as .pdf or as an image (.png, .jpg, .tif)")
+            _require(result == QgsLayoutExporter.Success,
+                     "QGIS could not write the sheet to {}".format(export_path))
+            exported = export_path
+
+        layout.setName(title or "Mapdex sheet")
+        project.layoutManager().addLayout(layout)
+        return {
+            "kind": "sheet_composed",
+            "description": sheet.describe_sheet(composition),
+            "exported_to": exported,
+            **{key: value for key, value in composition.items() if key != "items"},
+        }
+
     def preview_filter(self, layer_id: str, field: str, operator: str, value: str = "") -> dict[str, Any]:
         """Apply a validated subset filter built from typed parts, not free text.
 
@@ -2480,6 +2608,11 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             p.get("halo_color", ""), p.get("placement", "")),
         "layer.scale_range@1": lambda p: runtime.set_scale_range(
             p["layer_id"], p["minimum_scale"], p["maximum_scale"]),
+        "sheet.compose@1": lambda p: runtime.compose_sheet(
+            p.get("page", "A3"), p.get("orientation", "landscape"), p.get("scale"),
+            p.get("margin_mm"), p.get("title", ""), p.get("legend", True),
+            p.get("scale_bar", True), p.get("north_arrow", True),
+            p.get("layer_id", ""), p.get("export_path", "")),
         "style.single@1": lambda p: runtime.style_single(
             p["layer_id"], p.get("color", ""), p.get("stroke_width"), p.get("size"), p.get("opacity"),
         ),

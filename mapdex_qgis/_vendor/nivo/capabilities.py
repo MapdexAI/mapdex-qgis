@@ -582,6 +582,30 @@ _c("style.raster@1", "style", "Set raster band rendering, stretch and opacity.",
                           "ramp": {"type": "string"},
                           "opacity": {"type": "number", "min": 0, "max": 100}}),
    targets=("raster",), execution=EXEC_CLIENT_UI, reversible=True, previewable=True, produces=("map_effect",))
+# -- Sheet --------------------------------------------------------------------
+#
+# A surveyor's deliverable is frequently a PLAN: a page at a stated scale with a
+# legend, a scale bar, a north arrow and a title block. Mapdex delivers DATA, and
+# the gap between the two is the last thing between a run and something a client
+# will accept.
+#
+# The composition is arithmetic and lives in `sheet.py` where it can be checked
+# without a rendering engine; this is the capability that applies it.
+_c("sheet.compose@1", "sheet", "Compose a printable plan sheet at a stated scale, with a legend, "
+   "a scale bar, a north arrow and a title, and optionally export it.",
+   params={"page": {"type": "string"},
+           "orientation": {"type": "string"},
+           "scale": {"type": "number", "min": 1, "max": 100000000},
+           "margin_mm": {"type": "number", "min": 0, "max": 100},
+           "title": {"type": "string"},
+           "legend": {"type": "boolean", "default": True},
+           "scale_bar": {"type": "boolean", "default": True},
+           "north_arrow": {"type": "boolean", "default": True},
+           "layer_id": {"type": "string"},
+           "export_path": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_CLIENT_UI, produces=("report",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("style.undo@1", "style", "Undo the last reversible presentation change.",
    execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
