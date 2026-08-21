@@ -123,8 +123,10 @@ from ._vendor.nivo.processing import (
     NAMED_GEOPROCESSING_OPERATIONS,
     PROCESSING_OPERATION_CATALOG,
     PROCESSING_OUTPUT_ORDER,
+    UNIT_SENSITIVE_TERRAIN,
     build_algorithm_parameters,
     describe_empty_input,
+    describe_geographic_terrain_refusal,
     describe_processing_outcome,
     operation_label,
     resolve_processing_algorithm,
@@ -3354,6 +3356,13 @@ class MapdexPlugin:
             "geoprocessing.validate@1": self._named_processing_capability("validate"),
             "geoprocessing.split@1": self._named_processing_capability("split"),
             "geoprocessing.zonal_statistics@1": self._named_processing_capability("zonal_statistics"),
+            # Terrain, through the same Processing task. Three of them refuse on
+            # a grid measured in degrees before the algorithm is reached.
+            "terrain.slope@1": self._named_processing_capability("slope"),
+            "terrain.aspect@1": self._named_processing_capability("aspect"),
+            "terrain.hillshade@1": self._named_processing_capability("hillshade"),
+            "terrain.ruggedness@1": self._named_processing_capability("ruggedness"),
+            "terrain.roughness@1": self._named_processing_capability("roughness"),
             # Both read the project's runs through this plugin's API client, so
             # neither can live in the runtime, which has no session and no
             # project. Until they were bound, seeing a job list or opening a
@@ -3415,6 +3424,17 @@ class MapdexPlugin:
         one action buys no information and costs the user a step.
         """
         operation = str(params.get("operation") or "")
+        # A slope, aspect or hillshade on a grid measured in degrees is a ratio
+        # of metres to degrees, which is not a slope. QGIS computes it anyway
+        # and says nothing: a 10% grade reads as 89.99 degrees, measured in the
+        # Workspace's own terrain tests. Refused here, before the algorithm, and
+        # the refusal names the reprojection this same assistant can perform.
+        if operation in UNIT_SENSITIVE_TERRAIN:
+            layer = self._nivo_layer_for_action(params.get("layer_id") or "")
+            crs = layer.crs() if layer is not None else None
+            if crs is not None and crs.isValid() and crs.isGeographic():
+                raise CapabilityError(
+                    describe_geographic_terrain_refusal(operation, crs.authid()))
         action = {
             "target": params.get("layer_id") or "",
             "params": dict(params),

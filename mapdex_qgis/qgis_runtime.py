@@ -2408,6 +2408,14 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     "geoprocessing.validate@1",
     "geoprocessing.split@1",
     "geoprocessing.zonal_statistics@1",
+    # Terrain, through the same Processing task. Slope, aspect and hillshade
+    # refuse on a layer whose coordinates are in degrees, because the ratio they
+    # measure has no meaning there and QGIS computes it anyway without a word.
+    "terrain.slope@1",
+    "terrain.aspect@1",
+    "terrain.hillshade@1",
+    "terrain.ruggedness@1",
+    "terrain.roughness@1",
     # The two server-side surfaces a desktop user otherwise had to leave QGIS to
     # reach: which runs exist and why one failed, and the review of a run that is
     # waiting on a person. Both need the plugin's API client, its project scope

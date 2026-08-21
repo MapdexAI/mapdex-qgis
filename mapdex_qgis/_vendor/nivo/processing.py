@@ -37,7 +37,29 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "simplify": ("native:simplifygeometries", "qgis:simplifygeometries"),
     "repair": ("native:fixgeometries", "qgis:fixgeometries"),
     "validate": ("qgis:checkvalidity", "native:checkvalidity"),
+    # Terrain. Core QGIS ships all five, in the native or GDAL provider, so a
+    # resolution failure here means a broken install rather than a missing
+    # optional provider - which is why flow routing and viewshed are NOT in this
+    # table: they live in GRASS and SAGA, and a capability that usually cannot
+    # resolve is worse than one that is honestly absent.
+    "slope": ("native:slope", "gdal:slope"),
+    "aspect": ("native:aspect", "gdal:aspect"),
+    "hillshade": ("native:hillshade", "gdal:hillshade"),
+    "ruggedness": ("native:ruggednessindex",),
+    "roughness": ("gdal:roughness",),
 }
+
+# The three terrain measurements that are a RATIO of vertical to horizontal
+# distance. On a geographic grid the horizontal distance is in DEGREES and the
+# elevation in metres, so the ratio has no meaning - and QGIS computes it anyway
+# without a word. A 10% grade on an EPSG:4326 DEM reads as 89.99 degrees, which
+# is measured in the Workspace's own terrain tests.
+#
+# Roughness and ruggedness are elevation differences alone, so they carry no
+# ratio and a geographic grid does not corrupt them.
+UNIT_SENSITIVE_TERRAIN = frozenset({"slope", "aspect", "hillshade"})
+
+TERRAIN_OPERATIONS = frozenset({"slope", "aspect", "hillshade", "ruggedness", "roughness"})
 
 # The operations that have a capability of their own rather than being reached
 # through the generic bridge. Kept here, beside the catalog, so the handler
@@ -102,7 +124,34 @@ OPERATION_LABELS: dict[str, str] = {
     "simplify": "simplification",
     "repair": "geometry repair",
     "validate": "geometry check",
+    "slope": "slope",
+    "aspect": "aspect",
+    "hillshade": "hillshade",
+    "ruggedness": "ruggedness index",
+    "roughness": "surface roughness",
 }
+
+
+def describe_geographic_terrain_refusal(operation: Any, crs_description: str = "") -> str:
+    """Why a slope will not be computed on a grid measured in degrees.
+
+    The refusal names the fix and names it as something Nivo itself can do: the
+    reprojection is already in this allowlist, so the next sentence a person
+    says can start the work rather than sending them to another menu.
+
+    Refusing rather than applying a scale constant is deliberate. gdaldem's
+    documented lat/long scale of 111120 is correct only along a meridian; east
+    to west a degree is 111320*cos(latitude) metres, which is half as far at 60
+    degrees. One constant produces an answer that is wrong by a factor varying
+    across the sheet, and nothing in the output says so.
+    """
+    where = " ({})".format(crs_description) if crs_description else ""
+    return (
+        "This layer's coordinates are in degrees{}, and a {} is a ratio of height to "
+        "horizontal distance - so computing one here would return a confident wrong "
+        "number rather than an error. Ask me to reproject the layer to a metre "
+        "system first, then ask again."
+    ).format(where, operation_label(operation))
 
 
 def operation_label(operation: Any) -> str:
@@ -172,6 +221,22 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         if tolerance <= 0 or tolerance > 1000000:
             return {}
         safe["tolerance"] = tolerance
+    if "z_factor" in params:
+        try:
+            z_factor = float(params.get("z_factor"))
+        except (TypeError, ValueError):
+            return {}
+        if not (1e-6 <= z_factor <= 1e6):
+            return {}
+        safe["z_factor"] = z_factor
+    if "band" in params:
+        try:
+            band = int(params.get("band"))
+        except (TypeError, ValueError):
+            return {}
+        if band < 1 or band > 512:
+            return {}
+        safe["band"] = band
     if "segments" in params:
         try:
             segments = int(params.get("segments"))
@@ -290,6 +355,16 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
         payload["LINES"] = params["target_layer"]
     if "FIELD" in names and params.get("field"):
         payload["FIELD"] = params["field"]
+    if "Z_FACTOR" in names:
+        # How many horizontal units one vertical unit is. 1.0 means the
+        # elevation is already in the horizontal unit; a surface in feet on a
+        # metre grid needs 0.3048, and reading feet as metres makes every slope
+        # three times too steep. No metadata states it, so it is a declaration.
+        payload["Z_FACTOR"] = float(params.get("z_factor") or 1.0)
+    if "BAND" in names and params.get("band"):
+        payload["BAND"] = int(params["band"])
+    if "COMPUTE_EDGES" in names:
+        payload["COMPUTE_EDGES"] = True
     if "TOLERANCE" in names:
         # Simplification is entirely this number: without it the algorithm's
         # own default decides how much detail a customer's boundary loses.

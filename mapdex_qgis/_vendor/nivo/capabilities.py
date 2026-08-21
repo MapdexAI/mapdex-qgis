@@ -878,6 +878,49 @@ _c("geoprocessing.dissolve@1", "geoprocessing", "Merge features into one shape p
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
+# -- Terrain -----------------------------------------------------------------
+#
+# The five core-QGIS surface measurements. `targets=("raster",)` because every
+# one of them reads an elevation grid; offering them for a vector layer would
+# produce an algorithm failure where a refusal belongs.
+#
+# Flow accumulation, watershed and viewshed are deliberately NOT here. They live
+# in the GRASS and SAGA providers, which a given install may not have, and a
+# capability that usually cannot resolve is worse than one that is honestly
+# absent - the user is told the action exists and then it does not run.
+_TERRAIN_IN = {
+    "layer_id": {"type": "string"},
+    "z_factor": {"type": "number", "min": 0.000001, "max": 1000000},
+    "band": {"type": "integer", "min": 1, "max": 512},
+}
+
+_c("terrain.slope@1", "terrain", "How steep the ground is, in degrees, from an elevation surface.",
+   params=dict(_TERRAIN_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+_c("terrain.aspect@1", "terrain", "Which way the ground faces, in degrees clockwise from north.",
+   params=dict(_TERRAIN_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+_c("terrain.hillshade@1", "terrain", "A shaded-relief image of the surface, lit from one direction.",
+   params=dict(_TERRAIN_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+# Roughness and ruggedness are elevation differences alone, so unlike the three
+# above they carry no ratio and a grid measured in degrees does not corrupt them.
+_c("terrain.ruggedness@1", "terrain", "How broken the ground is: the mean difference from the eight neighbouring cells.",
+   params=dict(_TERRAIN_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+_c("terrain.roughness@1", "terrain", "The range of elevation within each cell's neighbourhood.",
+   params=dict(_TERRAIN_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
 _c("geoprocessing.merge@1", "geoprocessing", "Stack two layers into one without changing their shapes.",
    params=dict(_LAYER_IN, **_OTHER_LAYER),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
