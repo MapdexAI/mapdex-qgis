@@ -1801,7 +1801,9 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
     handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
         "measure.distance@1": lambda p: runtime.measure_distance(
             (p["from_lon"], p["from_lat"]), (p["to_lon"], p["to_lat"])),
-        "export.layer@1": lambda p: runtime.export_layer(p["layer_id"], p.get("format", "gpkg")),
+        "export.layer@1": lambda p: runtime.export_layer(
+            p["layer_id"], p.get("target_format", "gpkg"),
+        ),
         "field.calculate@1": lambda p: runtime.calculate_field(
             p["layer_id"], p["field"], p["expression"],
             p.get("field_type", "number"), bool(p.get("preview"))),

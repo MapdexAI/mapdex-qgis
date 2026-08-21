@@ -97,7 +97,14 @@ def resolve_extent(params: Mapping[str, Any]) -> dict[str, Any] | None:
     the caller never hands a zero-area rectangle to a canvas.
     """
     crs = str(params.get("crs") or "EPSG:4326").strip() or "EPSG:4326"
-    box = _finite_bbox(params.get("bbox"))
+    # `bounds` is the name the server's map:fit_bounds@1 uses and the one this
+    # capability now declares. `bbox` is still read because this resolver's job
+    # has always been to accept the shapes that actually arrive - an older
+    # payload, a legacy centre-and-zoom - and a plugin newer than the server it
+    # talks to would otherwise refuse a box it understands perfectly.
+    box = _finite_bbox(params.get("bounds"))
+    if box is None:
+        box = _finite_bbox(params.get("bbox"))
     if box is not None:
         if box[0] == box[2] or box[1] == box[3]:
             centre = ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)

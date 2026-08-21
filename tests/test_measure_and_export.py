@@ -88,8 +88,8 @@ def test_both_capabilities_are_registered_and_validate_their_parameters():
 
 
 def test_the_export_format_is_a_closed_set():
-    request = validate_request("export.layer@1", {"layer_id": "layer_a", "format": "geojson"})
-    assert request["params"]["format"] == "geojson"
+    request = validate_request("export.layer@1", {"layer_id": "layer_a", "target_format": "geojson"})
+    assert request["params"]["target_format"] == "geojson"
 
     with pytest.raises(CapabilityError):
         validate_request("export.layer@1", {"layer_id": "layer_a", "format": "exe"})

@@ -3251,7 +3251,10 @@ class MapdexPlugin:
             resolved = resolve_extent(params)
             if resolved is None:
                 raise CapabilityError("that map extent had no usable bounding box or centre")
-            params = {"bbox": resolved["bbox"], "crs": resolved["crs"]}
+            # Emitted under the capability's declared name, which is the
+            # server's. The resolver above is what accepts whichever name
+            # arrived; validation below only ever sees the canonical one.
+            params = {"bounds": resolved["bbox"], "crs": resolved["crs"]}
         if "layer_id" in capability.params and "layer_id" not in params:
             layer_id = str(action.get("target") or "") or (layer.id() if layer is not None else "")
             if layer_id:

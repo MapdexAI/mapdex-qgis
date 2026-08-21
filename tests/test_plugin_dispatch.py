@@ -117,7 +117,13 @@ def test_every_legacy_id_the_plugin_advertises_can_be_routed():
 TRANSLATED_PAYLOADS = {
     "qgis:zoom_to_layer@1": {"layer_id": "layer_1"},
     "qgis:zoom_to_selection@1": {},
-    "qgis:zoom_to_extent@1": {"bbox": [25.0, 35.0, 45.0, 43.0], "crs": "EPSG:4326"},
+    # POST-translation, which is the payload validation actually sees. The
+    # legacy wire shape carries `bbox`; the plugin resolves it and emits the
+    # capability's declared `bounds`, and the test below covers that step
+    # directly. Putting the legacy name here would have the test bypass the
+    # very translation it exists to cover - which is how it passed for as long
+    # as the two names happened to coincide.
+    "qgis:zoom_to_extent@1": {"bounds": [25.0, 35.0, 45.0, 43.0], "crs": "EPSG:4326"},
     "qgis:refresh_canvas@1": {},
     "qgis:previous_extent@1": {},
     "qgis:add_xyz_basemap@1": {"provider": "osm"},
@@ -331,3 +337,19 @@ def test_numbers_are_readable_and_never_invented():
     assert pretty(0.0) == "0"
     assert pretty(None) == "None"
     assert pretty(float("nan")) == "nan"
+
+
+def test_the_extent_resolver_reads_either_name_for_the_box():
+    """The renaming step the payload fixture above depends on.
+
+    A plugin newer than the server it talks to still receives `bbox`, and a
+    resolver that refused it would break the pairing it was renamed to fix.
+    """
+    from mapdex_qgis._vendor.nivo.viewport import resolve_extent
+
+    legacy = resolve_extent({"bbox": [25.0, 35.0, 45.0, 43.0], "crs": "EPSG:4326"})
+    canonical = resolve_extent({"bounds": [25.0, 35.0, 45.0, 43.0], "crs": "EPSG:4326"})
+    assert legacy == canonical
+    assert canonical["bbox"] == [25.0, 35.0, 45.0, 43.0]
+    # And a payload carrying neither is still refused rather than guessed at.
+    assert resolve_extent({"crs": "EPSG:4326"}) is None

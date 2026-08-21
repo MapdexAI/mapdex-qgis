@@ -448,8 +448,15 @@ _c("map.zoom_layer@1", "map", "Zoom the map to a layer's extent.", params=_LAYER
 _c("map.zoom_selection@1", "map", "Zoom the map to the current selection.",
    execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+# `bounds` is the server's name for the same box (map:fit_bounds@1). The
+# resolver still reads `bbox`, so an older payload is not refused by a newer
+# plugin; what changed is the name an assistant is taught.
+#
+# The `crs` beside it is a real difference and stays: the desktop can be handed
+# a projected extent and the server assumes WGS84, so this surface can express
+# something the other cannot.
 _c("map.zoom_extent@1", "map", "Zoom to an explicit bounding box.",
-   params={"bbox": {"type": "bbox", "required": True}, "crs": {"type": "string"}},
+   params={"bounds": {"type": "bbox", "required": True}, "crs": {"type": "string"}},
    execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("map.previous_extent@1", "map", "Go back to the previous map view.",
@@ -624,9 +631,11 @@ _c("measure.distance@1", "measure", "Measure the distance between two positions.
            "to_lon": {"type": "number", "required": True, "min": -180, "max": 180},
            "to_lat": {"type": "number", "required": True, "min": -90, "max": 90}},
    execution=EXEC_LOCAL, produces=("measurement",))
+# `target_format` is the server's name on data:convert@1. Consistency across the
+# two surfaces beats the shorter word: the vocabulary exists to be learned once.
 _c("export.layer@1", "export", "Write a layer to a file in a standard GIS format.",
    params={"layer_id": {"type": "string", "required": True},
-           "format": {"type": "string",
+           "target_format": {"type": "string",
                       "enum": ["geojson", "gpkg", "shp", "csv"],
                       "default": "gpkg"}},
    targets=("vector",), execution=EXEC_LOCAL, produces=("file",))
