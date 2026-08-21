@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from ._vendor.nivo import analytics, postgis, presentation, spatial
+from ._vendor.nivo import analytics, postgis, presentation, spatial, survey
 from ._vendor.nivo.capabilities import CapabilityError
 from .guard import log_debug
 
@@ -1799,6 +1799,21 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         return {"analysis": result, "map": applied}
 
     handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
+        # Survey computation. These take no runtime argument at all: they are
+        # arithmetic over numbers in the request, so they answer with the
+        # project closed and the network down, and they can be tested without
+        # a QGIS at all.
+        "survey.inverse@1": lambda p: survey.inverse(
+            p["from_lat"], p["from_lon"], p["to_lat"], p["to_lon"],
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.forward@1": lambda p: survey.forward(
+            p["from_lat"], p["from_lon"], p["azimuth_deg"], p["distance_m"],
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.traverse@1": lambda p: survey.traverse(
+            p["from_lat"], p["from_lon"], p["legs"], bool(p.get("closed")),
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.closure@1": lambda p: survey.closure(
+            p["legs"], survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "measure.distance@1": lambda p: runtime.measure_distance(
             (p["from_lon"], p["from_lat"]), (p["to_lon"], p["to_lat"])),
         "export.layer@1": lambda p: runtime.export_layer(

@@ -219,7 +219,40 @@ def _coerce(name: str, spec: Mapping[str, Any], value: Any) -> Any:
         return [str(item)[:MAX_PARAM_STRING] for item in value[:MAX_PARAM_LIST]]
     if kind == "points":
         return _coerce_points(name, spec, value)
+    if kind == "legs":
+        return _coerce_legs(name, spec, value)
     raise CapabilityError("unsupported parameter type for {}".format(name))
+
+
+def _coerce_legs(name: str, spec: Mapping[str, Any], value: Any) -> list[dict]:
+    """A traverse's legs: bearing and length, both finite, nothing else.
+
+    The same discipline as ``_coerce_points`` and for the same reason. A leg is
+    about to be walked across the ellipsoid, so a bearing that is text or a
+    length that is infinite has to be refused rather than coerced into
+    something plausible - a plausible leg puts a station somewhere nobody
+    measured.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise CapabilityError("{} must be a list of legs".format(name))
+    legs: list[dict] = []
+    for index, item in enumerate(value[:MAX_PARAM_LIST]):
+        if not isinstance(item, Mapping):
+            raise CapabilityError("{} leg {} must be an object".format(name, index + 1))
+        try:
+            azimuth = float(item.get("azimuth_deg"))
+            distance = float(item.get("distance_m"))
+        except (TypeError, ValueError):
+            raise CapabilityError(
+                "{} leg {} needs a numeric azimuth_deg and distance_m".format(name, index + 1))
+        if not (math.isfinite(azimuth) and math.isfinite(distance)):
+            raise CapabilityError("{} leg {} is not finite".format(name, index + 1))
+        if distance <= 0:
+            raise CapabilityError("{} leg {} has no length".format(name, index + 1))
+        legs.append({"azimuth_deg": azimuth, "distance_m": distance})
+    if not legs:
+        raise CapabilityError("{} needs at least one leg".format(name))
+    return legs
 
 
 def _coerce_points(name: str, spec: Mapping[str, Any], value: Any) -> list[list[float]]:
@@ -589,6 +622,51 @@ _c("postgis.write@1", "postgis", "Modify PostGIS data.", risk=RISK_FORBIDDEN, ex
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE),
    refusal=("Nivo's database access is read-only by design, so it cannot insert, update, delete or change "
             "schema. Make that change in QGIS or your database client and I'll analyse the result."))
+
+# -- Survey computation: the numbers a surveyor types -----------------------
+#
+# Every one of these answers a question about coordinates in the REQUEST rather
+# than about a layer, so none of them needs a project or a network and all of
+# them work with the laptop offline in a field hut. Until this module existed
+# the desktop had to ask the server for a bearing.
+#
+# The ellipsoid travels with every one of them, and an unrecognised name is
+# refused rather than defaulted: the same two coordinates on WGS84 and on ED50
+# are different places on the ground, and an answer that does not say which
+# surface it was computed on is not a survey answer.
+_ELLIPSOID = {"ellipsoid": {"type": "string"}}
+_POINT_PAIR = {
+    "from_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+    "from_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+}
+
+_c("survey.inverse@1", "survey", "Bearing and distance between two coordinates, on a named ellipsoid.",
+   params=dict(_POINT_PAIR, **_ELLIPSOID, **{
+       "to_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+       "to_lon": {"type": "number", "required": True, "min": -180, "max": 180}}),
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+_c("survey.forward@1", "survey", "The point at a bearing and distance from a coordinate: setting out.",
+   params=dict(_POINT_PAIR, **_ELLIPSOID, **{
+       "azimuth_deg": {"type": "number", "required": True, "min": -360, "max": 360},
+       "distance_m": {"type": "number", "required": True, "min": 0, "max": 20_000_000}}),
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+# `closed` is the whole difference between a traverse that can report a
+# misclosure and one that cannot: an open traverse has nothing to close onto.
+_c("survey.traverse@1", "survey", "Walk a traverse and report its misclosure and precision ratio.",
+   params=dict(_POINT_PAIR, **_ELLIPSOID, **{
+       "legs": {"type": "legs", "required": True},
+       "closed": {"type": "boolean", "default": False}}),
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+_c("survey.closure@1", "survey", "Close a deed description and report its area and misclosure.",
+   params=dict(_ELLIPSOID, **{"legs": {"type": "legs", "required": True}}),
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
 
 # -- QGIS Processing: consequential, confirmation required -----------------
 _c("processing.run@1", "processing", "Run an installed QGIS Processing algorithm and load its output.",
