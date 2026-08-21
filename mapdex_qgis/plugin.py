@@ -146,6 +146,7 @@ from .results import (
     summarize_runs,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
+from .trace_view import budget_label, step_rows
 from .source_info import inspect_paths
 from .workspace import review_workspace_path, task_workspace_path
 
@@ -2327,8 +2328,8 @@ class MapdexPlugin:
             return
         self._set_nivo_compose_busy(True)
         self._nivo_state = transition(self._nivo_state, "send")
-        self._nivo_turns.append(("user", message))
-        self._nivo_turns.append(("assistant", "Thinking…"))
+        self._nivo_turns.append(("user", message, []))
+        self._nivo_turns.append(("assistant", "Thinking…", []))
         self._render_nivo_turns()
         self.nivo_status.setText("Nivo AI is reading your map context…")
         self.nivo_input.clear()
@@ -2525,9 +2526,9 @@ class MapdexPlugin:
     def _replace_last_assistant_turn(self, text):
         """Overwrite the pending "Thinking…" bubble, or add one."""
         if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-            self._nivo_turns[-1] = ("assistant", str(text))
+            self._nivo_turns[-1] = ("assistant", str(text), self._nivo_turns[-1][2])
         else:
-            self._nivo_turns.append(("assistant", str(text)))
+            self._nivo_turns.append(("assistant", str(text), []))
         self._render_nivo_turns()
 
     def _compose_in_thread(self, project_id, message, context, thread_id, title):
@@ -2593,7 +2594,7 @@ class MapdexPlugin:
         self._set_nivo_compose_busy(False)
         self._nivo_state = transition(self._nivo_state, "error")
         if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-            self._nivo_turns[-1] = ("assistant", "Stopped.")
+            self._nivo_turns[-1] = ("assistant", "Stopped.", self._nivo_turns[-1][2])
             self._render_nivo_turns()
         if self.nivo_status is not None:
             self.nivo_status.setText("Stopped")
@@ -2614,7 +2615,7 @@ class MapdexPlugin:
             if carried:
                 self._adopt_conversation(carried)
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-                self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.")
+                self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.", self._nivo_turns[-1][2])
             self._render_nivo_turns()
             if self.nivo_status is not None:
                 self.nivo_status.setText("Request failed")
@@ -2632,13 +2633,19 @@ class MapdexPlugin:
             return
         if self.nivo_reply is not None:
             reply = str(response.get("text") or response.get("message") or "Nivo returned no message.")
+            # The steps are what the turn actually did. Rendering only the reply
+            # is what made a turn that ran four capabilities and a turn that
+            # answered from memory look identical.
+            steps = step_rows(response)
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-                self._nivo_turns[-1] = ("assistant", reply)
+                self._nivo_turns[-1] = ("assistant", reply, steps)
             else:
-                self._nivo_turns.append(("assistant", reply))
+                self._nivo_turns.append(("assistant", reply, steps))
             self._render_nivo_turns()
         if self.nivo_status is not None:
-            self.nivo_status.setText(str(outcome.get("notice") or "") or "Ready")
+            notice = str(outcome.get("notice") or "")
+            budget = budget_label(response)
+            self.nivo_status.setText(notice or budget or "Ready")
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
@@ -2659,6 +2666,46 @@ class MapdexPlugin:
         label.setText(str(text))
         return label
 
+    def _step_widget(self, row_data):
+        """One step of the turn: what ran, with what, and how it ended.
+
+        Status is a word, never a colour on its own: the panel is themed by
+        QGIS and a reader on a monochrome theme or a screen reader must get the
+        same answer as everyone else.
+        """
+        line = "{}  {}. {}".format(row_data.get("marker", "+"), row_data.get("index", 1), row_data.get("title", ""))
+        tail = [part for part in (row_data.get("status_label"), row_data.get("duration")) if part]
+        if tail:
+            line += "  (" + ", ".join(tail) + ")"
+        detail = row_data.get("detail") or ""
+        params = row_data.get("params") or ""
+        widget = QWidget()
+        column = QVBoxLayout(widget)
+        column.setContentsMargins(2, 1, 2, 1)
+        column.setSpacing(1)
+        head = self._plain(QLabel(), line)
+        head.setWordWrap(True)
+        tone = row_data.get("tone")
+        head.setStyleSheet(
+            "color:#F2B8B5;" if tone == "danger" else "color:#8F96A8;"
+        )
+        column.addWidget(head)
+        if detail:
+            body = self._plain(QLabel(), "     " + detail)
+            body.setWordWrap(True)
+            body.setStyleSheet("color:#A9B0C0;")
+            column.addWidget(body)
+        if params:
+            # The arguments are the half of "what did it do" that nothing used
+            # to record. They are shown small rather than hidden, because the
+            # panel has no room for a disclosure control per step.
+            argument_line = self._plain(QLabel(), "     " + params)
+            argument_line.setWordWrap(True)
+            argument_line.setStyleSheet("color:#6F7688; font-family:monospace; font-size:10px;")
+            column.addWidget(argument_line)
+        widget.setStyleSheet("background:transparent; border:0;")
+        return widget
+
     @guarded
     def _render_nivo_turns(self):
         """Render sender-distinct native widget bubbles; no model HTML."""
@@ -2672,7 +2719,7 @@ class MapdexPlugin:
             item = layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        for sender, text in self._nivo_turns:
+        for sender, text, steps in self._nivo_turns:
             card = QWidget()
             row = QVBoxLayout(card)
             is_thinking = sender != "user" and str(text).startswith("Thinking")
@@ -2706,6 +2753,8 @@ class MapdexPlugin:
             else:
                 card.setStyleSheet("background:transparent; color:#F7F7F5; border:0;")
                 body.setStyleSheet("color:#F7F7F5;")
+                for row_data in steps or []:
+                    row.addWidget(self._step_widget(row_data))
             layout.addWidget(card)
         layout.addStretch(1)
         bar = self.nivo_reply.verticalScrollBar()
@@ -2903,7 +2952,10 @@ class MapdexPlugin:
             self._show_error("Could not open that conversation", exception)
             return
         turns = thread_turns(payload)
-        self._nivo_turns = list(turns)
+        # A replayed conversation carries no execution trace: the server stores
+        # the messages, not the steps. Restoring it with an empty step list says
+        # "not recorded" rather than "nothing ran", which are different claims.
+        self._nivo_turns = [(sender, text, []) for sender, text in turns]
         self._render_nivo_turns()
         self._adopt_conversation(thread_id, project_id)
         if self.nivo_status is not None:

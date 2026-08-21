@@ -190,7 +190,7 @@ class FakePanel:
 
     @property
     def said(self):
-        return [text for sender, text in self._nivo_turns if sender == "assistant"]
+        return [entry[1] for entry in self._nivo_turns if entry[0] == "assistant"]
 
 
 def _run(run_id, state, prompt="", files=("file_1",), error=None):

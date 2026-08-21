@@ -681,7 +681,7 @@ def replayed_markup_stays_text():
     """
     plugin = need_plugin()
     raw = "<b>not bold</b> & <img src=x>"
-    plugin._nivo_turns = [("user", "merhaba"), ("assistant", raw)]
+    plugin._nivo_turns = [("user", "merhaba", []), ("assistant", raw, [])]
     plugin._render_nivo_turns()
     plain = enum_member(Qt, "TextFormat", "PlainText")
     matches = [
@@ -700,7 +700,7 @@ check("replayed markup renders as text, not as HTML", replayed_markup_stays_text
 def new_chat_clears_the_transcript():
     """Pressed, not called: this goes through the signal `_ensure_dock` wired."""
     plugin = need_plugin()
-    plugin._nivo_turns = [("user", "kaç parsel var"), ("assistant", "24")]
+    plugin._nivo_turns = [("user", "kaç parsel var", []), ("assistant", "24", [])]
     plugin._render_nivo_turns()
     before = len(transcript_cards(plugin))
     if before < 2:
