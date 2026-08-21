@@ -408,6 +408,7 @@ class MapdexAPI:
         message: str,
         companion_context: dict[str, Any],
         thread_id: str = "",
+        companion_results=None,
     ):
         """Call the canonical compose endpoint with bounded QGIS context.
 
@@ -426,6 +427,11 @@ class MapdexAPI:
         }
         if thread_id:
             payload["thread_id"] = str(thread_id)
+        # The reported outcomes of the previous turn's actions. Their presence
+        # is what makes this a continuation of the same objective rather than a
+        # new question, and the server counts them as the loop's budget.
+        if companion_results:
+            payload["companion_results"] = list(companion_results)
         return self._request("POST", "/v1/compose", payload, project_id)
 
     def list_threads(self, project_id: str) -> list[dict[str, Any]]:

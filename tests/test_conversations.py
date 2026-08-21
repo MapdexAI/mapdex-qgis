@@ -75,6 +75,9 @@ class _FakeAPI:
         self.compose_results = list(compose_results)
         self.thread_ids = list(thread_ids)
         self.compose_calls = []
+        # What each turn reported about the previous turn's actions. A
+        # continuation is identified by this being non-empty.
+        self.reported_results = []
         self.created = []
 
     def create_thread(self, project_id, title=""):
@@ -86,8 +89,9 @@ class _FakeAPI:
             raise value
         return {"id": value}
 
-    def compose(self, project_id, message, context, thread_id=""):
+    def compose(self, project_id, message, context, thread_id="", companion_results=None):
         self.compose_calls.append(thread_id)
+        self.reported_results.append(list(companion_results or []))
         outcome = self.compose_results.pop(0)
         if isinstance(outcome, Exception):
             raise outcome

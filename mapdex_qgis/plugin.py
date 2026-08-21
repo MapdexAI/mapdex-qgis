@@ -146,6 +146,7 @@ from .results import (
     summarize_runs,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
+from .continuation import action_result, continuation_budget, should_continue
 from .trace_view import budget_label, step_rows
 from .source_info import inspect_paths
 from .workspace import review_workspace_path, task_workspace_path
@@ -710,6 +711,11 @@ class MapdexPlugin:
         self.nivo_new_button = None
         self.nivo_history_button = None
         self._nivo_turns = []
+        # A multi-step objective: what was asked, what the actions reported, and
+        # how many round trips it has taken.
+        self._nivo_objective = ""
+        self._nivo_action_results = []
+        self._nivo_round_trips = 0
         self._nivo_state = "idle"
         self._executed_nivo_actions = set()
         self._nivo_compose_task = None
@@ -2329,8 +2335,7 @@ class MapdexPlugin:
         self._set_nivo_compose_busy(True)
         self._nivo_state = transition(self._nivo_state, "send")
         self._nivo_turns.append(("user", message, []))
-        self._nivo_turns.append(("assistant", "Thinking…", []))
-        self._render_nivo_turns()
+        self._say("Thinking…")
         self.nivo_status.setText("Nivo AI is reading your map context…")
         self.nivo_input.clear()
         self._refresh_nivo_context()
@@ -2343,6 +2348,11 @@ class MapdexPlugin:
         # plainly open. Only the HTTP call belongs in the background. The BYOK
         # loop obeys the same rule for the same reason - it reads the same
         # canvas and runs capabilities against the same layer tree.
+        # The objective a continuation re-sends. A continuation is the same
+        # question one step on, so re-deriving it from the input box would send
+        # whatever the user has since typed there.
+        self._nivo_objective = message
+        self._nivo_round_trips = 0
         context = companion_context(self._nivo_snapshot())
         if is_byok(runtime):
             self._start_byok_turn(message, context, request_id)
@@ -2527,11 +2537,11 @@ class MapdexPlugin:
         """Overwrite the pending "Thinking…" bubble, or add one."""
         if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
             self._nivo_turns[-1] = ("assistant", str(text), self._nivo_turns[-1][2])
-        else:
-            self._nivo_turns.append(("assistant", str(text), []))
-        self._render_nivo_turns()
+            self._render_nivo_turns()
+            return
+        self._say(str(text))
 
-    def _compose_in_thread(self, project_id, message, context, thread_id, title):
+    def _compose_in_thread(self, project_id, message, context, thread_id, title, companion_results=None):
         """One conversational turn. Network only — runs on a worker thread.
 
         Both calls belong here rather than in the caller: opening a
@@ -2548,7 +2558,9 @@ class MapdexPlugin:
         if not thread_id:
             thread_id, notice = self._open_conversation(project_id, title)
         try:
-            response = self.api.compose(project_id, message, context, thread_id=thread_id)
+            response = self.api.compose(
+                project_id, message, context, thread_id=thread_id,
+                companion_results=companion_results)
         except MapdexAPIError as exc:
             if not thread_id or not thread_is_gone(exc.status):
                 # A conversation we just opened is still ours even though this
@@ -2559,7 +2571,9 @@ class MapdexPlugin:
                 raise
             thread_id, notice = self._open_conversation(project_id, title)
             try:
-                response = self.api.compose(project_id, message, context, thread_id=thread_id)
+                response = self.api.compose(
+                    project_id, message, context, thread_id=thread_id,
+                    companion_results=companion_results)
             except MapdexAPIError as retry_error:
                 retry_error.mapdex_thread_id = thread_id
                 raise
@@ -2639,19 +2653,61 @@ class MapdexPlugin:
             steps = step_rows(response)
             if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
                 self._nivo_turns[-1] = ("assistant", reply, steps)
+                self._render_nivo_turns()
             else:
-                self._nivo_turns.append(("assistant", reply, steps))
-            self._render_nivo_turns()
+                self._say(reply, steps)
         if self.nivo_status is not None:
             notice = str(outcome.get("notice") or "")
             budget = budget_label(response)
             self.nivo_status.setText(notice or budget or "Ready")
+        self._nivo_action_results = []
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
         for action in confirmation_actions(response):
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
+        self._continue_objective(response)
+
+    @guarded
+    def _continue_objective(self, response):
+        """Tell the server what the actions did, so the objective can go on.
+
+        This is the client half of a multi-step turn. Without it a desktop
+        objective ends after one action however many the question needed, which
+        is what taught users to type one small command at a time.
+
+        The user's message is re-sent unchanged: the objective has not changed,
+        only what is known about it. Nothing here decides anything about GIS -
+        the server chooses the next capability and the registry still validates
+        it before it runs.
+        """
+        results = list(getattr(self, "_nivo_action_results", []))
+        if not should_continue(response, results, getattr(self, "_nivo_round_trips", 0)):
+            self._nivo_round_trips = 0
+            return
+        self._nivo_round_trips = getattr(self, "_nivo_round_trips", 0) + 1
+        message = self._nivo_objective
+        if not message:
+            self._nivo_round_trips = 0
+            return
+        used, total = continuation_budget(response)
+        if self.nivo_status is not None and total:
+            self.nivo_status.setText("Step {} of {}".format(used + 1, total))
+        context = companion_context(self._nivo_snapshot())
+        self._nivo_request_id += 1
+        request_id = self._nivo_request_id
+        project_id = self._active_project_id()
+        thread_id = self._nivo_thread_id
+        self._set_nivo_compose_busy(True)
+
+        def work():
+            return self._compose_in_thread(
+                project_id, message, context, thread_id, message, companion_results=results)
+
+        self._nivo_compose_task = self._task(
+            "Nivo is continuing", work,
+            lambda error, outcome: self._nivo_composed(request_id, error, outcome))
 
     @staticmethod
     def _plain(label, text):
@@ -3015,6 +3071,19 @@ class MapdexPlugin:
         if refs is not None:
             self._load_thread_history()
 
+    def _say(self, text, steps=None):
+        """Append one assistant turn.
+
+        Every caller goes through here because a transcript entry has a shape,
+        (sender, text, steps), and seven call sites went on writing a
+        two-element tuple after that shape changed. plugin.py cannot be imported
+        by the headless suite, so a shape mismatch here is invisible until a
+        user hits it inside QGIS; one constructor is what makes the mistake
+        impossible rather than merely unlikely.
+        """
+        self._nivo_turns.append(("assistant", str(text), list(steps or [])))
+        self._render_nivo_turns()
+
     @guarded
     def _apply_nivo_action(self, action):
         """Dispatch one compose action through the capability registry.
@@ -3296,8 +3365,7 @@ class MapdexPlugin:
         The turn that started the task already ended, so this also closes the
         state machine: leaving it in `executing` wedges every later turn.
         """
-        self._nivo_turns.append(("assistant", line))
-        self._render_nivo_turns()
+        self._say(line)
         self._set_status(line)
         self._nivo_state = transition(self._nivo_state, "done")
 
@@ -3385,10 +3453,24 @@ class MapdexPlugin:
             self._set_status("Nivo failed to run {}: {}".format(capability_id, describe_exception(error)))
             self._nivo_state = transition(self._nivo_state, "error")
             return False
-        self._nivo_turns.append(("assistant", self._describe_capability_result(summary or capability_id, result)))
-        self._render_nivo_turns()
+        described = self._describe_capability_result(summary or capability_id, result)
+        self._say(described)
+        self._report_action_result(capability_id, True, summary=described, result=result)
         self.iface.mapCanvas().refresh()
         return True
+
+    def _report_action_result(self, capability_id, ok, summary="", error="", result=None):
+        """Record what an action did, for the continuation to report.
+
+        Kept per turn rather than per session: a new question starts a new
+        objective, and carrying the previous one's outcomes into it would tell
+        the server work had just happened that had not.
+        """
+        if not hasattr(self, "_nivo_action_results"):
+            self._nivo_action_results = []
+        self._nivo_action_results.append(action_result(
+            capability_id, ok, summary=summary, error=str(error or ""),
+            result=result if isinstance(result, dict) else None))
 
     def _capability_refused(self, error):
         """A refusal is a finished turn, not a wedged one.
@@ -3423,8 +3505,7 @@ class MapdexPlugin:
             # layer while always building point geometry made QGIS reject every
             # feature and left an empty polygon layer behind - a request that
             # looked answered, plus a raw provider error in the message bar.
-            self._nivo_turns.append(("assistant", describe_unplaceable_geometry(geometry)))
-            self._render_nivo_turns()
+            self._say(describe_unplaceable_geometry(geometry))
             self._set_status("Nivo did not place features.")
             self._nivo_state = transition(self._nivo_state, "done")
             return False
@@ -3487,8 +3568,7 @@ class MapdexPlugin:
         self.iface.setActiveLayer(layer)
         self._zoom_to_layers([layer])
         self.iface.mapCanvas().refresh()
-        self._nivo_turns.append(("assistant", describe_placement(len(features), len(positions), where)))
-        self._render_nivo_turns()
+        self._say(describe_placement(len(features), len(positions), where))
         self._refresh_nivo_context()
         self._set_status("Nivo added {} feature(s) to '{}'.".format(len(features), layer.name()))
         return True
@@ -3566,12 +3646,8 @@ class MapdexPlugin:
         QgsProject.instance().addMapLayer(layer)
         self.iface.setActiveLayer(layer)
         self.iface.mapCanvas().refresh()
-        self._nivo_turns.append((
-            "assistant",
-            "Created '{}' ({}, {}). It is the active layer - toggle editing to start drawing.".format(
-                name, geometry, crs or "EPSG:4326"),
-        ))
-        self._render_nivo_turns()
+        self._say("Created '{}' ({}, {}). It is the active layer - toggle editing to start drawing.".format(
+            name, geometry, crs or "EPSG:4326"))
         self._refresh_nivo_context()
         self._set_status("Nivo created the layer '{}'.".format(name))
         return True
@@ -3685,8 +3761,7 @@ class MapdexPlugin:
             # Only an exact zero counts as empty: several providers answer -1 for
             # "unknown". Running anyway SUCCEEDS and writes an empty layer, which
             # is how "buffer yap" ended with a new layer and no buffer in it.
-            self._nivo_turns.append(("assistant", describe_empty_input(operation, source_name)))
-            self._render_nivo_turns()
+            self._say(describe_empty_input(operation, source_name))
             self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
             self._nivo_state = transition(self._nivo_state, "done")
             return
@@ -3759,9 +3834,8 @@ class MapdexPlugin:
             # An algorithm that finished is not the same as a result the user can
             # see: "completed" over an empty or missing output is a claim the map
             # contradicts. The algorithm id stays out of this line entirely.
-            self._nivo_turns.append(("assistant", describe_processing_outcome(
-                operation, output_name, produced, source_name)))
-            self._render_nivo_turns()
+            self._say(describe_processing_outcome(
+                operation, output_name, produced, source_name))
             self.iface.mapCanvas().refresh()
             self._nivo_state = transition(self._nivo_state, "done")
             if output_name and produced != 0:

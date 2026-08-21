@@ -84,6 +84,11 @@ class FakeLocale:
 
 
 HANDLERS = (
+    # _say is the one constructor for a transcript entry. Lifting it rather
+    # than faking it means these tests exercise the real shape, which is the
+    # whole reason it exists: the seven call sites that wrote the old
+    # two-element tuple were invisible to this suite until it did.
+    "_say",
     "_require_mapdex_session",
     "_list_mapdex_runs",
     "_mapdex_runs_listed",

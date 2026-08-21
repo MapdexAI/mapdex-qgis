@@ -75,6 +75,48 @@ def test_the_step_widget_touches_no_network_or_project_state():
         assert banned not in dumped, "_step_widget is a painter, not an actor"
 
 
+def test_every_assistant_turn_is_built_by_one_constructor():
+    """A transcript entry has a shape, and seven call sites once ignored it.
+
+    The shape changed when steps were added and those sites kept writing a
+    two-element tuple. Nothing caught it: plugin.py cannot be imported by this
+    suite, so the mismatch was invisible until a user hit it inside QGIS. The
+    guard is structural rather than behavioural, because the defect is an
+    OMISSION and no behavioural test of one site fails when a new site forgets.
+    """
+    tree = ast.parse(PLUGIN)
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "append":
+            continue
+        target = func.value
+        if not (isinstance(target, ast.Attribute) and target.attr == "_nivo_turns"):
+            continue
+        if len(node.args) != 1 or not isinstance(node.args[0], ast.Tuple):
+            offenders.append(node.lineno)
+            continue
+        if len(node.args[0].elts) != 3:
+            offenders.append(node.lineno)
+    # Two sites remain: the user's own turn, which is not an assistant turn,
+    # and _say itself. Everything else goes through the constructor.
+    assert not offenders, "two-element transcript entries at lines {}".format(offenders)
+    assert PLUGIN.count("self._nivo_turns.append(") == 2
+
+
+def test_the_turn_constructor_is_not_a_qt_entry_point():
+    # `@guarded` is the error boundary for a slot. Putting it on a helper is
+    # harmless until it is inserted ABOVE an existing decorator and silently
+    # steals it from the slot below, which is exactly what happened once here.
+    index = PLUGIN.index("def _say(self")
+    preceding = PLUGIN[:index].rstrip().splitlines()[-1].strip()
+    assert preceding != "@guarded", "_say took the decorator belonging to the method below it"
+    guard_line = PLUGIN[:PLUGIN.index("def _apply_nivo_action(")].rstrip().splitlines()[-1].strip()
+    assert guard_line == "@guarded", "the action dispatcher lost its error boundary"
+
+
 def test_a_replayed_conversation_says_its_steps_were_not_recorded():
     # The server stores messages, not traces. Restoring history with an empty
     # step list says "not recorded"; inventing steps would say "this is what it
