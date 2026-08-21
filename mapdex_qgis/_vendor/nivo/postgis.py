@@ -380,6 +380,100 @@ def build_profile(catalog: TableCatalog) -> tuple[str, list[Any]]:
     return guard_statement(statement.as_string()), []
 
 
+# Schemas PostGIS and its friends own. A person asking which of THEIR tables
+# has no spatial index does not mean `topology.topology`, and including them
+# would bury the four rows they are looking for.
+SYSTEM_SCHEMAS = ("postgis", "topology", "tiger", "tiger_data")
+
+MAX_DIAGNOSTIC_TABLES = 200
+
+
+def build_diagnostics(limit: int = MAX_DIAGNOSTIC_TABLES) -> tuple[str, list[Any]]:
+    """The catalogue: which spatial tables exist and what state they are in.
+
+    The only builder here that names no table, because the question cannot be
+    asked one table at a time - "which of my tables has no spatial index" is
+    about the set. It therefore takes no caller identifier at all, which makes
+    it the narrowest surface in this module rather than the widest.
+
+    Three deliberate choices, the same three the server's version makes, because
+    a desktop answer that disagreed with the hosted one about the same database
+    would be worse than no desktop answer.
+
+    `reltuples` rather than `count(*)`: counting every row to answer a
+    diagnostic question is a scan nobody asked for, and it is slowest on exactly
+    the tables where the answer matters. -1 means never analysed, which is
+    reported as unknown rather than as zero rows.
+
+    The index check looks for a GiST or SP-GiST index ON THE GEOMETRY COLUMN,
+    not any index on the table. A btree on an id is an index and does nothing
+    for a spatial query, so counting it would answer the opposite question.
+
+    `pg_total_relation_size` includes indexes and TOAST, because "how big is
+    this table" means the space it occupies rather than the heap alone.
+    """
+    exclusions = ", ".join("'{}'".format(name) for name in SYSTEM_SCHEMAS)
+    statement = (
+        "select g.f_table_schema, g.f_table_name, g.f_geometry_column, "
+        "coalesce(g.type, '') as geometry_type, coalesce(g.srid, 0) as srid, "
+        "coalesce(c.reltuples, -1)::bigint as row_estimate, "
+        "coalesce(pg_total_relation_size(c.oid), 0)::bigint as total_bytes, "
+        "coalesce((select count(*) from pg_index x "
+        "join pg_class i on i.oid = x.indexrelid "
+        "join pg_am am on am.oid = i.relam "
+        "join pg_attribute a on a.attrelid = c.oid and a.attnum = any(x.indkey) "
+        "where x.indrelid = c.oid and am.amname in ('gist', 'spgist') "
+        "and a.attname = g.f_geometry_column), 0) as spatial_indexes "
+        "from geometry_columns g "
+        "join pg_class c on c.relname = g.f_table_name "
+        "join pg_namespace n on n.oid = c.relnamespace and n.nspname = g.f_table_schema "
+        "where g.f_table_schema not in ({}) "
+        "order by g.f_table_schema, g.f_table_name limit %s".format(exclusions)
+    )
+    return guard_statement(statement), [_limit(limit, MAX_DIAGNOSTIC_TABLES, MAX_DIAGNOSTIC_TABLES)]
+
+
+def read_diagnostics(rows: Iterable[Sequence[Any]], limit: int = MAX_DIAGNOSTIC_TABLES) -> dict[str, Any]:
+    """Turn the rows into the answers a person actually asked for.
+
+    Named lists rather than a register to search. Somebody asking which tables
+    have no spatial index is handed those tables; handing back two hundred rows
+    and expecting them to spot the four that matter has not answered them.
+    """
+    tables = []
+    for row in rows or ():
+        values = list(row)
+        if len(values) < 8:
+            continue
+        estimate = int(values[5])
+        analysed = estimate >= 0
+        tables.append({
+            "schema": str(values[0]),
+            "table": str(values[1]),
+            "geometry_column": str(values[2]),
+            "geometry_type": str(values[3] or ""),
+            "srid": int(values[4]),
+            # An unknown row count is reported as unknown. Reading -1 as zero
+            # turns an absence of information into a fact about the data.
+            "row_estimate": estimate if analysed else 0,
+            "analysed": analysed,
+            # Never exact, even immediately after a statistics refresh.
+            "exact": False,
+            "has_spatial_index": int(values[7]) > 0,
+            "total_bytes": int(values[6]),
+        })
+    return {
+        "tables": tables,
+        "table_count": len(tables),
+        "missing_spatial_index": [t for t in tables if not t["has_spatial_index"]],
+        "undeclared_srid": [t for t in tables if t["srid"] == 0],
+        "never_analysed": [t for t in tables if not t["analysed"]],
+        # The cap is stated rather than hidden: "the first two hundred" and
+        # "all of them" are different answers to "which tables have no index".
+        "truncated": len(tables) >= limit,
+    }
+
+
 def build_numeric_stats(
     catalog: TableCatalog,
     column: str,

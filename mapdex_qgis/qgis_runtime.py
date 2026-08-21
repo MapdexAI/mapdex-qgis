@@ -1037,6 +1037,32 @@ class QGISRuntime:
             "rows": outcome["rows"],
         }
 
+    def postgis_diagnose(self, connection_id: str) -> dict[str, Any]:
+        """The catalogue of a QGIS-local PostGIS connection.
+
+        The only question here that names no table, because it cannot be asked
+        one table at a time. It therefore takes no caller identifier at all,
+        which makes it the narrowest surface in this file rather than the widest.
+
+        Same shape as the hosted `geo:postgis_diagnose@1`, deliberately: a
+        desktop answer that disagreed with the server about the same database
+        would be worse than no desktop answer. What differs is which databases
+        each can reach, and that difference is the reason both exist.
+        """
+        connection = self._pg_connection(connection_id)
+        outcome = self._pg_execute(connection, connection_id, postgis.build_diagnostics())
+        answer = postgis.read_diagnostics(outcome["rows"])
+        return {
+            "kind": "postgis_diagnose",
+            "connection": connection_id,
+            # The statement travels back for the same reason it does everywhere
+            # else here: the claim is that the SQL selects what it says it
+            # selects, and a claim nobody can inspect is not a claim.
+            "sql": outcome["sql"],
+            "enforced_read_only": outcome["enforced_read_only"],
+            **answer,
+        }
+
     def postgis_profile(self, connection_id: str, schema: str, table: str) -> dict[str, Any]:
         connection = self._pg_connection(connection_id)
         catalog = self._pg_catalog(connection, connection_id, schema, table)
@@ -2273,6 +2299,7 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         ),
         # Asking a database a question it can answer. The request names a table,
         # a column and an operation; there is no field that can carry SQL.
+        "postgis.diagnose@1": lambda p: runtime.postgis_diagnose(p["connection_id"]),
         "postgis.profile@1": lambda p: runtime.postgis_profile(
             p["connection_id"], p["schema"], p["table"],
         ),

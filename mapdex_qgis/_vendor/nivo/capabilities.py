@@ -568,6 +568,15 @@ _c("style.undo@1", "style", "Undo the last reversible presentation change.",
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
 # -- PostGIS: read-only analytics ------------------------------------------
+# The catalogue, which is the one question here that names no table: "which of
+# my tables has no spatial index" is about the set, so asking it one table at a
+# time is not a narrower version of it. It therefore takes no identifier from
+# the caller at all - the narrowest surface in this domain rather than the
+# widest, despite reading the whole database.
+_c("postgis.diagnose@1", "postgis", "Read a PostGIS connection's catalogue: which tables have no spatial index, "
+   "which declare no SRID, which were never analysed, and how large each one is.",
+   params={"connection_id": {"type": "string", "required": True}},
+   execution=EXEC_POSTGIS, produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("postgis.profile@1", "postgis", "Profile a PostGIS table: feature count, extent, SRID and validity.",
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
