@@ -35,6 +35,16 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "zonal_statistics": ("native:zonalstatisticsfb", "qgis:zonalstatistics"),
 }
 
+# The operations that have a capability of their own rather than being reached
+# through the generic bridge. Kept here, beside the catalog, so the handler
+# table and the capability declarations cannot name different sets: an id
+# advertised with no handler is the "Nivo prepared an action" and nothing
+# happens failure, and a handler nobody advertises is dead code.
+NAMED_GEOPROCESSING_OPERATIONS: tuple[str, ...] = (
+    "buffer", "clip", "intersection", "union", "difference",
+    "dissolve", "merge", "centroid", "convex_hull", "reproject",
+)
+
 # Operations that combine two layers. Naming them makes the requirement
 # checkable rather than implied by whichever parameter the algorithm happens to
 # expose: running one of these against a single layer produces an empty or

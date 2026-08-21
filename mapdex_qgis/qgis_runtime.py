@@ -1969,6 +1969,19 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     "map.zoom_extent@1",
     "processing.run@1",
     "processing.discover@1",
+    # The ten named operations. They run through the same Processing task as
+    # the generic bridge, so they belong to the plugin for the same reason it
+    # does: the runtime has no async task runner and no layer loading.
+    "geoprocessing.buffer@1",
+    "geoprocessing.clip@1",
+    "geoprocessing.intersection@1",
+    "geoprocessing.union@1",
+    "geoprocessing.difference@1",
+    "geoprocessing.dissolve@1",
+    "geoprocessing.merge@1",
+    "geoprocessing.centroid@1",
+    "geoprocessing.convex_hull@1",
+    "geoprocessing.reproject@1",
     # The two server-side surfaces a desktop user otherwise had to leave QGIS to
     # reach: which runs exist and why one failed, and the review of a run that is
     # waiting on a person. Both need the plugin's API client, its project scope

@@ -610,6 +610,85 @@ _c("processing.run@1", "processing", "Run an installed QGIS Processing algorithm
            # operation a no-op that reported success.
            "target_crs": {"type": "string"}},
    risk=RISK_CONSEQUENTIAL, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=False)
+# -- Named geoprocessing: one capability per operation ----------------------
+#
+# These ten were reachable only through `processing.run@1`, the generic bridge,
+# which is risk-classified consequential and therefore asks before every single
+# run. That is right for a bridge that can reach any allowlisted algorithm and
+# wrong for the operations themselves: each of these READS one or two layers and
+# writes a NEW one, changing nothing that already exists. Removing a layer you
+# did not want is one click, so a confirmation buys nothing and costs a step
+# every time.
+#
+# Naming them also lets each declare the parameters it actually takes instead of
+# the union of all of them. `processing.run@1` accepts distance, segments and
+# predicate whatever the operation is, so a request could name a buffer distance
+# for a centroid and be accepted.
+#
+# `operation` is deliberately absent from every one of these: the capability id
+# IS the operation. A named capability that still takes an operation name is the
+# generic bridge wearing ten hats.
+_LAYER_IN = {"layer_id": {"type": "string", "required": True}}
+_OTHER_LAYER = {"other_layer_id": {"type": "string", "required": True}}
+
+_c("geoprocessing.buffer@1", "geoprocessing", "Grow or shrink features by a distance, as a new layer.",
+   params=dict(_LAYER_IN, **{
+       "distance": {"type": "number", "required": True, "min": 0, "max": 1_000_000},
+       "unit": {"type": "string", "enum": ["m", "km", "ft", "mi"], "default": "m"},
+       "segments": {"type": "integer", "min": 1, "max": 96}}),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.clip@1", "geoprocessing", "Keep only the parts of one layer that fall inside another.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.intersection@1", "geoprocessing", "Keep the overlapping parts of two layers, with both sets of attributes.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.union@1", "geoprocessing", "Combine two layers, splitting them where they overlap.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.difference@1", "geoprocessing", "Remove from one layer everything the other covers.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+# The field is optional and its absence is a real request rather than a missing
+# argument: no field merges the whole layer into one shape.
+_c("geoprocessing.dissolve@1", "geoprocessing", "Merge features into one shape per value of a field, or into a single shape.",
+   params=dict(_LAYER_IN, **{"field": {"type": "string"}}),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.merge@1", "geoprocessing", "Stack two layers into one without changing their shapes.",
+   params=dict(_LAYER_IN, **_OTHER_LAYER),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.centroid@1", "geoprocessing", "Reduce each feature to a single point.",
+   params=dict(_LAYER_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+_c("geoprocessing.convex_hull@1", "geoprocessing", "Wrap the layer in the smallest shape that contains all of it.",
+   params=dict(_LAYER_IN),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
+# The destination is required, and that is the correction this capability
+# carries: the bridge used to fill TARGET_CRS with the layer's own system, so a
+# reprojection produced a duplicate in the system it started in.
+_c("geoprocessing.reproject@1", "geoprocessing", "Rewrite a layer in a different coordinate reference system.",
+   params=dict(_LAYER_IN, **{"target_crs": {"type": "string", "required": True}}),
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("vector",), clients=(CLIENT_QGIS,))
+
 _c("processing.discover@1", "processing", "List the installed Processing algorithms that fit an objective.",
    params={"objective": {"type": "string", "required": True}},
    execution=EXEC_LOCAL, produces=("catalog",))

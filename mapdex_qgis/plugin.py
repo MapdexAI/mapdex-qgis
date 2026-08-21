@@ -120,6 +120,7 @@ from .nivo import (
 )
 from .panel import build_companion_panel, build_thread_history_dialog
 from ._vendor.nivo.processing import (
+    NAMED_GEOPROCESSING_OPERATIONS,
     PROCESSING_OPERATION_CATALOG,
     build_algorithm_parameters,
     describe_empty_input,
@@ -3328,6 +3329,24 @@ class MapdexPlugin:
             # spelling performed.
             "processing.run@1": self._run_processing_capability,
             "processing.discover@1": self._discover_processing,
+            # The named operations. Each closes over its own operation name and
+            # reuses the one runner, so there is a single place that decides
+            # how a Processing algorithm is resolved, validated and loaded.
+            #
+            # Written out rather than comprehended from
+            # NAMED_GEOPROCESSING_OPERATIONS: the parity test reads this table
+            # STATICALLY, and a key it cannot read is a binding hidden from the
+            # guard that exists to check it.
+            "geoprocessing.buffer@1": self._named_processing_capability("buffer"),
+            "geoprocessing.clip@1": self._named_processing_capability("clip"),
+            "geoprocessing.intersection@1": self._named_processing_capability("intersection"),
+            "geoprocessing.union@1": self._named_processing_capability("union"),
+            "geoprocessing.difference@1": self._named_processing_capability("difference"),
+            "geoprocessing.dissolve@1": self._named_processing_capability("dissolve"),
+            "geoprocessing.merge@1": self._named_processing_capability("merge"),
+            "geoprocessing.centroid@1": self._named_processing_capability("centroid"),
+            "geoprocessing.convex_hull@1": self._named_processing_capability("convex_hull"),
+            "geoprocessing.reproject@1": self._named_processing_capability("reproject"),
             # Both read the project's runs through this plugin's API client, so
             # neither can live in the runtime, which has no session and no
             # project. Until they were bound, seeing a job list or opening a
@@ -3358,6 +3377,28 @@ class MapdexPlugin:
                 )
             )
         return handlers
+
+    def _named_processing_capability(self, operation):
+        """A handler for one named operation.
+
+        The capability id IS the operation, so the caller never sends one and
+        cannot send a different one: `geoprocessing.buffer@1` can only buffer.
+        That is the difference from the generic bridge, which takes the
+        operation as an argument and therefore has to ask before every run.
+        """
+
+        def run(params):
+            request = dict(params)
+            request["operation"] = operation
+            # `other_layer_id` is what the capability declares, because that is
+            # the name every other two-layer capability on this surface uses;
+            # `target_layer` is what the Processing request carries. Translating
+            # here keeps one vocabulary facing the user and one facing QGIS.
+            if request.get("other_layer_id") and not request.get("target_layer"):
+                request["target_layer"] = request["other_layer_id"]
+            return self._run_processing_capability(request)
+
+        return run
 
     def _run_processing_capability(self, params):
         """Start a validated Processing operation.
