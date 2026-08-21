@@ -113,6 +113,30 @@ def _bound_capabilities() -> frozenset:
         return frozenset()
 
 
+def _can_run_plans() -> bool:
+    """Whether this build can START a plan the server proposes.
+
+    Not a supported action kind: that list is what the SERVER asks the desktop
+    to perform, and running a plan is the desktop acting on a proposal. Putting
+    it there would corrupt the registry intersection the server does on arrival.
+
+    Read from the module that does the work rather than written as a literal, so
+    the advertisement cannot outlive the control. Both halves are required - the
+    offer that states the cost and asks, and the client call that submits the
+    plan unchanged with its hash.
+    """
+    try:
+        from . import plan_offer
+        from .api_client import MapdexAPI
+
+        return callable(getattr(plan_offer, "plan_offer", None)) and callable(
+            getattr(MapdexAPI, "create_run", None))
+    except Exception:  # noqa: BLE001 - advertisement must never break the plugin
+        return False
+
+
+CAN_RUN_PLANS = _can_run_plans()
+
 IMPLEMENTED_ACTIONS = LEGACY_ACTIONS | _bound_capabilities()
 
 # The protocol allowlist has to admit the canonical vocabulary too, or the
@@ -201,6 +225,10 @@ def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     # Advertise only what this build can carry out, so the server never chooses
     # an action that would silently do nothing on this desktop.
     context["supported_action_kinds"] = sorted(IMPLEMENTED_ACTIONS)
+    # Whether a proposed plan can be started here. A build that cannot is told
+    # so beside the plan, instead of reading "run it when the steps look right"
+    # next to no control.
+    context["can_run_plans"] = CAN_RUN_PLANS
     context["qgis_version"] = _text(snapshot.get("qgis_version"), 64)
     context["plugin_version"] = _text(snapshot.get("plugin_version"), 64)
     if viewport:
