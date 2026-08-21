@@ -747,6 +747,36 @@ _c("survey.intersect@1", "survey", "Fix a point from two bearings, on the ellips
 # Station and offset. A point past the end of the line is reported as past the
 # end rather than clamped to the endpoint: it is a real measurement and the
 # surveyor needs to know where it actually fell.
+# A taped fix has TWO answers and both come back with the side of the baseline
+# they fall on. Returning one would be choosing for the surveyor, and only they
+# know which side of the line they were standing on.
+_c("survey.trilaterate@1", "survey", "Fix a point from two taped distances; both answers are returned.",
+   params={"first_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "first_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "first_distance_m": {"type": "number", "required": True, "min": 0, "max": 1_000_000},
+           "second_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "second_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "second_distance_m": {"type": "number", "required": True, "min": 0, "max": 1_000_000},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
+# Resection carries its danger-circle margin with the answer. On that circle
+# every station observes the same two angles, so the observations name no
+# single place - and the margin is what says how close to that the fix is.
+_c("survey.resection@1", "survey", "Fix the instrument's own position from angles to three known points.",
+   params={"first_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "first_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "second_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "second_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "third_lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "third_lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "angle_first_second_deg": {"type": "number", "required": True, "min": 0, "max": 180},
+           "angle_second_third_deg": {"type": "number", "required": True, "min": 0, "max": 180},
+           "ellipsoid": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("survey.station_offset@1", "survey", "How far along a line a point sits, and how far off it.",
    params={"start_lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "start_lon": {"type": "number", "required": True, "min": -180, "max": 180},

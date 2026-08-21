@@ -26,6 +26,7 @@ from ._vendor.nivo import (
     intersect,
     postgis,
     presentation,
+    resection,
     spatial,
     survey,
 )
@@ -2158,6 +2159,15 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "survey.traverse@1": lambda p: survey.traverse(
             p["from_lat"], p["from_lon"], p["legs"], bool(p.get("closed")),
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.trilaterate@1": lambda p: resection.intersect_distances(
+            p["first_lat"], p["first_lon"], p["first_distance_m"],
+            p["second_lat"], p["second_lon"], p["second_distance_m"],
+            survey.ellipsoid_by_name(p.get("ellipsoid"))),
+        "survey.resection@1": lambda p: resection.resect_three_points(
+            p["first_lat"], p["first_lon"], p["second_lat"], p["second_lon"],
+            p["third_lat"], p["third_lon"],
+            p["angle_first_second_deg"], p["angle_second_third_deg"],
             survey.ellipsoid_by_name(p.get("ellipsoid"))),
         "survey.intersect@1": lambda p: intersect.intersect_bearings(
             p["first_lat"], p["first_lon"], p["first_azimuth_deg"],
