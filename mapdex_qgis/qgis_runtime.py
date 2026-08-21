@@ -1563,6 +1563,75 @@ class QGISRuntime:
             "features": layer.featureCount(), "bytes": os.path.getsize(path),
         }
 
+    def geoid_height(self, lat: float, lon: float, height_m: float,
+                     direction: str = "ellipsoidal_to_orthometric",
+                     model: str = "EPSG:5773") -> dict[str, Any]:
+        """Convert between a GPS height and a levelled one, or refuse.
+
+        PROJ's fallback is the trap this is written around. With no geoid grid
+        installed, a transform to a vertical system returns the height
+        UNCHANGED and reports success - and at one metre of separation that is
+        a levelled height wrong by however much the geoid departs from the
+        ellipsoid, which around the Mediterranean is thirty to forty metres.
+        A silent no-op reported as a conversion is worse than a refusal,
+        because nothing downstream can tell the two apart.
+
+        So the height is required to have MOVED. An unchanged height means the
+        grid is not installed, and that is reported as such with the model
+        named, so the answer is "fetch this grid" rather than a number.
+        """
+        from qgis.core import (  # noqa: PLC0415
+            QgsCoordinateReferenceSystem,
+            QgsCoordinateTransform,
+            QgsProject,
+        )
+
+        wanted = str(direction or "").strip() or "ellipsoidal_to_orthometric"
+        if wanted not in ("ellipsoidal_to_orthometric", "orthometric_to_ellipsoidal"):
+            raise CapabilityError(
+                "direction must be ellipsoidal_to_orthometric or orthometric_to_ellipsoidal")
+        vertical = str(model or "").strip() or "EPSG:5773"
+
+        # A bare vertical system cannot carry a position, so the transform is
+        # between COMPOUND systems: the same horizontal datum with and without
+        # the vertical one. Getting this wrong is how the server's first
+        # attempt returned 979.748 for an input of 1000.
+        plain = QgsCoordinateReferenceSystem("EPSG:4326")
+        compound = QgsCoordinateReferenceSystem("EPSG:4326+{}".format(
+            vertical.split(":")[-1]))
+        if not compound.isValid():
+            raise CapabilityError(
+                "{} is not a vertical reference system QGIS knows".format(model))
+
+        source, target = (plain, compound) if wanted == "ellipsoidal_to_orthometric" else (compound, plain)
+        try:
+            transform = QgsCoordinateTransform(source, target, QgsProject.instance())
+            transform.setBallparkTransformsAreAppropriate(False)
+            moved = transform.transform(float(lon), float(lat), float(height_m))
+        except Exception as error:  # noqa: BLE001 - PROJ may raise anything
+            raise CapabilityError("PROJ could not apply {}: {}".format(vertical, error))
+
+        result_height = moved.z() if hasattr(moved, "z") else float(height_m)
+        separation = float(height_m) - result_height
+        if wanted == "orthometric_to_ellipsoidal":
+            separation = result_height - float(height_m)
+        if abs(separation) < 1e-9:
+            raise CapabilityError(
+                "the height came back unchanged, which means the {} grid is not installed "
+                "here. Install it rather than accepting this number: an unconverted "
+                "height is wrong by the whole geoid separation.".format(vertical))
+
+        return {
+            "kind": "geoid_height",
+            "lat": float(lat),
+            "lon": float(lon),
+            "input_height_m": float(height_m),
+            "output_height_m": result_height,
+            "geoid_separation_m": separation,
+            "direction": wanted,
+            "model": vertical,
+        }
+
     def diagnose_layer_crs(self, layer_id: str) -> dict[str, Any]:
         """Whether a layer's declared reference system can hold its coordinates.
 
@@ -2105,6 +2174,10 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
         "export.layer@1": lambda p: runtime.export_layer(
             p["layer_id"], p.get("target_format", "gpkg"),
         ),
+        "crs.geoid_height@1": lambda p: runtime.geoid_height(
+            p["lat"], p["lon"], p["height_m"],
+            str(p.get("direction", "ellipsoidal_to_orthometric")),
+            str(p.get("model", "EPSG:5773"))),
         "crs.diagnose@1": lambda p: runtime.diagnose_layer_crs(p["layer_id"]),
         "crs.transformations@1": lambda p: runtime.datum_transformations(
             p["source_crs"], p["target_crs"]),

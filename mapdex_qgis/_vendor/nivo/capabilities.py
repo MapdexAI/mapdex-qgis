@@ -652,6 +652,22 @@ _POINT_PAIR = {
 # it is wrong whatever anyone intended, and saying so needs no external
 # knowledge. Guessing what the system SHOULD be needs a hint, and without one a
 # ranked list of candidates is a list of coincidences.
+# A GPS height and a levelled height are different numbers, and the difference
+# is the geoid separation - thirty to forty metres around the Mediterranean.
+# The conversion REFUSES when the grid is not installed rather than returning
+# the input unchanged, which is what PROJ does on its own and reports as
+# success.
+_c("crs.geoid_height@1", "survey", "Convert between an ellipsoidal height and an orthometric one.",
+   params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
+           "lon": {"type": "number", "required": True, "min": -180, "max": 180},
+           "height_m": {"type": "number", "required": True, "min": -500, "max": 20000},
+           "direction": {"type": "string",
+                         "enum": ["ellipsoidal_to_orthometric", "orthometric_to_ellipsoidal"],
+                         "default": "ellipsoidal_to_orthometric"},
+           "model": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
+   clients=(CLIENT_QGIS,))
+
 _c("crs.diagnose@1", "survey", "Check whether a layer's declared reference system can hold its coordinates.",
    params=dict(_LAYER),
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
