@@ -2676,6 +2676,9 @@ PLUGIN_BOUND_CAPABILITIES = frozenset({
     "terrain.ruggedness@1",
     "terrain.roughness@1",
     "terrain.contours@1",
+    "terrain.flow_accumulation@1",
+    "terrain.watershed@1",
+    "terrain.viewshed@1",
     # The two server-side surfaces a desktop user otherwise had to leave QGIS to
     # reach: which runs exist and why one failed, and the review of a run that is
     # waiting on a person. Both need the plugin's API client, its project scope

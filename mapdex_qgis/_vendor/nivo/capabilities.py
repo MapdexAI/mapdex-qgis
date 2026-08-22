@@ -966,6 +966,31 @@ _c("terrain.roughness@1", "terrain", "The range of elevation within each cell's 
 
 # The one terrain product that leaves as vector data: a layer of lines a person
 # can style, label and export, rather than a surface they look at.
+# Hydrology and visibility. Unlike the six above these need the GRASS provider,
+# which ships with the standalone QGIS installer and can be absent from a
+# package-manager one - so they are declared with a refusal that NAMES the
+# missing provider and the Workspace route round it. A capability that says
+# which thing to install is honestly conditional; one that fails as a mystery is
+# the thing worth avoiding.
+_c("terrain.flow_accumulation@1", "terrain", "How much land drains through each cell of a surface. Needs the GRASS provider.",
+   params={"layer_id": {"type": "string"}},
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+_c("terrain.watershed@1", "terrain", "The catchment draining to one point on a surface. Needs the GRASS provider.",
+   params={"layer_id": {"type": "string"},
+           "point": {"type": "points", "min_points": 1, "max_points": 1}},
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
+_c("terrain.viewshed@1", "terrain", "What can be seen from a point on a surface. Needs the GRASS provider.",
+   params={"layer_id": {"type": "string"},
+           "point": {"type": "points", "min_points": 1, "max_points": 1},
+           "observer_height_m": {"type": "number", "min": 0, "max": 10000},
+           "radius_m": {"type": "number", "min": 1, "max": 1000000}},
+   risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
+   targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
+
 _c("terrain.contours@1", "terrain", "Trace contour lines from an elevation surface at a stated height interval.",
    params={"layer_id": {"type": "string"},
            "interval": {"type": "number", "required": True, "min": 0.000001, "max": 1000000},

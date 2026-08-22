@@ -22,22 +22,49 @@ def test_the_five_core_measurements_are_named():
         "slope", "aspect", "hillshade", "ruggedness", "roughness"}
 
 
-def test_flow_routing_and_viewshed_are_deliberately_absent():
-    # They live in the GRASS and SAGA providers, which a given install may not
-    # have. A capability that usually cannot resolve is worse than one that is
-    # honestly missing: the user is told the action exists and then it does not.
-    for absent in ("watershed", "flow_accumulation", "viewshed", "fill_sinks"):
-        assert absent not in processing.PROCESSING_OPERATION_CATALOG
+def test_flow_routing_and_viewshed_are_present_and_declared_conditional():
+    # A REVERSAL, recorded rather than quietly replaced. This test used to
+    # assert they were absent, on the reasoning that a capability which usually
+    # cannot resolve is worse than one honestly missing - the user is told the
+    # action exists and then it does not.
+    #
+    # That reasoning assumed a GENERIC failure. With a refusal that names the
+    # missing provider AND the route round it, a conditional capability is
+    # strictly better than an absent one: a person who has GRASS gets the
+    # answer, and a person who does not is told what to install and where else
+    # to ask. What made the old decision right was the message, not the absence.
+    for operation in ("watershed", "flow_accumulation", "viewshed"):
+        assert operation in processing.PROCESSING_OPERATION_CATALOG
+        assert operation in processing.PROVIDER_DEPENDENT_OPERATIONS
+        assert operation in processing.HOSTED_EQUIVALENT
 
 
-def test_every_terrain_operation_resolves_to_a_core_provider():
-    # native or gdal only. A saga: or grass: id here would be the exact defect
-    # the test above guards against, arriving through the back door.
-    for operation in processing.TERRAIN_OPERATIONS:
+def test_the_six_core_terrain_operations_still_need_no_optional_provider():
+    # native or gdal only. A grass: id creeping in here would make one of the
+    # six conditional without anyone deciding it should be.
+    for operation in processing.TERRAIN_OPERATIONS | {"contours"}:
         candidates = processing.PROCESSING_OPERATION_CATALOG[operation]
         assert candidates, operation
         for algorithm in candidates:
             assert algorithm.split(":")[0] in {"native", "gdal", "qgis"}, algorithm
+        assert operation not in processing.PROVIDER_DEPENDENT_OPERATIONS
+
+
+def test_a_provider_dependent_refusal_names_the_provider_and_the_way_round_it():
+    message = processing.describe_missing_algorithm("watershed")
+    assert "GRASS" in message
+    assert "Mapdex" in message
+    assert "watershed" in message
+    # No algorithm id: `grass7:r.water.outlet` is a developer's word for it.
+    assert "grass7:" not in message
+
+
+def test_an_operation_with_no_provider_to_name_is_not_told_to_install_one():
+    # Telling somebody to install something would send them to fix the wrong
+    # thing: this is a gap in the allowlist, not a missing package.
+    message = processing.describe_missing_algorithm("buffer")
+    assert "GRASS" not in message
+    assert "Mapdex" in message
 
 
 def test_only_the_three_ratio_measurements_are_unit_sensitive():

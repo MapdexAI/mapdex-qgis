@@ -50,6 +50,31 @@ PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     # The one terrain product that leaves as VECTOR data, which is why it is not
     # in TERRAIN_OPERATIONS: it writes a feature layer rather than a surface.
     "contours": ("gdal:contour",),
+    # Hydrology and visibility. These live in GRASS, which ships with the
+    # standalone QGIS installer and can be absent from a package-manager one, so
+    # unlike everything above they may not resolve. They are declared anyway,
+    # because the refusal now NAMES the missing provider and the route round it
+    # - which is the difference between a capability that is honestly
+    # conditional and one that fails as a mystery.
+    "watershed": ("grass7:r.water.outlet", "grass:r.water.outlet"),
+    "flow_accumulation": ("grass7:r.watershed", "grass:r.watershed"),
+    "viewshed": ("grass7:r.viewshed", "grass:r.viewshed"),
+}
+
+# Which provider an operation needs when it is not core QGIS, so a refusal can
+# say what to install rather than "this installation has no algorithm".
+PROVIDER_DEPENDENT_OPERATIONS: dict[str, str] = {
+    "watershed": "GRASS",
+    "flow_accumulation": "GRASS",
+    "viewshed": "GRASS",
+}
+
+# What the Workspace computes without any provider at all. Named here so the
+# refusal can offer the other route by capability rather than by guesswork.
+HOSTED_EQUIVALENT: dict[str, str] = {
+    "watershed": "spatial:hydrology@1",
+    "flow_accumulation": "spatial:hydrology@1",
+    "viewshed": "spatial:viewshed@1",
 }
 
 # The three terrain measurements that are a RATIO of vertical to horizontal
@@ -133,7 +158,40 @@ OPERATION_LABELS: dict[str, str] = {
     "ruggedness": "ruggedness index",
     "roughness": "surface roughness",
     "contours": "contour lines",
+    "watershed": "watershed",
+    "flow_accumulation": "flow accumulation",
+    "viewshed": "viewshed",
 }
+
+
+def describe_missing_algorithm(operation: Any) -> str:
+    """Why an operation will not run here, and what to do instead.
+
+    It replaces "This QGIS installation has no algorithm for the watershed",
+    which names nothing and offers no route: a person who reads it has no next
+    move, which is the same failure as an unexplained error code.
+
+    Two facts, and they need different sentences. A provider that is simply not
+    installed is fixable by installing it, and saying which one is most of the
+    answer. An operation with no provider to name is a gap in the allowlist, and
+    telling somebody to install something would send them to fix the wrong
+    thing.
+
+    Both end with the Workspace, because it computes these without any provider
+    - and offering the route that already works is worth more than a diagnosis.
+    """
+    label = operation_label(operation)
+    provider = PROVIDER_DEPENDENT_OPERATIONS.get(str(operation or "").strip())
+    if provider:
+        return (
+            "This QGIS has no {} provider, and a {} needs one. Enable {} in "
+            "Processing, or upload the surface to Mapdex and ask me there - it "
+            "computes this without any provider at all."
+        ).format(provider, label, provider)
+    return (
+        "This QGIS installation has no algorithm for the {}. Upload the data to "
+        "Mapdex and ask me there instead."
+    ).format(label)
 
 
 def describe_geographic_terrain_refusal(operation: Any, crs_description: str = "") -> str:
@@ -394,6 +452,18 @@ def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, param
         payload["BAND"] = int(params["band"])
     if "COMPUTE_EDGES" in names:
         payload["COMPUTE_EDGES"] = True
+    if "elevation" in names:
+        # GRASS raster algorithms name their input `elevation` rather than
+        # INPUT, so without this the surface never reaches them and the run
+        # fails on a missing required parameter it was given.
+        payload["elevation"] = layer
+    if "observer_elevation" in names:
+        payload["observer_elevation"] = float(params.get("observer_height_m") or 1.75)
+    if "max_distance" in names and params.get("radius_m"):
+        payload["max_distance"] = float(params["radius_m"])
+    if "coordinates" in names and params.get("point"):
+        point = params["point"]
+        payload["coordinates"] = "{},{}".format(float(point[0]), float(point[1]))
     if "TOLERANCE" in names:
         # Simplification is entirely this number: without it the algorithm's
         # own default decides how much detail a customer's boundary loses.

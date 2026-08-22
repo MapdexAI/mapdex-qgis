@@ -127,6 +127,7 @@ from ._vendor.nivo.processing import (
     build_algorithm_parameters,
     describe_empty_input,
     describe_geographic_terrain_refusal,
+    describe_missing_algorithm,
     describe_processing_outcome,
     operation_label,
     resolve_processing_algorithm,
@@ -3364,6 +3365,9 @@ class MapdexPlugin:
             "terrain.ruggedness@1": self._named_processing_capability("ruggedness"),
             "terrain.roughness@1": self._named_processing_capability("roughness"),
             "terrain.contours@1": self._named_processing_capability("contours"),
+            "terrain.flow_accumulation@1": self._named_processing_capability("flow_accumulation"),
+            "terrain.watershed@1": self._named_processing_capability("watershed"),
+            "terrain.viewshed@1": self._named_processing_capability("viewshed"),
             # Both read the project's runs through this plugin's API client, so
             # neither can live in the runtime, which has no session and no
             # project. Until they were bound, seeing a job list or opening a
@@ -3947,8 +3951,10 @@ class MapdexPlugin:
         operation = action.get("params", {}).get("operation")
         _algorithm_id, algorithm = resolve_processing_algorithm(QgsApplication.processingRegistry(), operation)
         if algorithm is None:
-            self._set_status("This QGIS installation has no algorithm for the {}.".format(
-                operation_label(operation)))
+            # Names the missing provider and the route round it. "This
+            # installation has no algorithm" named nothing and offered no next
+            # move, which is the same failure as an unexplained error code.
+            self._set_status(describe_missing_algorithm(operation))
             self._nivo_state = transition(self._nivo_state, "error")
             return
         source_name = layer.name() if hasattr(layer, "name") else ""
