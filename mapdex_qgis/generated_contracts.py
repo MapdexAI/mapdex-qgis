@@ -74,6 +74,36 @@ ERROR_REGISTRY = [
         "template": "The format {format} is not supported."
     },
     {
+        "code": "UNSUPPORTED_TARGET_FORMAT",
+        "type": "bad_request",
+        "http": 400,
+        "template": "{message}"
+    },
+    {
+        "code": "RASTER_TO_VECTOR_NOT_A_CONVERSION",
+        "type": "bad_request",
+        "http": 400,
+        "template": "{message}"
+    },
+    {
+        "code": "VECTOR_TO_RASTER_NOT_A_CONVERSION",
+        "type": "bad_request",
+        "http": 400,
+        "template": "{message}"
+    },
+    {
+        "code": "TILE_ARCHIVE_NOT_CONVERTIBLE",
+        "type": "bad_request",
+        "http": 400,
+        "template": "{message}"
+    },
+    {
+        "code": "OUTPUT_NOT_OPENABLE",
+        "type": "processing",
+        "http": 422,
+        "template": "{message}"
+    },
+    {
         "code": "UNSUPPORTED_RASTER_PROFILE",
         "type": "validation",
         "http": 422,
