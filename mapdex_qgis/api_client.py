@@ -7,6 +7,8 @@ import re
 from typing import Any, Optional
 from urllib import error, parse, request
 
+from .build_version import PLUGIN_VERSION
+
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
@@ -163,6 +165,21 @@ class MapdexAPI:
         attached when the target really is the configured API.
         """
         headers = {"Accept": "application/json"}
+        # Identify the surface on every request.
+        #
+        # The API classifies each request into a bounded `client` label for
+        # mapdex_http_requests_total, and it already has a qgis_plugin bucket:
+        # it looks for "qgis" in the User-Agent or X-Client-Surface: qgis. This
+        # client sent neither, so urllib's default "Python-urllib/3.x" matched
+        # the api_client rule instead and every request this plugin has ever
+        # made was counted as a generic API caller. Heavy real QGIS use showed
+        # as nothing on the QGIS panels, which is how it was found.
+        #
+        # Both are sent: the explicit header is what the API keys on, and the
+        # User-Agent is what a proxy, an access log, or a support engineer
+        # reads. Neither carries anything about the user.
+        headers["X-Client-Surface"] = "qgis"
+        headers["User-Agent"] = f"mapdex-qgis/{PLUGIN_VERSION}"
         if content_type:
             headers["Content-Type"] = content_type
         target = url or self.base_url
@@ -343,12 +360,14 @@ class MapdexAPI:
             ).encode()
         )
         url = self.base_url + "/v1/files"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "X-Project-ID": project_id,
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Accept": "application/json",
-        }
+        # Built through _headers so this path carries the same identification
+        # and credential rules as every other API call. It used to assemble its
+        # own dict, which is how one request path silently stayed unidentified
+        # while the rest were fixed.
+        headers = self._headers(
+            project_id=project_id,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        )
         req = request.Request(url, data=body, method="POST", headers=headers)
         try:
             with _urlopen(req, timeout=180) as response:
