@@ -25,11 +25,37 @@ threading and nothing else.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Mapping, Sequence
 
 from ._vendor.nivo.agent import STATE_FAILED, AgentSession
 from ._vendor.nivo.capabilities import CLIENT_QGIS, offline_capability_ids
-from ._vendor.nivo.providers import RUNTIME_BYOK, redact
+from ._vendor.nivo.providers import PROVIDERS, RUNTIME_BYOK, redact
+
+# Which company answers a turn is our routing, not something to announce in the
+# panel. Every provider names its vendor in its own errors - "openai returned
+# HTTP 401", "Could not reach gemini" - which is exactly right for a log and
+# was being handed to the user verbatim.
+#
+# Built from the provider registry rather than a literal list, so a provider
+# added to the package cannot quietly start leaking through this notice. The
+# lookahead spares "OpenAI-compatible", which is the label the user picked in
+# the settings dropdown themselves and is therefore not a leak.
+_VENDOR_NAMES = re.compile(
+    r"\b(?:{})\b(?![-_ ]?compatible)".format(
+        "|".join(re.escape(name) for name in sorted(PROVIDERS, key=len, reverse=True)
+                 if "compatible" not in name)),
+    re.IGNORECASE,
+)
+
+
+def mask_vendor(text: str) -> str:
+    """Take the vendor's name out of a sentence the user will read.
+
+    User-facing copy only. The exception keeps its own text, so a support log
+    still says which provider failed.
+    """
+    return _VENDOR_NAMES.sub("your provider", str(text))
 
 # Said when the user declined the offer, because "your provider could not
 # answer" alone leaves open whether we tried Mapdex anyway.
@@ -67,7 +93,7 @@ def session_allowance(client: str = CLIENT_QGIS) -> frozenset:
 
 def provider_failure_notice(error: BaseException | str) -> str:
     """What to tell the user, with anything credential-shaped masked."""
-    detail = redact(error).strip()
+    detail = mask_vendor(redact(error).strip())
     if not detail and isinstance(error, BaseException):
         detail = type(error).__name__
     return "Your model provider could not answer: {}".format(detail or "no reason given")

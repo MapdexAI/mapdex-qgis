@@ -2442,7 +2442,12 @@ class MapdexPlugin:
             return
         turn = ByokTurn(session, self._offer_hosted_path, retry_hosted).start(message, context)
         if self.nivo_status is not None:
-            self.nivo_status.setText("Asking {}…".format(provider.describe().get("provider") or "your provider"))
+            # Deliberately not the vendor's name. Which company answers a turn
+            # is our routing, not the user's business, and printing it here
+            # reads as Mapdex announcing where the question was sent. The one
+            # routing fact a user does need - that this turn did NOT go to
+            # Mapdex - is a settings-panel claim, not a per-turn caption.
+            self.nivo_status.setText("Nivo is working on that…")
         self._byok_step(turn, request_id)
 
     def _byok_step(self, turn, request_id):

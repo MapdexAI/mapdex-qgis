@@ -48,6 +48,39 @@ MAX_STEPS = 8
 MAX_OBSERVATION_CHARS = 4000
 MAX_EVIDENCE = 40
 MAX_HISTORY_TURNS = 8
+# How many replies in a row may carry no decision before the turn stops. A
+# model that has answered in prose three times running is not one step away
+# from JSON; continuing only spends the budget, and on a user's own key, their
+# money, to reach the same dead end more slowly.
+MAX_UNPARSED = 3
+# Below this, a stray reply is a fragment rather than something a user
+# could read as an answer, and showing it would be worse than the honest
+# failure it replaces.
+MIN_SALVAGE_CHARS = 12
+
+# The two capability names an observation carries when no capability ran:
+# the model named one the registry refused, or it named nothing at all.
+REJECTED = "(rejected)"
+UNPARSED = "(unparsed)"
+
+# The three corrections the environment speaks back to the model. They are user
+# turns, not narration: see AgentSession._messages for why that distinction is
+# load-bearing rather than cosmetic.
+NOT_A_DECISION = (
+    "That reply was not a decision. Reply with exactly one JSON object and "
+    "nothing else, in one of these three shapes: "
+    '{"action":"call","capability":"<catalogue id>","params":{}}'
+    " | "
+    '{"action":"answer","message":"<the final answer, in the language the user wrote in>"}'
+    " | "
+    '{"action":"clarify","message":"<the single question you need answered>"}'
+)
+LAST_STEP = (
+    "This is your final step: no budget remains for another capability. Reply now "
+    "with a single answer object, in the language the user wrote in, stating what "
+    "was measured and what changed on the map. If something could not be "
+    "determined, say so rather than omitting it."
+)
 
 STATE_IDLE = "idle"
 STATE_PLANNING = "planning"
@@ -150,14 +183,21 @@ def parse_decision(text: str, client: str = CLIENT_QGIS) -> dict[str, Any]:
 
 
 class Observation:
-    """One executed capability and the facts it produced."""
+    """One executed capability and the facts it produced.
 
-    def __init__(self, capability: str, params: Mapping[str, Any], result: Any, ok: bool = True, error: str = ""):
+    ``reply`` is the model text that produced this observation, kept so the
+    transcript sent back on the next step can show the model its own turn
+    verbatim instead of a reconstruction of it.
+    """
+
+    def __init__(self, capability: str, params: Mapping[str, Any], result: Any, ok: bool = True,
+                 error: str = "", reply: str = ""):
         self.capability = capability
         self.params = dict(params or {})
         self.result = result
         self.ok = bool(ok)
         self.error = str(error or "")
+        self.reply = str(reply or "")
 
     def as_evidence(self) -> dict[str, Any]:
         """The provenance record that travels with an answer or report."""
@@ -178,6 +218,34 @@ class Observation:
         except (TypeError, ValueError):
             body = str(self.result)
         return "{} -> {}".format(self.capability, body[:MAX_OBSERVATION_CHARS])
+
+    def decision_text(self) -> str:
+        """The assistant turn that produced this observation.
+
+        The model's own words when they are available. A session constructed in
+        a test may carry none, so the decision it made is rendered in the shape
+        the model was asked for rather than left blank - an empty assistant turn
+        is rejected outright by some providers.
+        """
+        if self.reply.strip():
+            return self.reply.strip()[:MAX_OBSERVATION_CHARS]
+        return json.dumps({"action": "call", "capability": self.capability, "params": self.params},
+                          default=str, ensure_ascii=False)[:MAX_OBSERVATION_CHARS]
+
+    def feedback(self) -> str:
+        """What the environment says back, as a user turn.
+
+        Three different things, because the model can only act on the
+        difference: a result to reason from, a step that did not run and needs
+        a different choice, and a reply that was not a decision at all - which
+        needs the output contract restated, not a fact.
+        """
+        if self.ok:
+            return "Result of {}: {}".format(self.capability, self.summarize().split(" -> ", 1)[-1])
+        if self.capability == UNPARSED:
+            return NOT_A_DECISION
+        return "{} did not run: {} Choose a different decision.".format(
+            self.capability, self.error[:400].rstrip(".") + ".")
 
 
 class AgentSession:
@@ -218,6 +286,7 @@ class AgentSession:
         self.observations: list[Observation] = []
         self.history: list[dict[str, str]] = []
         self.steps = 0
+        self._unparsed = 0
         self._called: set[str] = set()
         self._objective = ""
         self._system = ""
@@ -248,10 +317,35 @@ class AgentSession:
         ))
 
     def _messages(self, objective: str) -> list[dict[str, str]]:
+        """The transcript for the next step: who said what, honestly.
+
+        Each completed step is a PAIR - the model's own reply as an assistant
+        turn, the environment's report as a user turn - and the ordering is not
+        cosmetic. Observations used to be appended as assistant turns, so as
+        soon as one capability ran the conversation ended on the assistant, and
+        the model was being asked to CONTINUE a sentence rather than to answer.
+        Two of the four providers here treat a trailing assistant turn as a
+        prefill, so the reply came back as more of that sentence, never parsed
+        as a decision, and every remaining step went the same way until the
+        budget was gone. The first step of a turn always worked, because there
+        were no observations yet - which is exactly why the failure looked like
+        the model losing the plot on the second question rather than a defect
+        in the transcript.
+
+        It also stops the model being shown its own voice reporting facts it
+        did not produce, and removes every run of same-role messages, which
+        some providers reject and others silently merge.
+        """
         messages = list(self.history[-MAX_HISTORY_TURNS * 2:])
         messages.append({"role": "user", "content": objective})
         for observation in self.observations[-MAX_HISTORY_TURNS:]:
-            messages.append({"role": "assistant", "content": "Observation: " + observation.summarize()})
+            messages.append({"role": "assistant", "content": observation.decision_text()})
+            messages.append({"role": "user", "content": observation.feedback()})
+        if self.final_step():
+            # Folded into the last user turn rather than appended as its own,
+            # so the transcript keeps strictly alternating roles.
+            joined = messages[-1]["content"] + "\n\n" + LAST_STEP
+            messages[-1] = {"role": "user", "content": joined}
         return messages
 
     # -- the loop ----------------------------------------------------------
@@ -280,6 +374,16 @@ class AgentSession:
     def budget_spent(self) -> bool:
         return self.steps >= self.max_steps
 
+    def final_step(self) -> bool:
+        """The next call is the last one this turn can afford.
+
+        The budget is a real bound, so the last of it is spent asking for a
+        conclusion rather than for another capability nothing will be left to
+        follow. A turn that measured what the user asked for and then reported
+        only that it ran out of steps has thrown the answer away.
+        """
+        return self.steps >= self.max_steps - 1
+
     def advance(self, reply: str) -> dict[str, Any] | None:
         """Consume one model reply. A terminal result, or None to ask again.
 
@@ -294,24 +398,41 @@ class AgentSession:
         except CapabilityError as exc:
             # A rejected capability is a recoverable mistake: tell the model
             # what went wrong and let it choose again within the budget.
-            self.observations.append(Observation("(rejected)", {}, None, ok=False, error=str(exc)))
+            self.observations.append(Observation(REJECTED, {}, None, ok=False, error=str(exc), reply=reply))
+            self._unparsed = 0
             return None
         except AgentError as exc:
-            self.observations.append(Observation("(unparsed)", {}, None, ok=False, error=str(exc)))
+            self.observations.append(Observation(UNPARSED, {}, None, ok=False, error=str(exc), reply=reply))
+            self._unparsed += 1
+            if self._unparsed >= MAX_UNPARSED:
+                return self._incomplete(
+                    "The model did not return a usable decision {} times in a row, so I stopped "
+                    "instead of asking it again.".format(self._unparsed))
             return None
+        self._unparsed = 0
         if decision["action"] == "answer":
             self.state = STATE_COMPLETED
             return self._result(decision["message"], None)
         if decision["action"] == "clarify":
             self.state = STATE_CLARIFY
             return self._result(decision["message"], None, kind="clarify")
+        if self.budget_spent():
+            # The last step was spent asking for a conclusion, and this is not
+            # one. Running it anyway is how a turn came to add a layer to the
+            # project and then report that it had run out of steps: real work
+            # done, never explained, and nothing said about the part of the
+            # objective that was never reached.
+            return self._incomplete(
+                "I ran out of steps before I could finish that, so I did not start another "
+                "operation.")
         if not self.permits(decision["capability"]):
             # Second gate, after the catalogue filter. The prompt is guidance;
             # this is the boundary. A session with no host account must not
             # reach a server-side Run because a model named one anyway.
             self.observations.append(
                 Observation(decision["capability"], decision["params"], None, ok=False,
-                            error="{} is not available in this session".format(decision["capability"]))
+                            error="{} is not available in this session".format(decision["capability"]),
+                            reply=reply)
             )
             return None
         signature = decision["capability"] + json.dumps(decision["params"], sort_keys=True, default=str)
@@ -320,7 +441,8 @@ class AgentSession:
             # it only burns the budget and the user's provider credits.
             self.observations.append(
                 Observation(decision["capability"], decision["params"], None, ok=False,
-                            error="already called with these parameters; use the existing observation")
+                            error="already called with these parameters; use the existing observation",
+                            reply=reply)
             )
             return None
         self._called.add(signature)
@@ -337,10 +459,12 @@ class AgentSession:
         self.state = STATE_EXECUTING
         try:
             result = self.executor(decision)
-            self.observations.append(Observation(decision["capability"], decision["params"], result))
+            self.observations.append(
+                Observation(decision["capability"], decision["params"], result, reply=reply))
         except Exception as exc:
             self.observations.append(
-                Observation(decision["capability"], decision["params"], None, ok=False, error=str(exc))
+                Observation(decision["capability"], decision["params"], None, ok=False, error=str(exc),
+                            reply=reply)
             )
         self.state = STATE_PLANNING
         return None
@@ -348,12 +472,45 @@ class AgentSession:
     def exhausted(self) -> dict[str, Any]:
         """The budget is a real bound, so it produces an honest outcome
         rather than an invented conclusion."""
+        return self._incomplete("I ran out of steps before I could finish that.")
+
+    def _incomplete(self, reason: str) -> dict[str, Any]:
+        """Stop short, saying why and whether anything was actually measured.
+
+        The old message promised "here is what I measured so far" whatever had
+        happened, so a turn that measured nothing at all still pointed at
+        evidence it did not have.
+        """
+        salvaged = self._salvaged_answer()
+        if salvaged:
+            self.state = STATE_COMPLETED
+            return self._result(salvaged, None)
         self.state = STATE_FAILED
-        return self._result(
-            "I ran out of steps before I could finish that. Here is what I measured so far.",
-            None,
-            kind="incomplete",
-        )
+        tail = (" Here is what was measured before that." if self.measured_facts()
+                else " Nothing was measured, so there is nothing to report.")
+        return self._result(reason + tail, None, kind="incomplete")
+
+    def _salvaged_answer(self) -> str:
+        """The model's last plain-prose reply, when the turn is ending anyway.
+
+        A model that answers the question in a sentence instead of in the JSON
+        it was asked for has still answered it, and discarding that to show
+        "I ran out of steps" is the worst of both: the user loses a reply that
+        was sitting right there, and a plain greeting - which carries no
+        decision either - ends a turn as a failure.
+
+        Nothing is weakened by accepting it. An `answer` decision is free text
+        too; the contract exists to keep the model from EXECUTING things, and
+        no capability runs on this path. A reply that opens with a brace is a
+        broken decision rather than prose, so it is left alone.
+        """
+        for observation in reversed(self.observations):
+            if observation.capability != UNPARSED:
+                continue
+            text = observation.reply.strip()
+            if len(text) >= MIN_SALVAGE_CHARS and not text.startswith("{"):
+                return text[:MAX_OBSERVATION_CHARS]
+        return ""
 
     def run(self, objective: str, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Pursue one objective to an answer, a clarification, or a failure.
@@ -376,7 +533,10 @@ class AgentSession:
         return self.exhausted()
 
     def _result(self, message: str, pending: Mapping[str, Any] | None, kind: str = "answer") -> dict[str, Any]:
-        self.history.append({"role": "user", "content": ""})
+        # The objective, not an empty string: a caller that reuses a session
+        # across turns replays this history, and an empty user turn is both a
+        # lie about what was asked and a payload some providers refuse.
+        self.history.append({"role": "user", "content": self._objective})
         self.history.append({"role": "assistant", "content": message})
         return {
             "kind": kind,

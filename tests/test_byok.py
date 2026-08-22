@@ -478,3 +478,64 @@ def test_the_bare_failure_helper_matches_the_turn_method():
     turn = ByokTurn(AgentSession(BrokenProvider(), lambda request: None, client=CLIENT_QGIS))
     turn.start("anything")
     assert plain["message"] == turn.provider_failed(ProviderError("nope"))["message"]
+
+
+# --------------------------------------------------------------------------
+# The vendor's name is ours, not the user's
+# --------------------------------------------------------------------------
+
+def _real_provider_failures():
+    """Every provider's own failure text, produced by the provider itself.
+
+    Typed literals would drift from the messages that actually ship, which is
+    the whole way this leak stayed invisible: the sentences live in the
+    package and were read by nobody reviewing the panel.
+    """
+    from mapdex_qgis._vendor.nivo.providers import PROVIDERS
+
+    for name, cls in sorted(PROVIDERS.items()):
+        provider = cls(api_key="sk-test-key-value", base_url="https://example.invalid",
+                       transport=lambda *args, **kwargs: b"{}")
+        try:
+            provider.complete("system", [{"role": "user", "content": "hi"}])
+        except ProviderError as error:
+            yield name, str(error)
+            continue
+        raise AssertionError("{} did not fail on an empty response".format(name))
+
+
+def test_a_failure_notice_never_names_the_model_vendor():
+    """Which company answered is our routing, not a caption for the user.
+
+    Every provider names itself in its errors, correctly - a log that says
+    "returned HTTP 401" and not which service is useless. Those sentences were
+    handed to the panel verbatim, so a turn that failed announced the vendor.
+    """
+    vendors = ("openai", "anthropic", "gemini", "ollama")
+    seen = 0
+    for name, detail in _real_provider_failures():
+        notice = provider_failure_notice(detail)
+        seen += 1
+        assert name.split("_")[0] in detail.lower(), "the provider should name itself internally"
+        for vendor in vendors:
+            assert vendor not in notice.lower(), "{} leaked through {}".format(vendor, name)
+    assert seen >= 4, "the registry should have produced several failures"
+
+
+def test_masking_leaves_the_users_own_settings_label_alone():
+    """"OpenAI-compatible" is the entry they picked in the dropdown."""
+    from mapdex_qgis.byok import mask_vendor
+
+    assert mask_vendor("an OpenAI-compatible provider needs a base URL") == (
+        "an OpenAI-compatible provider needs a base URL")
+
+
+def test_the_status_line_never_reads_the_provider_identity():
+    """The panel used to say "Asking openai…" while the turn was in flight."""
+    method = _method("_start_byok_turn")
+    assert "describe" not in _attributes(method), (
+        "provider identity must not be read for display")
+    literals = " ".join(node.value for node in ast.walk(method)
+                        if isinstance(node, ast.Constant) and isinstance(node.value, str)).lower()
+    for vendor in ("openai", "anthropic", "gemini", "ollama"):
+        assert vendor not in literals
