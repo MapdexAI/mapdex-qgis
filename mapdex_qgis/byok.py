@@ -57,6 +57,7 @@ def mask_vendor(text: str) -> str:
     """
     return _VENDOR_NAMES.sub("your provider", str(text))
 
+
 # Said when the user declined the offer, because "your provider could not
 # answer" alone leaves open whether we tried Mapdex anyway.
 NOTHING_SENT = "Nothing was sent to Mapdex."

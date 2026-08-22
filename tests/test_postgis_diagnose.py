@@ -50,9 +50,17 @@ def test_it_estimates_rather_than_counting_every_row():
 
 def test_the_system_schemas_are_left_out():
     # A person asking about their tables does not mean `topology.topology`.
+    #
+    # Checked in BOTH directions. The clause is a literal in the statement,
+    # because a SQL string built with .format() reads as an injection site
+    # whether or not it is one, and SYSTEM_SCHEMAS is what the literal is
+    # supposed to say. One direction alone lets the two drift: a name added to
+    # the tuple and forgotten in the SQL, or the reverse.
     sql, _ = postgis.build_diagnostics()
-    for schema in postgis.SYSTEM_SCHEMAS:
-        assert "'{}'".format(schema) in sql
+    clause = sql.split("not in (", 1)[1].split(")", 1)[0]
+    excluded = {part.strip().strip("'") for part in clause.split(",")}
+    assert excluded == set(postgis.SYSTEM_SCHEMAS)
+    assert ".format(" not in clause
 
 
 def _row(schema, table, geometry_type, srid, estimate, size, indexes):

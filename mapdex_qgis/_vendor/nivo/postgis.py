@@ -412,7 +412,14 @@ def build_diagnostics(limit: int = MAX_DIAGNOSTIC_TABLES) -> tuple[str, list[Any
     `pg_total_relation_size` includes indexes and TOAST, because "how big is
     this table" means the space it occupies rather than the heap alone.
     """
-    exclusions = ", ".join("'{}'".format(name) for name in SYSTEM_SCHEMAS)
+    # The exclusion list is written into the statement rather than formatted
+    # into it. Nothing here comes from a caller - the names are this module's
+    # own constant - but a SQL string assembled by .format() cannot be told
+    # apart from an injected one by a reader or by a scanner, and "it happens
+    # to be safe today" is not a property anybody can check at a glance. As a
+    # literal the statement is a constant; test_the_system_schemas_are_left_out
+    # checks it against SYSTEM_SCHEMAS in both directions, so the two cannot
+    # drift apart.
     statement = (
         "select g.f_table_schema, g.f_table_name, g.f_geometry_column, "
         "coalesce(g.type, '') as geometry_type, coalesce(g.srid, 0) as srid, "
@@ -427,8 +434,8 @@ def build_diagnostics(limit: int = MAX_DIAGNOSTIC_TABLES) -> tuple[str, list[Any
         "from geometry_columns g "
         "join pg_class c on c.relname = g.f_table_name "
         "join pg_namespace n on n.oid = c.relnamespace and n.nspname = g.f_table_schema "
-        "where g.f_table_schema not in ({}) "
-        "order by g.f_table_schema, g.f_table_name limit %s".format(exclusions)
+        "where g.f_table_schema not in ('postgis', 'topology', 'tiger', 'tiger_data') "
+        "order by g.f_table_schema, g.f_table_name limit %s"
     )
     return guard_statement(statement), [_limit(limit, MAX_DIAGNOSTIC_TABLES, MAX_DIAGNOSTIC_TABLES)]
 

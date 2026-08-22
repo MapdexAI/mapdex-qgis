@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.12.3
+version=0.12.4
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,20 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.12.3
+changelog=0.12.4
+    - Fixes for what the plugin repository's own scan found on 0.12.3, none of
+      which changes what the plugin does.
+    - Flat Qt5 enum names in three files would each have raised an error on
+      QGIS 4, in branches no test opens: choosing a raster or vector layer,
+      deciding whether the layer you are digitizing into holds lines or areas,
+      drawing the trace bands, suppressing the attribute form, and writing a
+      plan sheet. They now resolve on both Qt5 and Qt6.
+    - The catalogue query behind the PostGIS diagnostic is written out as a
+      constant instead of assembled from pieces. Nothing user-supplied ever
+      reached it, but a query built by string formatting reads as an injection
+      site whether or not it is one.
+    - Removed an unused import and tidied three lines the style check flagged.
+    0.12.3
     - Nivo could not finish a question that took more than one step. Every
       measurement it made was written into the conversation as though Nivo had
       said it, so the moment one step ran the turn ended on Nivo's own voice and

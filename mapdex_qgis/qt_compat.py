@@ -37,6 +37,25 @@ def enum_member(owner, *names):
     )
 
 
+def geometry_type(name):
+    """``QgsWkbTypes.GeometryType.<name>`` across Qt5 and Qt6.
+
+    Named rather than spelled out at each call site because the three members
+    are read in a dozen places, and one of them left flat is an AttributeError
+    on QGIS 4 in whichever branch nobody exercised.
+    """
+    from qgis.core import QgsWkbTypes  # noqa: PLC0415 - Qt-only import
+
+    return enum_member(QgsWkbTypes, "GeometryType", name)
+
+
+def layer_type(name):
+    """``QgsMapLayer.LayerType.<name>`` across Qt5 and Qt6."""
+    from qgis.core import QgsMapLayer  # noqa: PLC0415 - Qt-only import
+
+    return enum_member(QgsMapLayer, "LayerType", name)
+
+
 def field_type(kind):
     """Resolve a field storage type across Qt5 and Qt6.
 

@@ -33,7 +33,7 @@ from typing import Any, Callable, Sequence
 
 from .guard import log_debug
 from .livewire import LiveWire, TraceOptions, path_length_px, simplify
-from .qt_compat import enum_member
+from .qt_compat import enum_member, geometry_type
 
 try:  # pragma: no cover - import shape differs between QGIS builds
     from qgis.PyQt.QtCore import QSettings
@@ -923,7 +923,6 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         return line, fill, max(1.0, width)
 
     def _ensure_bands(self) -> None:
-        from qgis.core import QgsWkbTypes  # noqa: PLC0415 - Qt-only import
         from qgis.gui import QgsRubberBand
         from qgis.PyQt.QtCore import Qt
         from qgis.PyQt.QtGui import QColor
@@ -932,9 +931,9 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
         # An area being traced is drawn AS an area. With a line band the user
         # watches a boundary and only finds out what it encloses once the
         # feature exists, which is the moment they can no longer change it.
-        kind = (QgsWkbTypes.PolygonGeometry
+        kind = (geometry_type("PolygonGeometry")
                 if self.session.geometry == "polygon"
-                else QgsWkbTypes.LineGeometry)
+                else geometry_type("LineGeometry"))
 
         if self._band is None:
             self._band = QgsRubberBand(self.canvas, kind)
@@ -944,7 +943,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
             # The vertices are what this tool produces, so they are shown. A
             # bare line hides exactly the thing the user is deciding about.
             try:
-                self._band.setIcon(QgsRubberBand.ICON_BOX)
+                self._band.setIcon(enum_member(QgsRubberBand, "IconType", "ICON_BOX"))
                 self._band.setIconSize(7)
             except (AttributeError, TypeError) as exc:
                 log_debug("marking the traced vertices", exc)
@@ -954,7 +953,7 @@ class VectorizeMapTool(QgsMapTool):  # pragma: no cover - requires a live canvas
             # A line, always. The preview is ONE stretch from the anchor to
             # the cursor; as a polygon band QGIS would close it and draw a
             # shape between those two points that the user is not making.
-            self._preview = QgsRubberBand(self.canvas, QgsWkbTypes.LineGeometry)
+            self._preview = QgsRubberBand(self.canvas, geometry_type("LineGeometry"))
             self._preview.setColor(faded)
             self._preview.setFillColor(QColor(0, 0, 0, 0))
             self._preview.setWidth(width)

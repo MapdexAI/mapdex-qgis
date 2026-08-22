@@ -120,7 +120,6 @@ from .nivo import (
 )
 from .panel import build_companion_panel, build_thread_history_dialog
 from ._vendor.nivo.processing import (
-    NAMED_GEOPROCESSING_OPERATIONS,
     PROCESSING_OPERATION_CATALOG,
     PROCESSING_OUTPUT_ORDER,
     UNIT_SENSITIVE_TERRAIN,
@@ -874,7 +873,7 @@ class MapdexPlugin:
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
 
-        accepted = dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+        accepted = dialog.exec()
         if accepted:
             settings = QSettings()
             prefix = "mapdex/tracer/"
@@ -892,16 +891,18 @@ class MapdexPlugin:
         person says which sheet they mean. Otherwise the topmost visible raster,
         because that is the one they can see and are pointing at.
         """
-        from qgis.core import QgsMapLayer, QgsProject  # noqa: PLC0415 - Qt-only import
+        from qgis.core import QgsProject  # noqa: PLC0415 - Qt-only import
+
+        from .qt_compat import layer_type  # noqa: PLC0415 - Qt-only import
 
         active = self.iface.activeLayer()
-        if active is not None and active.type() == QgsMapLayer.RasterLayer:
+        if active is not None and active.type() == layer_type("RasterLayer"):
             return active
         root = QgsProject.instance().layerTreeRoot()
         for node in root.findLayers():
             layer = node.layer()
             if (layer is not None and node.isVisible()
-                    and layer.type() == QgsMapLayer.RasterLayer):
+                    and layer.type() == layer_type("RasterLayer")):
                 return layer
         return None
 
@@ -952,7 +953,7 @@ class MapdexPlugin:
 
         Returns the geometry to trace, or "" with the reason already said.
         """
-        from qgis.core import QgsMapLayer, QgsWkbTypes  # noqa: PLC0415 - Qt-only import
+        from .qt_compat import geometry_type, layer_type  # noqa: PLC0415 - Qt-only import
 
         layer = self.iface.activeLayer()
         if layer is None:
@@ -960,7 +961,7 @@ class MapdexPlugin:
                 "Select the layer the traced shapes should go into, in the "
                 "Layers panel, then start the tracer.")
             return ""
-        if layer.type() != QgsMapLayer.VectorLayer:
+        if layer.type() != layer_type("VectorLayer"):
             self._set_status(
                 "{} is not a vector layer, so a traced shape cannot go into "
                 "it. Select the line or area layer you are digitizing "
@@ -970,9 +971,9 @@ class MapdexPlugin:
             kind = layer.geometryType()
         except (AttributeError, TypeError):
             kind = None
-        if kind == QgsWkbTypes.PolygonGeometry:
+        if kind == geometry_type("PolygonGeometry"):
             geometry = "polygon"
-        elif kind == QgsWkbTypes.LineGeometry:
+        elif kind == geometry_type("LineGeometry"):
             geometry = "line"
         else:
             self._set_status(
@@ -1004,17 +1005,18 @@ class MapdexPlugin:
         against, and following it would attach their new boundary to geometry
         they cannot even see.
         """
-        from qgis.core import QgsMapLayer, QgsProject  # noqa: PLC0415 - Qt-only import
+        from qgis.core import QgsProject  # noqa: PLC0415 - Qt-only import
+        from .qt_compat import layer_type  # noqa: PLC0415 - Qt-only import
 
         layers = []
         active = self.iface.activeLayer()
-        if active is not None and active.type() == QgsMapLayer.VectorLayer:
+        if active is not None and active.type() == layer_type("VectorLayer"):
             layers.append(active)
         try:
             for node in QgsProject.instance().layerTreeRoot().findLayers():
                 layer = node.layer()
                 if (layer is not None and node.isVisible()
-                        and layer.type() == QgsMapLayer.VectorLayer
+                        and layer.type() == layer_type("VectorLayer")
                         and layer not in layers):
                     layers.append(layer)
         except (AttributeError, RuntimeError) as exc:
@@ -1055,18 +1057,18 @@ class MapdexPlugin:
         file.
         """
         from qgis.core import (  # noqa: PLC0415 - Qt-only import
-            QgsCoordinateTransform, QgsGeometry, QgsMapLayer,
-            QgsPointXY, QgsProject, QgsWkbTypes,
+            QgsCoordinateTransform, QgsGeometry, QgsPointXY, QgsProject,
         )
+        from .qt_compat import geometry_type, layer_type  # noqa: PLC0415 - Qt-only import
 
         layer = self.iface.activeLayer()
-        if layer is None or layer.type() != QgsMapLayer.VectorLayer:
+        if layer is None or layer.type() != layer_type("VectorLayer"):
             return False
         if not layer.isEditable():
             return False
         wants_polygon = geometry == "polygon"
         try:
-            is_polygon = layer.geometryType() == QgsWkbTypes.PolygonGeometry
+            is_polygon = layer.geometryType() == geometry_type("PolygonGeometry")
         except (AttributeError, TypeError):
             return False
         if wants_polygon != is_polygon:
@@ -1158,9 +1160,9 @@ class MapdexPlugin:
 
         try:
             suppress = layer.editFormConfig().suppress()
-            if suppress == QgsEditFormConfig.SuppressOn:
+            if suppress == enum_member(QgsEditFormConfig, "FeatureFormSuppress", "SuppressOn"):
                 return True
-            if suppress == QgsEditFormConfig.SuppressDefault:
+            if suppress == enum_member(QgsEditFormConfig, "FeatureFormSuppress", "SuppressDefault"):
                 setting = QSettings().value(
                     "qgis/digitizing/disable_enter_attribute_values_dialog", False)
                 if str(setting).lower() in ("true", "1"):
@@ -2712,7 +2714,6 @@ class MapdexPlugin:
         # is what it is asking to do next. Offering first would put a dialog in
         # front of an answer the person has not read.
         self._offer_plan_run(response)
-
 
     @guarded
     def _draw_survey_result(self, response):

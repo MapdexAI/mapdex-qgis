@@ -185,5 +185,7 @@ def plan_run_report(run: Any) -> dict[str, Any]:
         "terminal": terminal,
         "state": state,
         "message": message,
-        "layers": collect_layer_imports(run) if terminal and state in {"completed", "succeeded", "needs_review"} else [],
+        "layers": (collect_layer_imports(run)
+                   if terminal and state in {"completed", "succeeded", "needs_review"}
+                   else []),
     }

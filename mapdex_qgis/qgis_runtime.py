@@ -1420,12 +1420,12 @@ class QGISRuntime:
         wrong thing to do with a label whose geometry nobody could name.
         """
         try:
-            from qgis.core import QgsWkbTypes  # noqa: PLC0415
+            from .qt_compat import geometry_type  # noqa: PLC0415
 
             return {
-                QgsWkbTypes.PointGeometry: "point",
-                QgsWkbTypes.LineGeometry: "line",
-                QgsWkbTypes.PolygonGeometry: "polygon",
+                geometry_type("PointGeometry"): "point",
+                geometry_type("LineGeometry"): "line",
+                geometry_type("PolygonGeometry"): "polygon",
             }.get(layer.geometryType(), "")
         except Exception:  # noqa: BLE001 - a default is not worth failing over
             return ""
@@ -1660,7 +1660,7 @@ class QGISRuntime:
             else:
                 raise CapabilityError(
                     "a sheet is exported as .pdf or as an image (.png, .jpg, .tif)")
-            _require(result == QgsLayoutExporter.Success,
+            _require(result == enum_member(QgsLayoutExporter, "ExportResult", "Success"),
                      "QGIS could not write the sheet to {}".format(export_path))
             exported = export_path
 
@@ -1973,7 +1973,7 @@ class QGISRuntime:
         }
 
     def datum_transformations(self, source_crs: str, target_crs: str,
-                             lat: float = 0.0, lon: float = 0.0) -> dict[str, Any]:
+                              lat: float = 0.0, lon: float = 0.0) -> dict[str, Any]:
         """Which paths exist between two systems, and how good each one is.
 
         A reprojection between datums is not one operation with one answer: PROJ
