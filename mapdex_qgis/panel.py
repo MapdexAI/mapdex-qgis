@@ -25,7 +25,6 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qgis.core import QgsApplication
 
 from .layout_rules import (
     MINIMUM_WIDTH,
@@ -723,12 +722,18 @@ def build_companion_panel(workflows, endpoint_settings=True):
     header_actions_row.setSpacing(6)
     # Icon-only, with tooltips, because a label here costs width the map is
     # paying for and these two are reached rarely.
-    for control, theme_icon in ((nivo_new_button, "/mActionAdd.svg"),
-                                (nivo_history_button, "/mActionHistory.svg")):
+    for control, asset_name in ((nivo_new_button, "lucide-new-chat.svg"),
+                                (nivo_history_button, "lucide-history.svg")):
         control.setObjectName("mapdexHeaderIcon")
         control.setToolButtonStyle(
             enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
-        control.setIcon(QgsApplication.getThemeIcon(theme_icon))
+        # Direct path, deliberately not `surface_asset_path`: that resolver
+        # looks for a `_dark` raster variant, while these SVGs already carry
+        # the exact stroke for this always-dark surface. Passing them through
+        # it returned a nonexistent path and QToolButton fell back to text.
+        control.setIcon(QIcon(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", asset_name
+        )))
         control.setIconSize(QSize(16, 16))
         control.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
         header_actions_row.addWidget(control)

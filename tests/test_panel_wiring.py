@@ -366,15 +366,15 @@ def test_settings_form_is_a_named_panel_not_loose_fields():
     assert "Choose how Nivo connects" in PANEL
 
 
-def test_header_controls_use_qgis_theme_icons_and_combos_keep_native_arrow():
-    assert 'QgsApplication.getThemeIcon(theme_icon)' in PANEL
-    assert '"/mActionAdd.svg"' in PANEL
-    assert '"/mActionHistory.svg"' in PANEL
+def test_header_controls_use_direct_svg_icons_and_combos_keep_painted_arrow():
+    assert '"lucide-new-chat.svg"' in PANEL
+    assert '"lucide-history.svg"' in PANEL
+    assert 'control.setIcon(QIcon(os.path.join(' in PANEL
+    assert "surface_asset_path(asset_name)" not in PANEL
     assert "class _ArrowComboBox(QComboBox):" in PANEL
     assert "painter.drawLine" in PANEL
     assert PANEL.count("_elastic(_ArrowComboBox())") == 7
     assert "QComboBox::down-arrow" not in PANEL
-    assert "CONTROL_ICONS" not in BRANDING
 
 
 def test_opening_metadata_failure_uses_a_local_fallback_not_global_error_banner():
