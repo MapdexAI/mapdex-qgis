@@ -2658,7 +2658,7 @@ class MapdexPlugin:
         button = action_row(
             str(action.get("label") or ""),
             icon=icon,
-            tone="normal" if paid else "quiet",
+            tone=str(action.get("tone") or ("normal" if paid else "quiet")),
         )
         if action.get("promise"):
             button.setToolTip(str(action["promise"]))
@@ -2779,17 +2779,17 @@ class MapdexPlugin:
     # every domain is in it. A new domain fails the build instead of vanishing
     # from the answer.
     CAPABILITY_GROUPS = (
-        ("Understand your data", "Inspect layers, measure geometry, compare values and find patterns.",
-         ("analytics", "measure", "inspect", "spatial", "field", "filter", "postgis")),
-        ("Survey and coordinates", "Work with bearings, traverses, coordinate formats and reference systems.",
-         ("survey", "coordinates", "crs")),
-        ("Make and refine maps", "Repair or derive layers, then select, style, label and present them.",
-         ("geoprocessing", "processing", "terrain", "draw", "map", "style", "layer",
-          "selection", "sheet")),
-        ("Deliver results", "Export layers and prepare outputs for the next person or system.",
-         ("export", "report", "publish")),
-        ("Run verified Mapdex workflows", "Georeference, digitize, validate and review durable results.",
-         ("mapdex",)),
+        ("Understand a layer", ("analytics", "measure", "inspect", "spatial", "field", "filter", "postgis"),
+         "Help me understand a layer: profile it, measure it and show what stands out."),
+        ("Make or refine a map", ("geoprocessing", "processing", "terrain", "draw", "map", "style",
+                                  "layer", "selection", "sheet"),
+         "Help me clean, reshape or present my GIS data as a useful map."),
+        ("Survey and coordinates", ("survey", "coordinates", "crs"),
+         "Help me with a survey, coordinate or reference-system task."),
+        ("Export or deliver", ("export", "report", "publish"),
+         "Help me prepare and export a GIS result for delivery."),
+        ("Run a verified workflow", ("mapdex",),
+         "Help me choose a verified Mapdex workflow for this project."),
     )
 
     @guarded
@@ -2810,26 +2810,23 @@ class MapdexPlugin:
         for capability in for_client(CLIENT_QGIS):
             by_domain.setdefault(capability.domain, []).append(
                 (capability.summary, capability.id not in offline))
-        lines = []
-        for title, description, domains in self.CAPABILITY_GROUPS:
+        actions = []
+        for title, domains, prompt in self.CAPABILITY_GROUPS:
             rows = sorted(row for domain in domains for row in by_domain.get(domain, []))
             if not rows:
                 continue
-            needs_account = all(paid for _summary, paid in rows)
-            lines.append("{}{}".format(title, " · Mapdex" if needs_account else ""))
-            lines.append(description)
-            lines.append("")
+            actions.append({
+                "label": title,
+                "kind": first_look.ASK,
+                "prompt": prompt,
+                "tone": "normal",
+                "promise": "Requires Mapdex" if all(paid for _summary, paid in rows) else "Runs in QGIS",
+            })
         self._say(
-            "\n".join(lines).rstrip(),
-            fact="Tell Nivo the outcome you want. It chooses and explains the GIS operations.",
-            actions=[
-                {"label": "Profile this layer", "kind": first_look.ASK,
-                 "prompt": "Profile the layer I have open and tell me what stands out."},
-                {"label": "Check for data issues", "kind": first_look.ASK,
-                 "prompt": "Check the layer I have open for data and geometry issues."},
-                {"label": "Suggest a useful map", "kind": first_look.ASK,
-                 "prompt": "Suggest and apply a useful map style for the layer I have open."},
-            ],
+            "Choose a starting point. Nivo will ask for what it needs and explain each operation.",
+            fact="What would you like to do?",
+            actions=actions,
+            opening=True,
         )
 
     @guarded
@@ -3917,10 +3914,10 @@ class MapdexPlugin:
         if refs is not None:
             self._load_thread_history()
 
-    def _say(self, text, steps=None, actions=None, severity="", fact=""):
+    def _say(self, text, steps=None, actions=None, severity="", fact="", opening=False):
         """Append one assistant turn and draw it."""
         self._nivo_turns.append(
-            transcript_turn("assistant", text, steps, actions, severity, fact))
+            transcript_turn("assistant", text, steps, actions, severity, fact, opening))
         self._render_nivo_turns()
 
     @guarded

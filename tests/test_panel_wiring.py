@@ -336,9 +336,11 @@ def test_every_registry_domain_is_in_a_group():
 def test_capability_discovery_is_not_a_registry_dump():
     body = _method(PLUGIN, "_say_capabilities")
     assert 'lines.extend("  " + summary' not in body, body
-    assert "Profile this layer" in body
-    assert "Check for data issues" in body
-    assert "Suggest a useful map" in body
+    assert 'actions.append({' in body
+    assert 'tone": "normal"' in body
+    assert 'opening=True' in body
+    for choice in ("Understand a layer", "Make or refine a map", "Run a verified workflow"):
+        assert choice in PLUGIN, choice
 
 
 # -- the stored key reads as stored -----------------------------------------
