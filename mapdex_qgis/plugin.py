@@ -219,7 +219,7 @@ PLUGIN_NATIVE_ACTIONS = {
 }
 
 DEFAULT_API = "https://api.mapdex.ai"
-DEFAULT_WEB = "https://mapdex.ai"
+DEFAULT_WEB = "https://app.mapdex.ai"
 # While a task waits for browser review the panel keeps a slow watch, so an
 # approved result still lands in QGIS without the user pressing Resume.
 REVIEW_POLL_MS = 15000

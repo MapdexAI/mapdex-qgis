@@ -49,7 +49,10 @@ def test_base_url_is_normalized():
 def test_production_device_flow_never_opens_localhost():
     assert device_verification_url(
         "http://localhost:3000/device", "https://mapdex.ai", "https://api.mapdex.ai"
-    ) == "https://mapdex.ai/device"
+    ) == "https://app.mapdex.ai/device"
+    assert device_verification_url(
+        "https://mapdex.ai/device", "https://mapdex.ai", "https://api.mapdex.ai"
+    ) == "https://app.mapdex.ai/device"
     assert device_verification_url(
         "http://localhost:3000/device", "http://localhost:3000", "http://localhost:8080"
     ) == "http://localhost:3000/device"

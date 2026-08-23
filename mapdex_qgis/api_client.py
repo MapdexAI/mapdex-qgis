@@ -134,15 +134,25 @@ def device_verification_url(response_url: str, web_base: str, api_base: str) -> 
     does a localhost address returned by a production API.
     """
     candidate = str(response_url or "").strip()
-    fallback = "{}/device".format(str(web_base or "").rstrip("/"))
+    configured_web = str(web_base or "").rstrip("/")
+    production_api = not is_local_host(api_base)
+    # Device approval is authenticated application state. Repair both an old
+    # stored plugin setting and an older API response that still name the
+    # marketing host, so existing installs move immediately with new ones.
+    configured_parts = parse.urlsplit(configured_web)
+    if production_api and (configured_parts.hostname or "").lower() == "mapdex.ai":
+        configured_web = "https://app.mapdex.ai"
+    fallback = "{}/device".format(configured_web)
     scheme, host, _ = _origin(candidate)
     if scheme not in {"http", "https"} or not host:
         return fallback
     if not is_transport_secure(candidate):
         return fallback
-    production_api = not is_local_host(api_base)
     if production_api and host in LOCAL_HOSTS:
         return fallback
+    if production_api and host == "mapdex.ai":
+        parts = parse.urlsplit(candidate)
+        return parse.urlunsplit(("https", "app.mapdex.ai", parts.path, parts.query, parts.fragment))
     return candidate
 
 

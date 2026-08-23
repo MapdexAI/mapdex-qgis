@@ -88,14 +88,15 @@ def test_same_origin_compares_scheme_host_and_port():
 def test_device_url_rejects_non_web_schemes_from_the_server():
     web = "https://mapdex.ai"
     api = "https://api.mapdex.ai"
-    assert device_verification_url("javascript:alert(1)", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("file:///etc/passwd", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("http://mapdex.ai/device", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("", web, api) == "https://mapdex.ai/device"
+    app_device = "https://app.mapdex.ai/device"
+    assert device_verification_url("javascript:alert(1)", web, api) == app_device
+    assert device_verification_url("file:///etc/passwd", web, api) == app_device
+    assert device_verification_url("http://mapdex.ai/device", web, api) == app_device
+    assert device_verification_url("", web, api) == app_device
     # A production API may not send the user to their own machine.
-    assert device_verification_url("http://localhost:3000/device", web, api) == "https://mapdex.ai/device"
+    assert device_verification_url("http://localhost:3000/device", web, api) == app_device
     # A legitimate https address is kept.
-    assert device_verification_url("https://mapdex.ai/device", web, api) == "https://mapdex.ai/device"
+    assert device_verification_url("https://mapdex.ai/device", web, api) == app_device
     # Self-hosted/local development keeps working.
     assert (
         device_verification_url("http://127.0.0.1:3000/device", "http://127.0.0.1:3000", "http://127.0.0.1:8080")
