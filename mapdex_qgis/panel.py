@@ -303,6 +303,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         enum_member(QSizePolicy, "Policy", "Preferred"),
         enum_member(QSizePolicy, "Policy", "Expanding"),
     )
+    combo_arrow = surface_asset_path(CONTROL_ICONS["dropdown"]).replace("\\", "/")
     root.setStyleSheet(
         """
         QWidget#mapdexPluginRoot { background: #191919; color: #F7F7F5; }
@@ -394,7 +395,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
             background: #1a1a1a;
             border-color: rgba(230, 233, 242, 0.10);
         }
-        QComboBox::drop-down { border: 0; width: 18px; }
+        QComboBox::drop-down { border: 0; width: 28px; }
+        QComboBox::down-arrow {
+            image: url(MAPDEX_COMBO_ARROW);
+            width: 12px;
+            height: 12px;
+        }
         QComboBox QAbstractItemView {
             background: #212121;
             color: #F7F7F5;
@@ -602,7 +608,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
             border-color: #6366F1;
         }
         QToolButton#mapdexNivoHeaderButton:disabled { color: #6B6B6B; }
-        """
+        """.replace("MAPDEX_COMBO_ARROW", combo_arrow)
     )
 
     outer = QVBoxLayout(root)

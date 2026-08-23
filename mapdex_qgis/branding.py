@@ -91,13 +91,13 @@ ACTION_ICONS = {
     "send": "icon_send.png",
 }
 
-# Icon-only controls, where the glyph IS the label because the control has no
-# room for a word. Ours rather than QGIS's: mActionFileNew draws a sheet of
-# paper, which says "document" beside a control that starts a conversation, and
-# mActionHistory draws a multi-coloured arrow belonging to nothing else here.
+# Icon-only controls use the ready-made Lucide SVG set (ISC), rather than
+# one-off generated glyphs. The same family supplies the combo-box chevron so
+# compact controls speak one visual language.
 CONTROL_ICONS = {
-    "new_chat": "icon_new_chat.png",
-    "history": "icon_history.png",
+    "new_chat": "lucide-plus.svg",
+    "history": "lucide-history.svg",
+    "dropdown": "lucide-chevron-down.svg",
 }
 
 

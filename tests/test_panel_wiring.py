@@ -19,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "mapdex_qgis"
 PLUGIN = (PACKAGE / "plugin.py").read_text(encoding="utf-8")
 PANEL = (PACKAGE / "panel.py").read_text(encoding="utf-8")
+BRANDING = (PACKAGE / "branding.py").read_text(encoding="utf-8")
 
 
 def _method(source: str, name: str) -> str:
@@ -362,6 +363,14 @@ def test_settings_form_is_a_named_panel_not_loose_fields():
     assert 'settings_title.setObjectName("mapdexSettingsTitle")' in PANEL
     assert 'settings_description.setObjectName("mapdexSettingsDescription")' in PANEL
     assert "Choose how Nivo connects" in PANEL
+
+
+def test_header_controls_and_dropdown_use_ready_svg_icons():
+    assert '"new_chat": "lucide-plus.svg"' in BRANDING
+    assert '"history": "lucide-history.svg"' in BRANDING
+    assert '"dropdown": "lucide-chevron-down.svg"' in BRANDING
+    assert "QComboBox::down-arrow" in PANEL
+    assert 'surface_asset_path(CONTROL_ICONS["dropdown"])' in PANEL
 
 
 def test_open_project_uses_the_unlocalized_app_route():
