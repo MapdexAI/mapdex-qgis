@@ -2718,6 +2718,13 @@ class MapdexPlugin:
             self._render_nivo_turns()
             return
         if kind == first_look.ASK:
+            # A menu of starting points is temporary UI, not conversation
+            # history. Remove it before the selected prompt is sent so the
+            # choice does not remain above the user's message as if it were a
+            # previous Nivo answer.
+            self._nivo_turns = [
+                turn for turn in self._nivo_turns if not turn.get("opening")
+            ]
             if self.nivo_input is not None:
                 self.nivo_input.setText(str(action.get("prompt") or ""))
                 self.ask_nivo()
@@ -3706,9 +3713,19 @@ class MapdexPlugin:
         if self._nivo_compose_task is not None:
             self._set_status("Nivo is still working. Use Stop before starting a new chat.")
             return
+        # Reset the complete local turn, not only what is painted. Keeping the
+        # old objective/action results made the plus button look successful
+        # while the next request could still continue the previous work.
         self._nivo_turns = []
-        self._render_nivo_turns()
+        self._nivo_opening = []
+        self._nivo_objective = ""
+        self._nivo_round_trips = 0
+        self._nivo_action_results = []
+        self._nivo_state = "idle"
         self._adopt_conversation("")
+        if self.nivo_input is not None:
+            self.nivo_input.clear()
+        self._render_nivo_turns()
         if self.nivo_status is not None:
             self.nivo_status.setText("New chat. The previous conversation is in History.")
         self._refresh_nivo_context()

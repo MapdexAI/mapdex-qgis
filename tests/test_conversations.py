@@ -390,6 +390,11 @@ def test_new_task_deletes_nothing_on_the_server():
     assert "delete_thread" not in body, "New chat must not remove the conversation from Mapdex"
     assert '_adopt_conversation("")' in body, "it must drop the current thread"
     assert "self._nivo_turns = []" in body
+    assert 'self._nivo_objective = ""' in body
+    assert "self._nivo_action_results = []" in body
+    assert 'self._nivo_state = "idle"' in body
+    assert "self.nivo_input.clear()" in body
+    assert body.index('_adopt_conversation("")') < body.index("_render_nivo_turns()")
 
 
 def test_the_history_dialog_has_a_widget_for_every_state_it_can_be_in():

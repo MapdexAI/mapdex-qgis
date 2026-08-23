@@ -343,6 +343,13 @@ def test_capability_discovery_is_not_a_registry_dump():
         assert choice in PLUGIN, choice
 
 
+def test_choosing_a_discovery_prompt_removes_the_choice_card():
+    body = _method(PLUGIN, "_first_look_action")
+    ask = body[body.index("if kind == first_look.ASK:"):]
+    assert 'if not turn.get("opening")' in ask
+    assert ask.index('if not turn.get("opening")') < ask.index("self.ask_nivo()")
+
+
 def test_all_turns_share_one_wide_screen_measure():
     body = _method(PLUGIN, "_turn_widget")
     assert "card.setMaximumWidth(BUBBLE_WIDTH)" in body, body
