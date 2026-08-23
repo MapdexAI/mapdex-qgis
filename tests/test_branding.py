@@ -197,6 +197,48 @@ def test_the_panel_forwards_the_palette_change():
     assert "on_palette_change" in panel
 
 
+def test_a_panel_glyph_is_chosen_for_the_surface_not_the_interface():
+    """The panel paints #191919 whatever theme QGIS is wearing.
+
+    Choosing by the INTERFACE palette put a near-black glyph on that ground on
+    every light QGIS theme - measured at relative luminance 0.06 against the
+    surface's own 0.09, which on screen is an icon that failed to load. The
+    toolbar keeps the interface rule, because that bar really is whatever
+    colour the theme makes it.
+    """
+    assert "surface_asset_icon(asset)" in _method("_action_icon"), (
+        "panel chips follow the interface again, so they vanish on a light theme"
+    )
+    assert "themed_asset_icon(" in _method("mapdex_mark_icon"), (
+        "the toolbar mark stopped following the interface"
+    )
+    body = _method("surface_asset_icon")
+    assert "_dark" in body, body
+
+
+def test_the_eight_are_eight():
+    """An icon earns its place by carrying state or destination. The set grew
+    once already, from four to nine, and every addition was decoration on a
+    word that was already clear."""
+    assert len(branding.SEVERITY_ICONS) == 4, sorted(branding.SEVERITY_ICONS)
+    assert len(branding.ACTION_ICONS) == 4, sorted(branding.ACTION_ICONS)
+
+
+def test_every_drawn_glyph_has_both_variants_on_disk():
+    for asset in branding.ACTION_ICONS.values():
+        stem, _, extension = asset.rpartition(".")
+        for name in (asset, "{}_dark.{}".format(stem, extension)):
+            assert (PACKAGE / "assets" / name).is_file(), name
+
+
+def test_the_drawn_glyphs_are_generated_rather_than_mystery_binaries():
+    generator = ROOT / "scripts" / "make_panel_icons.py"
+    assert generator.is_file()
+    body = generator.read_text(encoding="utf-8")
+    for work in branding.ACTION_ICONS:
+        assert work in body or work.split("_")[0] in body, work
+
+
 def test_the_assistant_avatar_is_left_alone():
     """Nivo's avatar is its own artwork and is not the corporate mark. This
     change was about the toolbar identity only."""

@@ -92,6 +92,31 @@ def _empty_project() -> list[dict[str, Any]]:
     ]
 
 
+# The one QGIS raster provider that reads a file this user brought. Everything
+# else - wms, wmts, xyz, arcgismapserver, vectortile - is somebody's tile
+# service, and a service is a backdrop rather than a source.
+#
+# A whitelist rather than a list of services, deliberately, because the two
+# mistakes are not equal: an unrecognised provider treated as a backdrop costs
+# a suggestion, and an unrecognised provider treated as a sheet offers to
+# digitize parcels out of a map server. That is exactly what shipped - Nivo
+# added an OpenStreetMap basemap and then offered to extract parcels from it,
+# because the layer has a valid CRS and a real extent and every measurement
+# said "placed raster".
+FILE_BACKED_RASTER_PROVIDERS = frozenset({"gdal"})
+
+
+def _is_service(layer: Mapping[str, Any]) -> bool:
+    """Is this raster a tile service rather than a file on disk?
+
+    An absent provider is treated as file-backed: `profile_layer` has always
+    reported rasters without one, and reclassifying every one of those as a
+    backdrop would silently withdraw the georeference offer from real scans.
+    """
+    provider = str(layer.get("provider") or "").strip().lower()
+    return bool(provider) and provider not in FILE_BACKED_RASTER_PROVIDERS
+
+
 def _raster_findings(layer: Mapping[str, Any]) -> list[dict[str, Any]]:
     name = str(layer.get("name") or "This raster")
     size = ""
@@ -99,6 +124,19 @@ def _raster_findings(layer: Mapping[str, Any]) -> list[dict[str, Any]]:
     height = int(layer.get("height") or 0)
     if width > 0 and height > 0:
         size = " - {}x{} px".format(width, height)
+
+    if _is_service(layer):
+        # No sheet findings at all. A backdrop is not a source, and offering
+        # to place or digitize one is an offer that cannot be honoured.
+        return [
+            _finding(
+                "basemap_added",
+                INFO,
+                "{} is a backdrop.".format(name),
+                "It draws under your data and is not something Mapdex reads.",
+                [],
+            )
+        ]
 
     if not layer.get("georeferenced"):
         # The finding this whole surface exists for. It is measured

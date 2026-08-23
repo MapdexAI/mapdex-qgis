@@ -60,11 +60,21 @@ def test_the_opening_reading_is_built_and_rendered():
 def test_the_reading_is_refreshed_by_every_signal_that_invalidates_it():
     """It describes the active layer and the connection state, so it is stale
     the moment either changes. A reading refreshed only at start-up is a splash
-    screen."""
-    for method in ("_refresh_nivo_context", "_refresh_ui", "_render_nivo_turns"):
-        assert "_render_first_look" in _calls(PLUGIN, method), (
+    screen.
+
+    The reading is drawn as turns now, so the transcript renderer is what
+    rebuilds it and everything that invalidates it redraws the transcript.
+    """
+    assert "_refresh_opening" in _calls(PLUGIN, "_render_nivo_turns"), (
+        "the transcript no longer rebuilds the opening, so it goes stale"
+    )
+    for method in ("_refresh_nivo_context", "_refresh_ui"):
+        assert "_render_nivo_turns" in _calls(PLUGIN, method), (
             "{} changes what the reading would say and does not redraw it".format(method)
         )
+    assert "_nivo_turns" in _method(PLUGIN, "_refresh_opening"), (
+        "the opening does not step aside once the conversation starts"
+    )
     assert "_refresh_nivo_context" in _calls(PLUGIN, "_on_current_layer_changed"), (
         "clicking another layer in the Layers panel left the reading describing the old one"
     )
@@ -138,7 +148,50 @@ def test_finishing_a_turn_asks_whether_asking_is_possible():
 
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
-    assert '"nivo_reading": nivo_reading' in PANEL
+
+
+def test_the_reading_has_no_frame_of_its_own():
+    """Everything Nivo says is a turn. A second surface above the transcript is
+    the card, the modal and the dialog all over again."""
+    for gone in ("nivo_reading", "mapdexFinding", "build_capabilities_dialog"):
+        assert gone not in PANEL, gone
+        assert gone not in PLUGIN, gone
+
+
+# -- first open --------------------------------------------------------------
+
+def test_first_open_is_derived_rather_than_stored():
+    body = _method(PLUGIN, "_refresh_ui")
+    assert "panel_state.is_first_open(" in body, body
+    for latch in ("has_seen", "onboarded", "first_run_done"):
+        assert latch not in PLUGIN, (
+            "{} is a stored flag; the state has to be derived so it can return "
+            "when both the session and the key are gone".format(latch)
+        )
+
+
+def test_asking_whether_a_provider_exists_does_not_open_the_key_store():
+    """`_refresh_ui` runs on every connection change and every layer click.
+    Decrypting the QGIS authentication database that often, to decide whether
+    to show a screen, is not something to do."""
+    body = _method(PLUGIN, "_has_provider")
+    assert "load(" not in body and "_credential_store" not in body, body
+    assert "mapdex/nivo/provider" in body, body
+
+
+def test_the_choice_sits_below_the_reading():
+    """Showing the choice alone is a wall in front of a product nobody has seen.
+    The reading needs neither half of it, so it goes first and the panel has
+    already said something true before it asks."""
+    order = [PANEL.index(marker) for marker in (
+        "layout.addWidget(pages, 1)", "layout.addWidget(sign_in)")]
+    assert order == sorted(order), "the choice was placed above the transcript"
+
+
+def test_the_second_option_routes_to_the_settings_that_already_exist():
+    """A second provider form would be two controls for one decision."""
+    body = _method(PLUGIN, "choose_own_model")
+    assert "settings_button" in body and "provider_box" in body, body
 
 
 # -- disconnect ends the session, all of it ---------------------------------
@@ -195,7 +248,7 @@ def test_resume_is_not_offered_without_a_session():
 # -- the capability catalogue is generated, not written ---------------------
 
 def test_the_capability_answer_is_read_from_the_registry():
-    body = _method(PLUGIN, "_open_capabilities_dialog")
+    body = _method(PLUGIN, "_say_capabilities")
     assert "for_client(CLIENT_QGIS)" in body, (
         "a hand-written list would go stale the first time a capability is added"
     )
@@ -205,11 +258,30 @@ def test_the_capability_answer_is_read_from_the_registry():
     )
 
 
-def test_the_dialog_renders_registry_text_as_data():
-    """A summary is registry text and every other string in this panel is
-    rendered as data. `setTextFormat(PlainText)` is that rule here."""
-    dialog = PANEL[PANEL.index("def build_capabilities_dialog"):]
-    assert "PlainText" in dialog, dialog[:400]
+def test_the_capability_answer_is_a_turn_rather_than_a_dialog():
+    """A modal is the product stepping out of its own conversation to hand
+    somebody a manual, over the panel it is describing."""
+    body = _method(PLUGIN, "_say_capabilities")
+    assert "self._say(" in body, body
+    assert "exec()" not in body and "QDialog" not in body, body
+
+
+def test_every_registry_domain_is_in_a_group():
+    """Grouping by task reads far better than by the registry's own domain
+    names, and a hand-written grouping goes stale the moment a domain is added.
+    So a new domain fails here instead of vanishing from the answer."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT))
+    from mapdex_qgis._vendor.nivo.capabilities import CLIENT_QGIS, for_client
+
+    start = PLUGIN.index("CAPABILITY_GROUPS = (")
+    body = PLUGIN[start:PLUGIN.index("def _say_capabilities", start)]
+    grouped = set(re.findall(r'"([a-z_]+)"', body))
+    live = {c.domain for c in for_client(CLIENT_QGIS)}
+    assert not (live - grouped), (
+        "domains missing from the grouping, so their capabilities vanish from the "
+        "answer: {}".format(sorted(live - grouped))
+    )
 
 
 # -- the stored key reads as stored -----------------------------------------

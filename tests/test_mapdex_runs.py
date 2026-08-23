@@ -84,10 +84,12 @@ class FakeLocale:
 
 
 HANDLERS = (
-    # _say is the one constructor for a transcript entry. Lifting it rather
-    # than faking it means these tests exercise the real shape, which is the
-    # whole reason it exists: the seven call sites that wrote the old
-    # two-element tuple were invisible to this suite until it did.
+    # _say is the one constructor for a transcript entry, and
+    # `transcript_turn` is the shape it builds. Lifting both rather than faking them means these tests
+    # exercise the real shape, which is the whole reason it exists: the seven
+    # call sites that wrote the old two-element tuple were invisible to this
+    # suite until it did.
+    "transcript_turn",
     "_say",
     "_require_mapdex_session",
     "_list_mapdex_runs",
@@ -195,7 +197,10 @@ class FakePanel:
 
     @property
     def said(self):
-        return [entry[1] for entry in self._nivo_turns if entry[0] == "assistant"]
+        # A transcript entry is a dict now: it grew actions, a severity and a
+        # measured fact line, and a tuple that had already grown once was the
+        # bug this suite exists to catch waiting to happen a third time.
+        return [turn["text"] for turn in self._nivo_turns if turn["sender"] == "assistant"]
 
 
 def _run(run_id, state, prompt="", files=("file_1",), error=None):

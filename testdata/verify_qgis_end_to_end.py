@@ -697,7 +697,8 @@ def replayed_markup_stays_text():
     """
     plugin = need_plugin()
     raw = "<b>not bold</b> & <img src=x>"
-    plugin._nivo_turns = [("user", "merhaba", []), ("assistant", raw, [])]
+    plugin._nivo_turns = [plugin_module.transcript_turn("user", "merhaba"),
+                          plugin_module.transcript_turn("assistant", raw)]
     plugin._render_nivo_turns()
     plain = enum_member(Qt, "TextFormat", "PlainText")
     matches = [
@@ -716,7 +717,8 @@ check("replayed markup renders as text, not as HTML", replayed_markup_stays_text
 def new_chat_clears_the_transcript():
     """Pressed, not called: this goes through the signal `_ensure_dock` wired."""
     plugin = need_plugin()
-    plugin._nivo_turns = [("user", "kaç parsel var", []), ("assistant", "24", [])]
+    plugin._nivo_turns = [plugin_module.transcript_turn("user", "kaç parsel var"),
+                          plugin_module.transcript_turn("assistant", "24")]
     plugin._render_nivo_turns()
     before = len(transcript_cards(plugin))
     if before < 2:
@@ -741,7 +743,8 @@ check("New chat clears the transcript and drops the thread", new_chat_clears_the
 
 def new_chat_refuses_mid_request():
     plugin = need_plugin()
-    plugin._nivo_turns = [("user", "bekle"), ("assistant", "Thinking…")]
+    plugin._nivo_turns = [plugin_module.transcript_turn("user", "bekle"),
+                          plugin_module.transcript_turn("assistant", "Thinking…")]
     plugin._render_nivo_turns()
     plugin._nivo_compose_task = object()
     try:
@@ -1229,7 +1232,7 @@ def dispatch(action_kind, target, params, summary="verification", probe=None):
     # The first turn is the reply text; anything beyond it is a capability
     # result line, which only `_run_capability` appends.
     if len(plugin._nivo_turns) > 1:
-        return "executed", plugin._nivo_turns[-1][1]
+        return "executed", plugin._nivo_turns[-1]["text"]
     if probe is not None and before != after:
         return "executed", "no transcript line; observed effect {!r} -> {!r}".format(before, after)
     if not admitted:

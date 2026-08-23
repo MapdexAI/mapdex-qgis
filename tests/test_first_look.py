@@ -57,6 +57,51 @@ def test_the_georeference_finding_turns_on_the_measurement_alone():
     assert [f["id"] for f in opening_reading(PLACED)["findings"]] == ["raster_placed"]
 
 
+BASEMAP = {"layer": {"name": "OpenStreetMap", "kind": "raster", "provider": "wms",
+                     "georeferenced": True}, "layer_count": 2}
+
+
+# -- a backdrop is not a source ---------------------------------------------
+
+def test_a_tile_service_is_never_offered_as_a_sheet():
+    """The defect in the founder's screenshot.
+
+    Nivo added an OpenStreetMap basemap and then offered to digitize parcels
+    out of it. A tile service has a valid CRS and a real extent exactly like a
+    placed scan does, so every measurement said "placed raster" and the
+    inference on top of it was wrong.
+    """
+    reading = opening_reading(BASEMAP)
+    assert [f["id"] for f in reading["findings"]] == ["basemap_added"]
+    assert first_look.account_actions(reading) == [], (
+        "a backdrop was offered Mapdex work that could not be honoured"
+    )
+
+
+def test_the_same_layer_from_a_file_is_still_a_sheet():
+    """The guard has to cost nothing on real scans, or it is a withdrawal."""
+    on_disk = {"layer": dict(BASEMAP["layer"], provider="gdal"), "layer_count": 2}
+    assert [a["workflow"] for a in first_look.account_actions(opening_reading(on_disk))] \
+        == ["digitize_parcels"]
+
+
+def test_a_raster_with_no_provider_reported_is_treated_as_a_file():
+    """`profile_layer` has always reported rasters without a provider. Reading
+    an absent value as "service" would silently withdraw the georeference offer
+    from every one of them, which is a worse failure than the one being fixed."""
+    silent = {"layer": {"name": "sheet.tif", "kind": "raster", "georeferenced": False},
+              "layer_count": 1}
+    assert [f["id"] for f in opening_reading(silent)["findings"]] == ["raster_not_georeferenced"]
+
+
+def test_an_unknown_provider_is_treated_as_a_backdrop():
+    """The whitelist points the other way on purpose: an unrecognised provider
+    treated as a backdrop costs one suggestion, and treated as a sheet offers
+    to extract parcels from somebody's map server."""
+    exotic = {"layer": dict(BASEMAP["layer"], provider="arcgismapserver"), "layer_count": 1}
+    assert [f["id"] for f in opening_reading(exotic)["findings"]] == ["basemap_added"]
+
+
 def test_a_vector_layer_never_produces_a_raster_finding():
     named_like_a_scan = {"layer": {"name": "scan_1943.tif", "kind": "vector",
                                    "crs": "EPSG:4326", "feature_count": 3}, "layer_count": 1}

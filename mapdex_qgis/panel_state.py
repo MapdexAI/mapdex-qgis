@@ -80,6 +80,45 @@ TASK_LOCKED_NOTICE = (
 JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their results."
 
 
+# ---------------------------------------------------------------------------
+# First open
+# ---------------------------------------------------------------------------
+#
+# Showing the choice and nothing else would make the panel a wall in front of a
+# product nobody has seen, and it asks a question that cannot be answered yet:
+# Mapdex or your own model is a billing and privacy decision, and the person
+# reading it does not know what either would do for them.
+#
+# So the reading goes first. It needs neither - it is local, measured, and
+# costs no model call - which means the screen has already said something true
+# about the file in front of them before it asks for anything.
+FIRST_OPEN_TITLE = "Nivo reads the map you already have open."
+FIRST_OPEN_PROMPT = "To ask Nivo something, choose where it thinks:"
+FIRST_OPEN_FREE = "That reading needed no account."
+
+# The two are not equals and are not drawn as equals. "Use your key" would be
+# the wrong words for a GIS technician - hard rule 22 keeps developer jargon
+# off the end-user screen - so it says what it is, and names the providers so
+# it is recognisable.
+CONNECT_PROMISE = "Free account. Georeference, digitize, validate and batch run here."
+OWN_MODEL_LABEL = "Use my own AI model"
+OWN_MODEL_PROMISE = (
+    "OpenAI, Anthropic, Gemini, or a model running on this machine. "
+    "Mapdex work stays unavailable."
+)
+
+
+def is_first_open(connected: bool, has_provider: bool) -> bool:
+    """Has this install chosen where Nivo thinks yet?
+
+    DERIVED, never a stored "has seen onboarding" flag. A flag goes stale, and
+    once spent it cannot come back - a defect class this repository has already
+    paid for. Disconnect and remove the key and you genuinely are a new user
+    again, which is the honest answer rather than a convenient one.
+    """
+    return not connected and not has_provider
+
+
 def engine_name(provider: str) -> str:
     """How this provider is referred to inside a sentence."""
     return _ENGINE_NAMES.get(str(provider or ""), "your own model provider")

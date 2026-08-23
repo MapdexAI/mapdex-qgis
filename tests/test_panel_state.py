@@ -136,6 +136,55 @@ def test_a_local_endpoint_is_not_asked_for_a_key_it_does_not_need():
     assert "Paste" not in line, line
 
 
+# -- first open --------------------------------------------------------------
+
+def test_a_connected_user_never_sees_the_first_open_screen():
+    """It is a choice about where Nivo thinks, and they have already made it."""
+    assert panel_state.is_first_open(connected=True, has_provider=False) is False
+    assert panel_state.is_first_open(connected=True, has_provider=True) is False
+
+
+def test_a_provider_key_alone_is_also_a_choice():
+    """Somebody who pasted an OpenAI key has chosen. Asking again would be the
+    panel forgetting what it was told."""
+    assert panel_state.is_first_open(connected=False, has_provider=True) is False
+
+
+def test_only_a_genuinely_new_install_is_asked():
+    assert panel_state.is_first_open(connected=False, has_provider=False) is True
+
+
+def test_the_state_is_derived_so_it_can_come_back():
+    """Not a "has seen onboarding" flag. A flag goes stale and, once spent,
+    cannot return - a defect class this repository has already paid for.
+    Disconnect and remove the key and you genuinely are a new user again.
+    """
+    assert panel_state.is_first_open(False, False) is True
+    assert panel_state.is_first_open(True, False) is False
+    assert panel_state.is_first_open(False, False) is True, (
+        "the state did not return, so something latched"
+    )
+
+
+def test_the_second_option_is_not_developer_jargon():
+    """Hard rule 22: the end-user screen stays free of developer concerns.
+    "Use your key" means nothing to a GIS technician, and naming the providers
+    is what makes the option recognisable."""
+    assert "key" not in panel_state.OWN_MODEL_LABEL.lower(), panel_state.OWN_MODEL_LABEL
+    for provider in ("OpenAI", "Anthropic", "Gemini"):
+        assert provider in panel_state.OWN_MODEL_PROMISE, provider
+    # And it says what it costs you, rather than selling only the upside.
+    assert "unavailable" in panel_state.OWN_MODEL_PROMISE
+
+
+def test_connect_says_what_it_is_for_and_that_it_is_free():
+    """A button that asks for a decision and supplies no reason reads as
+    configuration, which is what Connect read as."""
+    assert "Free" in panel_state.CONNECT_PROMISE
+    for work in ("Georeference", "digitize", "validate", "batch"):
+        assert work in panel_state.CONNECT_PROMISE, work
+
+
 # -- drift guards ------------------------------------------------------------
 
 def test_every_provider_in_the_menu_has_a_sentence_name():

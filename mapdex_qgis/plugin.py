@@ -8,13 +8,12 @@ import traceback
 from functools import partial
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
+from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QSize, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
     QBoxLayout,
     QDockWidget,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -123,11 +122,7 @@ from .nivo import (
     thread_turns,
     transition,
 )
-from .panel import (
-    build_capabilities_dialog,
-    build_companion_panel,
-    build_thread_history_dialog,
-)
+from .panel import build_companion_panel, build_thread_history_dialog
 from . import branding
 from . import first_look
 from . import panel_state
@@ -231,18 +226,41 @@ REVIEW_POLL_MS = 15000
 # callback that outlives the panel meets None instead of a destroyed object.
 PANEL_WIDGET_REFS = (
     "status", "connection_label", "api_url_input", "web_url_input",
-    "save_settings_button", "connect_button", "disconnect_button", "workspace",
+    "save_settings_button", "settings_button", "connect_button",
+    "disconnect_button", "workspace",
     "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_project_button", "recent", "recent_box", "resume_button",
+    "connect_promise", "sign_in", "first_open_prompt", "first_open_title",
+    "own_model", "own_model_button", "segment_bar",
     "tabs", "workspace_body", "workspace_locked", "jobs_locked",
     "assistant_key_state",
-    "nivo_context", "nivo_runtime", "nivo_reading",
+    "nivo_context", "nivo_runtime",
     "nivo_reply", "nivo_input", "nivo_send_button",
     "nivo_stop_button", "nivo_status",
     "nivo_new_button", "nivo_history_button",
 )
+
+
+def transcript_turn(sender, text, steps=None, actions=None, severity="", fact=""):
+    """One transcript entry, and the only place its shape is written.
+
+    A dict rather than a tuple, learned the hard way: the entry used to be
+    `(sender, text)`, grew a third element, and seven call sites went on
+    writing two. plugin.py cannot be imported by the headless suite, so a shape
+    mismatch here is invisible until a user hits it inside QGIS. A tuple that
+    has now grown twice more - actions, a severity, a measured fact line -
+    would be that bug waiting a third time.
+    """
+    return {
+        "sender": sender,
+        "text": str(text),
+        "steps": list(steps or []),
+        "actions": list(actions or []),
+        "severity": str(severity or ""),
+        "fact": str(fact or ""),
+    }
 
 
 def plugin_icon() -> QIcon:
@@ -257,6 +275,26 @@ def plugin_icon() -> QIcon:
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), branding.LISTING_MARK)
     return QIcon(path) if os.path.isfile(path) else QIcon()
+
+
+def surface_asset_icon(name: str) -> QIcon:
+    """A glyph for the PANEL's surface rather than for the QGIS interface.
+
+    `themed_asset_icon` reads the application palette, which is right for the
+    toolbar - that bar is whatever colour the user's theme makes it. It is
+    wrong inside this panel, which paints its own `#191919` ground whatever the
+    host theme is: on a LIGHT QGIS theme it picked the ink variant and drew a
+    near-black glyph on near-black, which on screen is indistinguishable from
+    an icon that failed to load.
+
+    Measured rather than reasoned: on a light interface the four panel glyphs
+    came back at relative luminance 0.06 against the surface's own 0.09.
+
+    So the panel always takes the light-coloured file - the one whose name says
+    `_dark`, meaning "for a dark surface".
+    """
+    stem, _, extension = name.rpartition(".")
+    return asset_icon("{}_dark.{}".format(stem or name, extension or "png"))
 
 
 def mapdex_mark_icon() -> QIcon:
@@ -724,7 +762,15 @@ class MapdexPlugin:
         self.api_url_input = None
         self.web_url_input = None
         self.save_settings_button = None
+        self.settings_button = None
         self.connect_button = None
+        self.connect_promise = None
+        self.sign_in = None
+        self.first_open_prompt = None
+        self.first_open_title = None
+        self.own_model = None
+        self.own_model_button = None
+        self.segment_bar = None
         self.disconnect_button = None
         self.workspace = None
         self.batch_group = None
@@ -757,7 +803,6 @@ class MapdexPlugin:
         self.assistant_key_state = None
         self.nivo_context = None
         self.nivo_runtime = None
-        self.nivo_reading = None
         self.nivo_reply = None
         self.nivo_status = None
         self.nivo_input = None
@@ -766,6 +811,10 @@ class MapdexPlugin:
         self.nivo_new_button = None
         self.nivo_history_button = None
         self._nivo_turns = []
+        # The opening reading, rebuilt on every draw. Kept apart from the
+        # conversation because it describes the layer that is active now,
+        # and because clearing the transcript must bring it back.
+        self._nivo_opening = []
         # A multi-step objective: what was asked, what the actions reported, and
         # how many round trips it has taken.
         self._nivo_objective = ""
@@ -1715,6 +1764,7 @@ class MapdexPlugin:
         self._load_connection_fields()
         self._load_assistant_fields()
         self.connect_button.clicked.connect(self.connect)
+        self.own_model_button.clicked.connect(self.choose_own_model)
         self.disconnect_button.clicked.connect(self.disconnect)
         self.save_settings_button.clicked.connect(self.save_connection_settings)
         self.provider_box.currentIndexChanged.connect(self._assistant_provider_changed)
@@ -2122,6 +2172,30 @@ class MapdexPlugin:
         self.disconnect_button.setVisible(connected)
         self.disconnect_button.setEnabled(connected and not self._busy)
 
+        # First open: neither a session nor a provider, so nothing can be asked
+        # yet and the panel is nine controls a stranger cannot rank. Derived,
+        # never a stored flag - a flag goes stale and, once spent, cannot come
+        # back. The reading above it needed neither, which is what lets this
+        # screen say something true before it asks for anything.
+        first = panel_state.is_first_open(connected, self._has_provider())
+        for widget, shown in (
+            (self.sign_in, not connected),
+            (self.connect_promise, not connected),
+            # Only on first open: afterwards the settings panel owns the
+            # provider choice and repeating it here is a second control for one
+            # decision.
+            (self.first_open_prompt, first),
+            (self.first_open_title, first),
+            (self.own_model, first),
+            # One page and no tab bar while nothing has been chosen: Task and
+            # Jobs are Mapdex session surfaces and cannot do anything yet.
+            (self.segment_bar, not first),
+        ):
+            if widget is not None:
+                widget.setVisible(shown)
+        if first and self.tabs is not None:
+            self.tabs.setCurrentIndex(0)
+
         # The page stays mounted so its segment button is never a dead end;
         # the BODY and the notice swap. Setting the page itself invisible was
         # fought by the segment switch, which shows the page it moves to, so a
@@ -2203,7 +2277,7 @@ class MapdexPlugin:
         # Which engine answers, and the reading of the open project, are both
         # functions of the connection state that just changed.
         self._refresh_assistant_state()
-        self._render_first_look()
+        self._render_nivo_turns()
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
@@ -2372,7 +2446,7 @@ class MapdexPlugin:
             label, context.get("selection_count", 0), context.get("crs", "No CRS")
         ))
         self._refresh_assistant_state()
-        self._render_first_look()
+        self._render_nivo_turns()
 
     # ----------------------------------------------------------------------
     # The opening reading: what Nivo says before it is asked anything
@@ -2408,6 +2482,11 @@ class MapdexPlugin:
                 described["width"] = getattr(layer, "width", lambda: 0)()
                 described["height"] = getattr(layer, "height", lambda: 0)()
                 described["georeferenced"] = raster_is_georeferenced(layer)
+                # Which provider drew it. A tile service has a valid CRS and a
+                # real extent exactly like a placed scan does, so without this
+                # the reading offered to digitize parcels out of an
+                # OpenStreetMap basemap that Nivo had added a turn earlier.
+                described["provider"] = str(getattr(layer, "providerType", lambda: "")() or "")
 
         # Layers QGIS is silently reprojecting on the fly. The map looks right
         # and every measurement crossing them is not, which is the most common
@@ -2432,86 +2511,84 @@ class MapdexPlugin:
         }
 
     @guarded
-    def _render_first_look(self):
-        """Draw the reading above the transcript.
+    def _refresh_opening(self):
+        """Rebuild the opening reading as turns, ahead of the conversation.
 
-        Hidden once a conversation has started: it is an opening, not a status
-        bar, and leaving it above a running transcript pushes the thing the
-        user is reading off the top of a narrow dock.
+        Not appended to `_nivo_turns`: it describes the layer that is active
+        NOW, so it is recomputed on every draw rather than accumulated. Once
+        the user has said something it steps aside entirely - an opening is not
+        a status bar, and on a 396 px dock it would push the answer they are
+        reading off the top.
         """
-        if self.nivo_reading is None:
-            return
-        layout = self.nivo_reading.layout()
-        if layout is None:
-            return
-        while layout.count():
-            item = layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        self._nivo_opening = []
         if self._nivo_turns:
-            self.nivo_reading.setVisible(False)
             return
         state = self._first_look_state()
         reading = first_look.opening_reading(state)
+        layer_id = state.get("layer_id", "")
         for finding in reading["findings"]:
-            layout.addWidget(self._finding_card(finding, state.get("layer_id", "")))
-        # Always reachable, not only from the empty-project reading: "what can
-        # this thing do" is the question a stranger has in front of every one
-        # of these states, and the registry can answer it.
-        layout.addWidget(
-            self._finding_button({"label": "What can Nivo do?", "kind": "capabilities"}, "")
-        )
-        self.nivo_reading.setVisible(True)
+            self._nivo_opening.append(transcript_turn(
+                "assistant",
+                finding["detail"],
+                actions=[dict(action, layer_id=layer_id) for action in finding["actions"]],
+                severity=finding["severity"],
+                fact=finding["headline"],
+            ))
+        # "What can this thing do" is the question a stranger has in front of
+        # every one of these states, so it is offered from all of them.
+        if self._nivo_opening:
+            self._nivo_opening[-1]["actions"].append(
+                {"label": "What can Nivo do?", "kind": "capabilities"})
 
-    def _finding_card(self, finding, layer_id):
-        """One measured statement, with what can be done about it.
+    def _action_chip(self, action):
+        """One thing to do, attached to the turn that earned it.
 
-        Free actions and the Mapdex action are visually distinct because the
-        difference between them is the only thing the reader has to decide.
+        Free work and Mapdex work are told apart by shape and by a glyph, not
+        by shouting: the paid one is outlined and carries the icon of the work
+        it would run, which is enough to read before pressing and quiet enough
+        not to compete with the sentence above it.
         """
-        card = QFrame()
-        card.setObjectName("mapdexFinding")
-        # A Qt property, so the stylesheet colours the severity stripe without
-        # this method knowing a single colour value.
-        card.setProperty("severity", str(finding.get("severity") or "info"))
-        column = QVBoxLayout(card)
-        column.setContentsMargins(10, 9, 10, 9)
-        column.setSpacing(4)
-
-        headline = self._plain(QLabel(), finding["headline"])
-        headline.setObjectName("mapdexFindingHeadline")
-        headline.setWordWrap(True)
-        column.addWidget(headline)
-
-        detail = self._plain(QLabel(), finding["detail"])
-        detail.setObjectName("mapdexFindingDetail")
-        detail.setWordWrap(True)
-        column.addWidget(detail)
-
-        actions = finding.get("actions") or []
-        if actions:
-            row = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
-            row.setContentsMargins(0, 3, 0, 0)
-            row.setSpacing(6)
-            for action in actions:
-                row.addWidget(self._finding_button(action, layer_id))
-            row.addStretch(1)
-            column.addLayout(row)
-        return card
-
-    def _finding_button(self, action, layer_id):
         button = QToolButton()
         paid = action.get("kind") == first_look.MAPDEX
         button.setObjectName("mapdexAccountAction" if paid else "mapdexFreeAction")
         button.setText(str(action.get("label") or ""))
-        button.setToolButtonStyle(enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly"))
+        button.setToolButtonStyle(
+            enum_member(Qt, "ToolButtonStyle", "ToolButtonTextBesideIcon" if paid
+                        else "ToolButtonTextOnly"))
+        if paid:
+            icon = self._action_icon(str(action.get("workflow") or ""))
+            if icon is not None:
+                button.setIcon(icon)
+                button.setIconSize(QSize(13, 13))
         if action.get("promise"):
             button.setToolTip(str(action["promise"]))
         button.clicked.connect(
-            lambda _checked=False, chosen=dict(action), target=layer_id:
-            self._first_look_action(chosen, target)
-        )
+            lambda _checked=False, chosen=dict(action):
+            self._first_look_action(chosen, str(chosen.get("layer_id") or "")))
         return button
+
+    def _severity_icon(self, severity):
+        """The state glyph, from QGIS's own theme set.
+
+        Measured in QGIS 4.0.2: all four paint at 24 px and follow the user's
+        theme without any work from us, which is also why the panel looks like
+        part of the host rather than a web card dropped into it.
+        """
+        name = branding.SEVERITY_ICONS.get(str(severity or ""), "")
+        return QgsApplication.getThemeIcon(name) if name else QIcon()
+
+    def _action_icon(self, workflow):
+        """The glyph for one piece of Mapdex work, or None if it has none.
+
+        QGIS has no equivalent that paints - mIconGeoreferencer.svg resolves to
+        an empty pixmap here - so these four are ours, generated on the same
+        24-unit grid by scripts/make_panel_icons.py.
+
+        Chosen for the panel's surface, not for the interface: this chip is
+        drawn on #191919 whatever theme QGIS is wearing.
+        """
+        asset = branding.ACTION_ICONS.get(str(workflow or ""), "")
+        return surface_asset_icon(asset) if asset else None
 
     @guarded
     def _first_look_action(self, action, layer_id):
@@ -2524,7 +2601,10 @@ class MapdexPlugin:
         """
         kind = str(action.get("kind") or "")
         if kind == "capabilities":
-            self._open_capabilities_dialog()
+            self._say_capabilities()
+            return
+        if kind == "connect":
+            self.connect()
             return
         if kind == first_look.LOCAL:
             capability = str(action.get("capability") or "")
@@ -2535,7 +2615,7 @@ class MapdexPlugin:
                     return
                 params["layer_id"] = layer_id
             self._run_capability(capability, params, summary=str(action.get("label") or ""))
-            self._render_first_look()
+            self._render_nivo_turns()
             return
         if kind == first_look.ASK:
             if self.nivo_input is not None:
@@ -2558,15 +2638,18 @@ class MapdexPlugin:
         workflow = str(action.get("workflow") or "")
         promise = str(action.get("promise") or "")
         if not self.api.token:
-            answer = QMessageBox.question(
-                self.iface.mainWindow(),
-                str(action.get("label") or "Mapdex"),
-                "{}\n\nThis runs in Mapdex and needs an account. Creating one is free "
-                "and the browser opens on the approval page.".format(promise),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            # A turn, not a dialog. The offer was a QMessageBox that covered
+            # the panel, asked once and took its reason away with it when
+            # dismissed - so the argument for connecting was gone the moment
+            # somebody said "not now". In the transcript it stays on screen.
+            self._say(
+                promise or "This part runs on Mapdex.",
+                fact="Needs a Mapdex account. Creating one is free.",
+                actions=[
+                    {"label": "Create an account", "kind": "connect"},
+                    {"label": "I already have one", "kind": "connect"},
+                ],
             )
-            if answer == QMessageBox.StandardButton.Yes:
-                self.connect()
             return
         self._preselect_workflow(workflow)
 
@@ -2585,28 +2668,56 @@ class MapdexPlugin:
                 self.input_box.setCurrentIndex(target)
         self.tabs.setCurrentIndex(1)
 
-    @guarded
-    def _open_capabilities_dialog(self):
-        """Answer "what can Nivo do?" from the registry.
+    # What a person wants to do, mapped onto the registry's own domains.
+    # Grouping by task reads far better than "analytics / geoprocessing /
+    # inspect / selection / field / filter", but a hand-written grouping goes
+    # stale the moment a domain is added - so this is a MAP and a test asserts
+    # every domain is in it. A new domain fails the build instead of vanishing
+    # from the answer.
+    CAPABILITY_GROUPS = (
+        ("Measure and analyse", ("analytics", "measure", "inspect", "spatial", "field", "filter")),
+        ("Survey computation", ("survey", "coordinates", "crs")),
+        ("Reshape and process", ("geoprocessing", "processing", "terrain", "draw")),
+        ("Map and style", ("map", "style", "layer", "selection", "sheet")),
+        ("Databases", ("postgis",)),
+        ("Deliver", ("export", "report", "publish")),
+        ("Mapdex work", ("mapdex",)),
+    )
 
-        Generated, so a capability added to the registry cannot go missing
-        from the answer, and the account-only ones are marked rather than
-        hidden: a user deciding whether to sign up is entitled to see what
-        signing up is for.
+    @guarded
+    def _say_capabilities(self):
+        """Answer "what can Nivo do?" as a turn, from the registry.
+
+        Not a dialog. A modal here is the product stepping out of its own
+        conversation to hand somebody a manual, and it covers the panel it is
+        describing. A turn scrolls, it stays, and the next question is already
+        in the box below it.
+
+        Generated, so a capability added to the registry cannot go missing from
+        the answer, and the account-only ones are marked rather than hidden: a
+        person deciding whether to sign up is entitled to see what signing up
+        is for.
         """
         offline = session_allowance(CLIENT_QGIS)
-        groups = {}
+        by_domain = {}
         for capability in for_client(CLIENT_QGIS):
-            groups.setdefault(capability.domain, []).append(
-                (capability.summary, capability.id not in offline)
-            )
-        ordered = [
-            (domain.replace("_", " ").title(), sorted(rows))
-            for domain, rows in sorted(groups.items())
-        ]
-        dialog, widgets = build_capabilities_dialog(ordered, self.iface.mainWindow())
-        widgets["close_button"].clicked.connect(dialog.accept)
-        dialog.exec()
+            by_domain.setdefault(capability.domain, []).append(
+                (capability.summary, capability.id not in offline))
+        lines = []
+        for title, domains in self.CAPABILITY_GROUPS:
+            rows = sorted(row for domain in domains for row in by_domain.get(domain, []))
+            if not rows:
+                continue
+            needs_account = all(paid for _summary, paid in rows)
+            lines.append("{}{}".format(title, " - needs a connection" if needs_account else ""))
+            lines.extend("  " + summary for summary, _paid in rows)
+            lines.append("")
+        self._say(
+            "\n".join(lines).rstrip(),
+            fact="Everything below runs here in QGIS unless it says otherwise.",
+            actions=[{"label": "What can you do with this layer?", "kind": first_look.ASK,
+                      "prompt": "What can you do with the layer I have open?"}],
+        )
 
     @guarded
     def _refresh_assistant_state(self):
@@ -2733,6 +2844,33 @@ class MapdexPlugin:
             self._assistant_runtime_cache = resolve_runtime(self.assistant_settings())
         return self._assistant_runtime_cache
 
+    def _has_provider(self):
+        """Is a model provider configured at all?
+
+        Presence, from the non-secret preference, so this never opens the
+        encrypted authentication database - `_refresh_ui` runs on every
+        connection change and every layer click.
+        """
+        settings = QSettings()
+        return bool(str(settings.value("mapdex/nivo/provider", "") or "").strip())
+
+    @guarded
+    def choose_own_model(self, *args):
+        """Open the settings panel on the provider fields.
+
+        The first-open screen offers the choice; the panel that already exists
+        is where it is made. A second provider form would be two controls for
+        one decision, and they would disagree eventually.
+        """
+        if self.settings_button is not None:
+            self.settings_button.setChecked(True)
+        if self.provider_box is not None:
+            self.provider_box.setFocus()
+        self._set_status(
+            "Choose a provider and paste its key, then Save settings. "
+            "Nivo answers from your own model after that."
+        )
+
     def _forget_assistant_runtime(self):
         """Drop the cached decision after the settings behind it moved."""
         self._assistant_runtime_cache = None
@@ -2760,7 +2898,7 @@ class MapdexPlugin:
             return
         self._set_nivo_compose_busy(True)
         self._nivo_state = transition(self._nivo_state, "send")
-        self._nivo_turns.append(("user", message, []))
+        self._nivo_turns.append(transcript_turn("user", message))
         self._say("Thinking…")
         self.nivo_status.setText("Nivo AI is reading your map context…")
         self.nivo_input.clear()
@@ -2964,13 +3102,22 @@ class MapdexPlugin:
         )
         return answer == yes
 
-    def _replace_last_assistant_turn(self, text):
-        """Overwrite the pending "Thinking…" bubble, or add one."""
-        if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-            self._nivo_turns[-1] = ("assistant", str(text), self._nivo_turns[-1][2])
+    def _replace_last_assistant_turn(self, text, steps=None):
+        """Overwrite the pending "Thinking…" bubble, or add one.
+
+        Four call sites wrote this by hand, each reading the entry by position,
+        which is how they all went on building tuples after the entry became a
+        dict. One helper, and `steps` is a parameter because the composed reply
+        brings its own while a stop or a failure keeps whatever was there.
+        """
+        if self._nivo_turns and self._nivo_turns[-1]["sender"] == "assistant":
+            last = self._nivo_turns[-1]
+            self._nivo_turns[-1] = transcript_turn(
+                "assistant", text, steps if steps is not None else last["steps"],
+                last["actions"], last["severity"], last["fact"])
             self._render_nivo_turns()
             return
-        self._say(str(text))
+        self._say(str(text), steps)
 
     def _compose_in_thread(self, project_id, message, context, thread_id, title, companion_results=None):
         """One conversational turn. Network only — runs on a worker thread.
@@ -3041,9 +3188,7 @@ class MapdexPlugin:
         self._nivo_compose_task = None
         self._set_nivo_compose_busy(False)
         self._nivo_state = transition(self._nivo_state, "error")
-        if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-            self._nivo_turns[-1] = ("assistant", "Stopped.", self._nivo_turns[-1][2])
-            self._render_nivo_turns()
+        self._replace_last_assistant_turn("Stopped.")
         if self.nivo_status is not None:
             self.nivo_status.setText("Stopped")
         self._set_status("Nivo request stopped.")
@@ -3062,9 +3207,7 @@ class MapdexPlugin:
             carried = getattr(exception, "mapdex_thread_id", "")
             if carried:
                 self._adopt_conversation(carried)
-            if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-                self._nivo_turns[-1] = ("assistant", "I couldn't complete that request.", self._nivo_turns[-1][2])
-            self._render_nivo_turns()
+            self._replace_last_assistant_turn("I couldn't complete that request.")
             if self.nivo_status is not None:
                 self.nivo_status.setText("Request failed")
             self._show_error("Nivo could not compose a response", exception)
@@ -3085,11 +3228,7 @@ class MapdexPlugin:
             # is what made a turn that ran four capabilities and a turn that
             # answered from memory look identical.
             steps = step_rows(response)
-            if self._nivo_turns and self._nivo_turns[-1][0] == "assistant":
-                self._nivo_turns[-1] = ("assistant", reply, steps)
-                self._render_nivo_turns()
-            else:
-                self._say(reply, steps)
+            self._replace_last_assistant_turn(reply, steps)
         if self.nivo_status is not None:
             notice = str(outcome.get("notice") or "")
             budget = budget_label(response)
@@ -3308,50 +3447,88 @@ class MapdexPlugin:
             item = layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        for sender, text, steps in self._nivo_turns:
-            card = QWidget()
-            row = QVBoxLayout(card)
-            is_thinking = sender != "user" and str(text).startswith("Thinking")
-            if is_thinking:
-                row.setContentsMargins(2, 2, 2, 2)
-                body = self._plain(QLabel(), text)
-                body.setWordWrap(True)
-                body.setStyleSheet("color:#8F96A8; background:transparent; border:0;")
-                row.addWidget(body)
-                card.setStyleSheet("background:transparent; border:0;")
-                layout.addWidget(card)
-                continue
-            row.setContentsMargins(8, 7, 8, 7)
-            row.setSpacing(3)
-            header = QWidget()
-            header_row = QHBoxLayout(header)
-            header_row.setContentsMargins(0, 0, 0, 0)
-            header_row.setSpacing(0)
-            label = QLabel("You" if sender == "user" else "Nivo")
-            label.setStyleSheet(
-                "color:#ffffff; font-weight:600;" if sender == "user" else "color:#8F96A8; font-weight:600;"
-            )
-            header_row.addWidget(label)
-            body = self._plain(QLabel(), text)
-            body.setWordWrap(True)
-            row.addWidget(header)
-            row.addWidget(body)
-            if sender == "user":
-                card.setStyleSheet("background:#4F46E5; color:#ffffff; border-radius:8px;")
-                body.setStyleSheet("color:#ffffff;")
-            else:
-                card.setStyleSheet("background:transparent; color:#F7F7F5; border:0;")
-                body.setStyleSheet("color:#F7F7F5;")
-                for row_data in steps or []:
-                    row.addWidget(self._step_widget(row_data))
-            layout.addWidget(card)
+        # The opening reading is drawn as turns, ahead of the conversation, and
+        # is recomputed rather than accumulated - it describes the layer that is
+        # active NOW. Once the user says something it steps aside, because on a
+        # narrow dock it would push the thing they are reading off the top.
+        self._refresh_opening()
+        for turn in list(self._nivo_opening) + list(self._nivo_turns):
+            layout.addWidget(self._turn_widget(turn))
         layout.addStretch(1)
         bar = self.nivo_reply.verticalScrollBar()
         bar.setValue(bar.maximum())
-        # The reading is an opening, not a status bar: once a conversation has
-        # started it would push what the user is reading off the top of a
-        # narrow dock. New chat empties the transcript and brings it back.
-        self._render_first_look()
+
+    def _turn_widget(self, turn):
+        """One transcript entry: a measured line, what was said, what to do."""
+        sender = turn.get("sender")
+        text = turn.get("text", "")
+        card = QWidget()
+        row = QVBoxLayout(card)
+
+        if sender != "user" and str(text).startswith("Thinking"):
+            row.setContentsMargins(2, 2, 2, 2)
+            body = self._plain(QLabel(), text)
+            body.setWordWrap(True)
+            body.setStyleSheet("color:#8F96A8; background:transparent; border:0;")
+            row.addWidget(body)
+            card.setStyleSheet("background:transparent; border:0;")
+            return card
+
+        row.setContentsMargins(8, 7, 8, 7)
+        row.setSpacing(3)
+        label = QLabel("You" if sender == "user" else "Nivo")
+        label.setStyleSheet(
+            "color:#ffffff; font-weight:600;" if sender == "user"
+            else "color:#8F96A8; font-weight:600;"
+        )
+        row.addWidget(label)
+
+        # The measurement, set apart from the sentence about it. Mono, because
+        # a file name, a pixel size and a CRS code are data and read as data.
+        if turn.get("fact"):
+            fact = self._plain(QLabel(), turn["fact"])
+            fact.setObjectName("mapdexTurnFact")
+            fact.setWordWrap(True)
+            row.addWidget(fact)
+
+        body = self._plain(QLabel(), text)
+        body.setWordWrap(True)
+
+        severity = turn.get("severity")
+        if severity and sender != "user":
+            # Icon AND wording, never colour alone: DESIGN.md section 8, and
+            # the coloured stripe this replaces broke exactly that rule.
+            said = QWidget()
+            said_row = QHBoxLayout(said)
+            said_row.setContentsMargins(0, 0, 0, 0)
+            said_row.setSpacing(7)
+            glyph = QLabel()
+            glyph.setFixedSize(16, 16)
+            glyph.setPixmap(self._severity_icon(severity).pixmap(15, 15))
+            said_row.addWidget(glyph, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+            said_row.addWidget(body, 1)
+            row.addWidget(said)
+        else:
+            row.addWidget(body)
+
+        if sender == "user":
+            card.setStyleSheet("background:#4F46E5; color:#ffffff; border-radius:8px;")
+            body.setStyleSheet("color:#ffffff;")
+        else:
+            card.setStyleSheet("background:transparent; color:#F7F7F5; border:0;")
+            body.setStyleSheet("color:#F7F7F5;")
+            for row_data in turn.get("steps") or []:
+                row.addWidget(self._step_widget(row_data))
+            actions = turn.get("actions") or []
+            if actions:
+                strip = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
+                strip.setContentsMargins(0, 3, 0, 0)
+                strip.setSpacing(6)
+                for action in actions:
+                    strip.addWidget(self._action_chip(action))
+                strip.addStretch(1)
+                row.addLayout(strip)
+        return card
 
     # ----------------------------------------------------------------------
     # Conversations: New chat, History, and the thread the panel is continuing
@@ -3548,7 +3725,7 @@ class MapdexPlugin:
         # A replayed conversation carries no execution trace: the server stores
         # the messages, not the steps. Restoring it with an empty step list says
         # "not recorded" rather than "nothing ran", which are different claims.
-        self._nivo_turns = [(sender, text, []) for sender, text in turns]
+        self._nivo_turns = [transcript_turn(sender, text) for sender, text in turns]
         self._render_nivo_turns()
         self._adopt_conversation(thread_id, project_id)
         if self.nivo_status is not None:
@@ -3608,17 +3785,10 @@ class MapdexPlugin:
         if refs is not None:
             self._load_thread_history()
 
-    def _say(self, text, steps=None):
-        """Append one assistant turn.
-
-        Every caller goes through here because a transcript entry has a shape,
-        (sender, text, steps), and seven call sites went on writing a
-        two-element tuple after that shape changed. plugin.py cannot be imported
-        by the headless suite, so a shape mismatch here is invisible until a
-        user hits it inside QGIS; one constructor is what makes the mistake
-        impossible rather than merely unlikely.
-        """
-        self._nivo_turns.append(("assistant", str(text), list(steps or [])))
+    def _say(self, text, steps=None, actions=None, severity="", fact=""):
+        """Append one assistant turn and draw it."""
+        self._nivo_turns.append(
+            transcript_turn("assistant", text, steps, actions, severity, fact))
         self._render_nivo_turns()
 
     @guarded

@@ -33,7 +33,12 @@ from .layout_rules import (
     panel_layout_mode,
 )
 from .panel_state import (
+    CONNECT_PROMISE,
+    FIRST_OPEN_PROMPT,
+    FIRST_OPEN_TITLE,
     JOBS_LOCKED_NOTICE,
+    OWN_MODEL_LABEL,
+    OWN_MODEL_PROMISE,
     PROVIDER_CHOICES,
     TASK_LOCKED_NOTICE,
 )
@@ -185,15 +190,68 @@ def build_companion_panel(workflows, endpoint_settings=True):
             background: transparent;
             border: 0;
         }
+        /* Four control tiers, and the point of them is that only ONE thing on
+           screen is filled. Seven controls used to claim "primary" and the
+           style was three lines with no colour in it, so primary meant "a
+           slightly bolder default button" and seven of those means none. */
         QPushButton#mapdexPrimaryButton {
-            min-height: 32px;
-            padding: 4px 10px;
+            min-height: 34px;
+            padding: 5px 12px;
             font-weight: 600;
+            color: #FFFFFF;
+            background: #4F46E5;
+            border: 0;
+            border-radius: 6px;
+        }
+        QPushButton#mapdexPrimaryButton:hover { background: #6366F1; }
+        QPushButton#mapdexPrimaryButton:pressed { background: #4338CA; }
+        QPushButton#mapdexPrimaryButton:disabled {
+            color: #6B6B6B;
+            background: #2A2A2A;
         }
         QPushButton#mapdexSecondaryButton {
             min-height: 32px;
-            padding: 4px 10px;
+            padding: 4px 11px;
             font-weight: 600;
+            color: #C9CDD8;
+            background: transparent;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            border-radius: 6px;
+        }
+        QPushButton#mapdexSecondaryButton:hover {
+            color: #F7F7F5;
+            border-color: #6366F1;
+        }
+        QPushButton#mapdexSecondaryButton:disabled {
+            color: #6B6B6B;
+            border-color: rgba(230, 233, 242, 0.12);
+        }
+        /* Fields. The panel painted its own #191919 surface and then left ten
+           combos wearing Qt's default, which is what reads as unfinished. One
+           treatment, the same one the composer already had. */
+        QComboBox, QLineEdit {
+            background: #1c1c1c;
+            color: #F7F7F5;
+            selection-background-color: #4F46E5;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            border-radius: 6px;
+            padding: 6px 9px;
+            min-height: 20px;
+        }
+        QComboBox:focus, QLineEdit:focus { border-color: #6366F1; }
+        QComboBox:disabled, QLineEdit:disabled {
+            color: #6B6B6B;
+            background: #1a1a1a;
+            border-color: rgba(230, 233, 242, 0.10);
+        }
+        QComboBox::drop-down { border: 0; width: 18px; }
+        QComboBox QAbstractItemView {
+            background: #212121;
+            color: #F7F7F5;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            selection-background-color: #4F46E5;
+            selection-color: #FFFFFF;
+            outline: 0;
         }
         QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
         QFrame#mapdexNivoSurface {
@@ -218,18 +276,13 @@ def build_companion_panel(workflows, endpoint_settings=True):
             color: #A5A2F5;
             font-size: 11px;
         }
-        QFrame#mapdexNivoReading { background: transparent; border: 0; }
-        /* One finding: a measured statement about the open project. */
-        QFrame#mapdexFinding {
-            background: #212121;
-            border: 1px solid rgba(230, 233, 242, 0.14);
-            border-left: 3px solid #6366F1;
-            border-radius: 6px;
+        /* The measured line a turn opens with. Mono, because a file name, a
+           pixel size and a CRS code are data and read as data. */
+        QLabel#mapdexTurnFact {
+            color: #8F96A8;
+            font-family: "Geist Mono", "JetBrains Mono", monospace;
+            font-size: 11px;
         }
-        QFrame#mapdexFinding[severity="blocking"] { border-left-color: #E05260; }
-        QFrame#mapdexFinding[severity="warning"] { border-left-color: #D9A441; }
-        QLabel#mapdexFindingHeadline { color: #F7F7F5; font-weight: 600; }
-        QLabel#mapdexFindingDetail { color: #A8ADBA; font-size: 11px; }
         /* Free work and Mapdex work must be told apart before they are pressed.
            The account action is the only filled button in a finding. */
         QToolButton#mapdexFreeAction {
@@ -242,23 +295,26 @@ def build_companion_panel(workflows, endpoint_settings=True):
         }
         QToolButton#mapdexFreeAction:hover { color: #F7F7F5; border-color: #6366F1; }
         QToolButton#mapdexAccountAction {
-            color: #FFFFFF;
-            background: #4F46E5;
-            border: 0;
-            border-radius: 6px;
-            padding: 6px 11px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        QToolButton#mapdexAccountAction:hover { background: #6366F1; }
-        QLabel#mapdexAccountMarker {
             color: #A5A2F5;
-            border: 1px solid rgba(165, 162, 245, 0.45);
-            border-radius: 4px;
-            padding: 1px 5px;
-            font-size: 10px;
+            background: transparent;
+            border: 1px solid rgba(165, 162, 245, 0.5);
+            border-radius: 6px;
+            padding: 4px 9px;
+            font-size: 11px;
+        }
+        QToolButton#mapdexAccountAction:hover {
+            color: #C7C5FA;
+            border-color: #A5A2F5;
         }
         QLabel#mapdexKeyState { color: #C9CDD8; font-size: 11px; }
+        /* The reason under a control, not a separate announcement. A button
+           that asks for a decision and supplies none reads as configuration. */
+        QLabel#mapdexPromise { color: #8F96A8; font-size: 11px; }
+        QLabel#mapdexFirstOpenTitle {
+            color: #F7F7F5;
+            font-size: 14px;
+            font-weight: 600;
+        }
         QLabel#mapdexLockedNotice {
             padding: 12px;
             color: palette(text);
@@ -466,7 +522,37 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # nothing is connected yet. Disconnect now lives in the header row above.
     connect_button = QPushButton("Connect Mapdex")
     connect_button.setObjectName("mapdexPrimaryButton")
-    layout.addWidget(connect_button)
+    connect_promise = QLabel(CONNECT_PROMISE)
+    connect_promise.setObjectName("mapdexPromise")
+    connect_promise.setWordWrap(True)
+    first_open_prompt = QLabel(FIRST_OPEN_PROMPT)
+    first_open_prompt.setObjectName("mapdexPromise")
+    first_open_prompt.setWordWrap(True)
+    own_model_button = QPushButton(OWN_MODEL_LABEL)
+    own_model_button.setObjectName("mapdexSecondaryButton")
+    own_model_promise = QLabel(OWN_MODEL_PROMISE)
+    own_model_promise.setObjectName("mapdexPromise")
+    own_model_promise.setWordWrap(True)
+    own_model = QWidget()
+    own_model_layout = QVBoxLayout(own_model)
+    own_model_layout.setContentsMargins(0, 4, 0, 0)
+    own_model_layout.setSpacing(5)
+    own_model_layout.addWidget(own_model_button)
+    own_model_layout.addWidget(own_model_promise)
+
+    # The choice, and it is placed AFTER the pages below so the reading in the
+    # Nivo transcript has already said something true about the open file
+    # before the panel asks anybody to pick a side. Showing the choice alone
+    # would be a wall in front of a product nobody has seen yet, and it asks a
+    # billing-and-privacy question the reader cannot answer at that moment.
+    sign_in = QWidget()
+    sign_in_layout = QVBoxLayout(sign_in)
+    sign_in_layout.setContentsMargins(0, 8, 0, 0)
+    sign_in_layout.setSpacing(5)
+    sign_in_layout.addWidget(first_open_prompt)
+    sign_in_layout.addWidget(connect_button)
+    sign_in_layout.addWidget(connect_promise)
+    sign_in_layout.addWidget(own_model)
 
     # Deliberately avoid QTabWidget: QGIS' themed tab pane allowed sibling
     # page widgets to bleed into the active page on narrow docks. This compact
@@ -482,8 +568,14 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # QGIS' stylesheet can leave non-current pages painted. Force StackOne so
     # only the selected page remains visible and receives layout geometry.
     pages.layout().setStackingMode(enum_member(QStackedLayout, "StackingMode", "StackOne"))
+    first_open_title = QLabel(FIRST_OPEN_TITLE)
+    first_open_title.setObjectName("mapdexFirstOpenTitle")
+    first_open_title.setWordWrap(True)
+    first_open_title.setVisible(False)
+    layout.addWidget(first_open_title)
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
+    layout.addWidget(sign_in)
 
     workspace = QWidget()
     workspace.setObjectName("mapdexPage")
@@ -647,20 +739,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_action_row.setSpacing(8)
     nivo_action_row.addWidget(nivo_send_button, 1)
     nivo_action_row.addWidget(nivo_stop_button, 0)
-    # What Nivo says about the open project before anybody asks it anything.
-    # An empty chat box with a generic placeholder was the whole first-run
-    # experience: a hundred registered capabilities and no way to discover one,
-    # so a stranger typed "hello" and closed a GIS agent believing it was a
-    # chat toy. The findings are built by the plugin from `first_look`, which
-    # reads only O(1) layer metadata, so this costs nothing to produce and
-    # needs neither an account nor a configured model provider.
-    nivo_reading = QFrame()
-    nivo_reading.setObjectName("mapdexNivoReading")
-    nivo_reading_layout = QVBoxLayout(nivo_reading)
-    nivo_reading_layout.setContentsMargins(0, 0, 0, 0)
-    nivo_reading_layout.setSpacing(6)
     surface_layout.addWidget(nivo_header)
-    surface_layout.addWidget(nivo_reading)
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(nivo_input)
@@ -703,7 +782,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     guidance_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
     batch_layout.addWidget(guidance_label)
     retry_button = QPushButton("Retry failed item")
-    retry_button.setObjectName("mapdexPrimaryButton")
+    # Jobs shows Retry and Get result together, so exactly one of them can
+    # be filled. Get result is the thing the user came for.
+    retry_button.setObjectName("mapdexSecondaryButton")
     import_button = QPushButton("Add result to QGIS")
     import_button.setObjectName("mapdexPrimaryButton")
     review_button = QPushButton("Review in Mapdex")
@@ -760,6 +841,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "api_url_input": api_url_input,
         "web_url_input": web_url_input,
         "save_settings_button": save_settings_button,
+        "settings_button": settings_button,
         "provider_box": provider_box,
         "model_input": model_input,
         "base_url_input": base_url_input,
@@ -767,6 +849,13 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "assistant_privacy": assistant_privacy,
         "clear_key_button": clear_key_button,
         "connect_button": connect_button,
+        "connect_promise": connect_promise,
+        "sign_in": sign_in,
+        "first_open_prompt": first_open_prompt,
+        "first_open_title": first_open_title,
+        "own_model": own_model,
+        "own_model_button": own_model_button,
+        "segment_bar": segment_bar,
         "disconnect_button": disconnect_button,
         "workspace": workspace,
         "tabs": pages,
@@ -783,7 +872,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "run_button": run_button,
         "nivo_context": nivo_context,
         "nivo_runtime": nivo_runtime,
-        "nivo_reading": nivo_reading,
         "assistant_key_state": assistant_key_state,
         "workspace_body": workspace_body,
         "workspace_locked": workspace_locked,
@@ -870,78 +958,3 @@ def build_thread_history_dialog(parent=None):
         "delete_button": delete_button,
         "close_button": close_button,
     }
-
-
-def build_capabilities_dialog(groups, parent=None):
-    """"What can Nivo do?", answered from the registry rather than from prose.
-
-    The registry already carries a one-line summary for all hundred
-    capabilities and the plugin showed none of them, so the only way to find
-    out what the assistant could do was to guess at an empty text box. This is
-    not the pitch and it is not a manual: it is the answer to a question the
-    user asks once, and it is generated, so a capability added to the registry
-    cannot go missing from it.
-
-    ``groups`` is ``[(title, [(summary, needs_account), ...]), ...]`` prepared
-    by the caller from the registry, so this file stays layout-only.
-    """
-    dialog = QDialog(parent)
-    dialog.setObjectName("mapdexCapabilitiesDialog")
-    dialog.setWindowTitle("What Nivo can do")
-    dialog.setMinimumWidth(470)
-    dialog.setMinimumHeight(430)
-
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(14, 14, 14, 14)
-    layout.setSpacing(9)
-
-    intro = QLabel(
-        "Ask in your own words. Everything below runs in QGIS on this machine "
-        "unless it is marked as Mapdex work."
-    )
-    intro.setWordWrap(True)
-    layout.addWidget(intro)
-
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(enum_member(QFrame, "Shape", "NoFrame"))
-    scroll.setHorizontalScrollBarPolicy(
-        enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
-    )
-    body = QWidget()
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 0, 0, 0)
-    body_layout.setSpacing(10)
-    for title, rows in groups:
-        body_layout.addWidget(_section_label(title))
-        for summary, needs_account in rows:
-            # A summary is registry text, rendered as data like every other
-            # string in this panel. The marker is a separate label rather than
-            # a suffix on the sentence, so it cannot be mistaken for part of it.
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(6)
-            text = QLabel()
-            text.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
-            text.setText(str(summary))
-            text.setWordWrap(True)
-            row_layout.addWidget(text, 1)
-            if needs_account:
-                marker = QLabel("Mapdex")
-                marker.setObjectName("mapdexAccountMarker")
-                row_layout.addWidget(marker, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-            body_layout.addWidget(row)
-    body_layout.addStretch(1)
-    scroll.setWidget(body)
-    layout.addWidget(scroll, 1)
-
-    close_button = QPushButton("Close")
-    close_button.setObjectName("mapdexPrimaryButton")
-    actions = QHBoxLayout()
-    actions.setContentsMargins(0, 0, 0, 0)
-    actions.addStretch(1)
-    actions.addWidget(close_button)
-    layout.addLayout(actions)
-
-    return dialog, {"dialog": dialog, "close_button": close_button}

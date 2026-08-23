@@ -29,7 +29,9 @@ def test_the_panel_imports_the_presentation_rule():
 def test_a_composed_turn_carries_its_steps_into_the_transcript():
     body = _method("_nivo_composed")
     assert "steps = step_rows(response)" in body
-    assert '("assistant", reply, steps)' in body, "the reply is stored without its steps"
+    assert "_replace_last_assistant_turn(reply, steps)" in body, (
+        "the reply is stored without its steps"
+    )
 
 
 def test_the_status_line_reports_the_step_budget():
@@ -38,8 +40,11 @@ def test_the_status_line_reports_the_step_budget():
 
 
 def test_the_transcript_draws_a_widget_per_step():
-    render = _method("_render_nivo_turns", "\n    # ---")
-    assert "for row_data in steps or []" in render
+    # The per-entry drawing moved out of the loop into `_turn_widget` when an
+    # entry gained a severity glyph and action chips. The rule is unchanged:
+    # every step of a composed turn gets its own widget in the transcript.
+    render = _method("_turn_widget", "\n    def _adopt_conversation")
+    assert 'turn.get("steps") or []' in render
     assert "self._step_widget(row_data)" in render
 
 
@@ -83,6 +88,15 @@ def test_every_assistant_turn_is_built_by_one_constructor():
     suite, so the mismatch was invisible until a user hit it inside QGIS. The
     guard is structural rather than behavioural, because the defect is an
     OMISSION and no behavioural test of one site fails when a new site forgets.
+
+    The entry is a dict now, built by `transcript_turn`, because it went on
+    growing - actions, a severity, a measured fact line - and a tuple that has
+    already caused this once would cause it again.
+
+    Three ways to write one, and the first version of this guard covered ONE.
+    `.append(...)` was checked; a comprehension rebuilding the whole list and a
+    `[-1] = ...` replacing the last entry were not, and both were live. So the
+    check is now on the VALUE written into `_nivo_turns` by any route.
     """
     tree = ast.parse(PLUGIN)
     offenders = []
@@ -95,15 +109,35 @@ def test_every_assistant_turn_is_built_by_one_constructor():
         target = func.value
         if not (isinstance(target, ast.Attribute) and target.attr == "_nivo_turns"):
             continue
-        if len(node.args) != 1 or not isinstance(node.args[0], ast.Tuple):
+        built = node.args and isinstance(node.args[0], ast.Call)
+        name = getattr(node.args[0].func, "id", "") if built else ""
+        if name != "transcript_turn":
             offenders.append(node.lineno)
-            continue
-        if len(node.args[0].elts) != 3:
-            offenders.append(node.lineno)
-    # Two sites remain: the user's own turn, which is not an assistant turn,
-    # and _say itself. Everything else goes through the constructor.
-    assert not offenders, "two-element transcript entries at lines {}".format(offenders)
+    assert not offenders, "hand-built transcript entries at lines {}".format(offenders)
+    # Two sites: the user's own turn, and _say for every assistant turn.
     assert PLUGIN.count("self._nivo_turns.append(") == 2
+    assert "def transcript_turn(sender, text" in PLUGIN, "the constructor was renamed away"
+
+    # And ASSIGNMENT, which this guard did not cover and which is how the
+    # fourth site survived: replaying a saved conversation rebuilt the whole
+    # list as tuples in a comprehension, so nothing appended and nothing
+    # failed until the transcript tried to read a key out of a tuple. An
+    # omission is not always a call.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        # Any route to the list: `self._nivo_turns = ...` rebuilding it, and
+        # `self._nivo_turns[-1] = ...` replacing one entry.
+        writes = any("_nivo_turns" in ast.dump(target) for target in node.targets)
+        if not writes:
+            continue
+        for inner in ast.walk(node.value):
+            # Load context only: `for sender, text in turns` unpacks into a
+            # tuple too, and that one is the comprehension reading its input
+            # rather than an entry being built.
+            if isinstance(inner, ast.Tuple) and isinstance(inner.ctx, ast.Load):
+                raise AssertionError(
+                    "a transcript entry is assembled as a tuple at line {}".format(node.lineno))
 
 
 def test_the_turn_constructor_is_not_a_qt_entry_point():
@@ -122,4 +156,7 @@ def test_a_replayed_conversation_says_its_steps_were_not_recorded():
     # step list says "not recorded"; inventing steps would say "this is what it
     # did", which nobody measured.
     body = _method("_thread_opened")
-    assert "[(sender, text, []) for sender, text in turns]" in body
+    assert "transcript_turn(sender, text) for sender, text in turns" in body, (
+        "the replay builds entries by hand again; it is the site that survived "
+        "the append-only version of the constructor guard"
+    )
