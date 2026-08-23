@@ -184,7 +184,7 @@ def test_the_choice_sits_below_the_reading():
     The reading needs neither half of it, so it goes first and the panel has
     already said something true before it asks."""
     order = [PANEL.index(marker) for marker in (
-        "layout.addWidget(pages, 1)", "layout.addWidget(sign_in)")]
+        "layout.addWidget(pages, 1)", "layout.addWidget(sign_in,")]
     assert order == sorted(order), "the choice was placed above the transcript"
 
 

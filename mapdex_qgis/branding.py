@@ -60,14 +60,18 @@ ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 # none: a picture beside a word that says the same thing is decoration, and at
 # 396 px decoration is the width the map does not get.
 #
-# Four states, from QGIS itself. Severity as a glyph is not a preference:
+# Three states, from QGIS itself. Severity as a glyph is not a preference:
 # DESIGN.md section 8 forbids conveying status by colour alone, and the
-# coloured stripe this replaces did exactly that. QGIS draws all four, follows
-# the user's theme for free, and makes the panel look like part of the host.
+# coloured stripe this replaces did exactly that. QGIS draws them, follows the
+# user's theme for free, and makes the panel look like part of the host.
+#
+# `info` deliberately has none. It is the absence of a problem, so there is
+# nothing for a glyph to add that the sentence does not already say - and
+# QGIS's own mIconInfo draws a speech bubble, which beside an assistant's reply
+# reads as "this is a message", which every line in a transcript already is.
 SEVERITY_ICONS = {
     "blocking": "mIconCritical.svg",
     "warning": "mIconWarning.svg",
-    "info": "mIconInfo.svg",
     "success": "mIconSuccess.svg",
 }
 
@@ -96,3 +100,15 @@ def mark_asset(dark_interface: bool) -> str:
 def mark_path(dark_interface: bool) -> str:
     """Absolute path to that file. May not exist; callers fall back."""
     return os.path.join(ASSETS, mark_asset(dark_interface))
+
+
+def surface_asset_path(name: str) -> str:
+    """The light-coloured variant, for a surface this panel always paints dark.
+
+    `themed_asset_icon` reads the interface palette, which is right for the
+    toolbar and wrong inside the panel: on a light QGIS theme it chose the ink
+    file and drew a near-black glyph on #191919, measured at relative luminance
+    0.06 against the surface's own 0.09.
+    """
+    stem, _, extension = name.rpartition(".")
+    return os.path.join(ASSETS, "{}_dark.{}".format(stem or name, extension or "png"))

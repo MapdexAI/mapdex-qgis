@@ -197,17 +197,25 @@ check("the companion panel builds under PyQt6", panel_builds)
 
 
 def nivo_header_structure():
-    """Title, context line, History and New chat must share one header row."""
+    """The message header identifies the assistant; the tab row holds the
+    conversation controls.
+
+    They used to share one row - avatar, name, layer context, runtime line,
+    New chat and History - and no real dock width holds six things. New chat
+    and History act on the transcript as a whole rather than on the message
+    they sat beside, so they belong on the toolbar row with the tabs.
+    """
     refs = PANEL.get("refs")
     if not refs:
         raise NotRun("the panel did not build")
     new_button = refs["nivo_new_button"]
     history_button = refs["nivo_history_button"]
-    header = new_button.parentWidget()
-    row = header.layout()
-    row_widgets = widgets_of(row)
+    header = refs["nivo_context"].parentWidget().parentWidget()
+    row_widgets = widgets_of(new_button.parentWidget().layout())
     if history_button not in row_widgets:
         raise AssertionError("History is not in the same row as New chat")
+    if refs["tabs"] is None:
+        raise AssertionError("the conversation controls are not on the tab row")
     if new_button.text() != "New chat":
         raise AssertionError("the new-conversation control reads {!r}".format(new_button.text()))
     if history_button.text() != "History":
@@ -220,6 +228,8 @@ def nivo_header_structure():
         raise AssertionError("the header carries no Nivo title; labels were {}".format(titles))
     if refs["nivo_context"] not in descendants(header, QLabel):
         raise AssertionError("the context line is not in the header row")
+    if refs["nivo_runtime"] not in descendants(header, QLabel):
+        raise AssertionError("the header does not say which engine answers")
     for button in (new_button, history_button):
         if not button.toolTip():
             raise AssertionError("{} carries no tooltip".format(button.text()))
@@ -238,8 +248,14 @@ def composer_untouched():
     field, send, stop = refs["nivo_input"], refs["nivo_send_button"], refs["nivo_stop_button"]
     if not isinstance(field, QLineEdit) or not field.placeholderText():
         raise AssertionError("the composer input is not a prompted QLineEdit")
-    if send.text() != "Ask Nivo":
-        raise AssertionError("the send control reads {!r}".format(send.text()))
+    # Send sits inside the field now, as a glyph. A full-width button under a
+    # full-width field is most of the panel's bottom spent saying one thing
+    # twice - and a control with no label needs an icon that is really there,
+    # because there is nothing to fall back to.
+    if send.icon().isNull():
+        raise AssertionError("the send control has no glyph, so it draws nothing")
+    if send.parentWidget() is not field.parentWidget():
+        raise AssertionError("send is not inside the composer beside the field")
     if stop.isVisible() or stop.isEnabled():
         raise AssertionError("Stop is offered before anything is running")
     action_row = widgets_of(send.parentWidget().layout()) if send.parentWidget() else []
@@ -248,7 +264,8 @@ def composer_untouched():
     ]
     if intruders:
         raise AssertionError("a conversation control sits in the composer row")
-    return "input {!r}, send {!r}, stop hidden".format(field.placeholderText()[:38], send.text())
+    return "input {!r}, send is a glyph inside it, stop hidden".format(
+        field.placeholderText()[:38])
 
 
 check("the composer is unchanged and owns no conversation control", composer_untouched)
@@ -728,8 +745,12 @@ def new_chat_clears_the_transcript():
     after = len(transcript_cards(plugin))
     if plugin._nivo_turns:
         raise AssertionError("{} turns survived New chat".format(len(plugin._nivo_turns)))
-    if after >= before:
-        raise AssertionError("the transcript still holds {} widgets".format(after))
+    # Not empty: clearing the conversation brings the opening reading back,
+    # which is the point of keeping it apart from `_nivo_turns`. What must be
+    # gone is the CONVERSATION, and what must return is a reading with no user
+    # turn in it.
+    if any(turn["sender"] == "user" for turn in plugin._nivo_opening):
+        raise AssertionError("the reading came back carrying a user turn")
     if plugin._nivo_thread_id:
         raise AssertionError("New chat kept thread {}".format(plugin._nivo_thread_id))
     status = plugin.nivo_status.text()

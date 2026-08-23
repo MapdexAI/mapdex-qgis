@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 
 from qgis.PyQt.QtCore import QEvent, QSize, Qt
-from qgis.PyQt.QtGui import QPixmap
+from qgis.core import QgsApplication
+from qgis.PyQt.QtGui import QIcon, QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
@@ -30,6 +31,7 @@ from .layout_rules import (
     MINIMUM_WIDTH,
     PREFERRED_HEIGHT,
     PREFERRED_WIDTH,
+    READING_WIDTH,
     panel_layout_mode,
 )
 from .panel_state import (
@@ -42,12 +44,109 @@ from .panel_state import (
     PROVIDER_CHOICES,
     TASK_LOCKED_NOTICE,
 )
+from .branding import ACTION_ICONS, surface_asset_path
 from .qt_compat import enum_member
 
 
 NIVO_AVATAR_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo.png"
 )
+
+
+class ActionRow(QFrame):
+    """The panel's one repeated shape: icon, label, optional second line.
+
+    A real widget rather than a QToolButton, because a QToolButton does not
+    wrap its text: given a sentence as its second line it reports a sizeHint
+    of the whole sentence on one line, which pushed the transcript to 720 px
+    inside a 396 px dock and shifted every message off the right edge. Rendered
+    and measured, not reasoned about.
+
+    Every choice in this panel is this row. Before it a choice was sometimes a
+    chip, sometimes a full-width button, sometimes bare text - two chips in one
+    strip came out 364 px and 280 px wide at different heights - and that is
+    most of what made the panel read as unfinished.
+    """
+
+    def __init__(self, label, sublabel="", icon=None, tone="normal", parent=None):
+        super().__init__(parent)
+        self.setObjectName({
+            "primary": "mapdexRowPrimary",
+            "quiet": "mapdexRowQuiet",
+        }.get(tone, "mapdexRow"))
+        self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        self.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Preferred"),
+            enum_member(QSizePolicy, "Policy", "Minimum"),
+        )
+        self._callbacks = []
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(11, 9, 11, 9)
+        row.setSpacing(9)
+        if icon is not None:
+            glyph = QLabel()
+            glyph.setObjectName("mapdexRowGlyph")
+            glyph.setFixedSize(18, 18)
+            glyph.setPixmap(icon.pixmap(18, 18))
+            row.addWidget(glyph, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        title = QLabel(label)
+        title.setObjectName("mapdexRowLabel")
+        title.setWordWrap(True)
+        text.addWidget(title)
+        if sublabel:
+            detail = QLabel(sublabel)
+            detail.setObjectName("mapdexRowSub")
+            detail.setWordWrap(True)
+            text.addWidget(detail)
+        row.addLayout(text, 1)
+
+    def set_tone(self, tone):
+        """Re-rank the row without rebuilding it.
+
+        A row is not always the same rank: Connect is the one filled action
+        while nothing has been chosen, and a quiet upgrade for somebody already
+        answering from their own model. Rebuilding the widget to say that would
+        drop its signal connections.
+        """
+        self.setObjectName({
+            "primary": "mapdexRowPrimary",
+            "quiet": "mapdexRowQuiet",
+        }.get(tone, "mapdexRow"))
+        for child in self.findChildren(QLabel):
+            child.style().unpolish(child)
+            child.style().polish(child)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def clicked_connect(self, callback):
+        """Keep the QToolButton-ish API the panel already reads as `clicked`."""
+        self._callbacks.append(callback)
+
+    @property
+    def clicked(self):
+        return self
+
+    def connect(self, callback):  # noqa: A003 - mirrors the Qt signal shape
+        self._callbacks.append(callback)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self.rect().contains(event.position().toPoint()):
+            for callback in list(self._callbacks):
+                callback()
+
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        self.setProperty("disabled", not enabled)
+
+
+def action_row(label, sublabel="", icon=None, tone="normal"):
+    return ActionRow(label, sublabel, icon, tone)
 
 
 def _section_label(text):
@@ -195,8 +294,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
            style was three lines with no colour in it, so primary meant "a
            slightly bolder default button" and seven of those means none. */
         QPushButton#mapdexPrimaryButton {
-            min-height: 34px;
-            padding: 5px 12px;
+            min-height: 32px;
+            padding: 4px 12px;
             font-weight: 600;
             color: #FFFFFF;
             background: #4F46E5;
@@ -253,7 +352,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
             selection-color: #FFFFFF;
             outline: 0;
         }
-        QFrame#mapdexSegmentBar { border-bottom: 1px solid palette(mid); }
+        QFrame#mapdexSegmentBar { border-bottom: 1px solid rgba(230, 233, 242, 0.14); }
         QFrame#mapdexNivoSurface {
             background: transparent;
             color: #F7F7F5;
@@ -276,6 +375,17 @@ def build_companion_panel(workflows, endpoint_settings=True):
             color: #A5A2F5;
             font-size: 11px;
         }
+        /* A turn. Styled by object name from HERE, never with an inline
+           setStyleSheet on the card: an unscoped sheet on a container applies
+           to every descendant, so `border: 0` on the card was erasing the
+           border of every chip inside it. */
+        QWidget#mapdexTurn { background: transparent; border: 0; }
+        QWidget#mapdexTurnUser { background: #4F46E5; border-radius: 8px; }
+        QLabel#mapdexTurnWho { color: #8F96A8; font-weight: 600; }
+        QLabel#mapdexTurnWhoUser { color: #FFFFFF; font-weight: 600; }
+        QLabel#mapdexTurnBody { color: #F7F7F5; }
+        QLabel#mapdexTurnBodyUser { color: #FFFFFF; }
+        QLabel#mapdexTurnThinking { color: #8F96A8; }
         /* The measured line a turn opens with. Mono, because a file name, a
            pixel size and a CRS code are data and read as data. */
         QLabel#mapdexTurnFact {
@@ -290,7 +400,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
             background: #2A2A2A;
             border: 1px solid rgba(230, 233, 242, 0.20);
             border-radius: 6px;
-            padding: 5px 10px;
+            padding: 6px 11px;
             font-size: 11px;
         }
         QToolButton#mapdexFreeAction:hover { color: #F7F7F5; border-color: #6366F1; }
@@ -299,7 +409,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
             background: transparent;
             border: 1px solid rgba(165, 162, 245, 0.5);
             border-radius: 6px;
-            padding: 4px 9px;
+            padding: 6px 11px;
             font-size: 11px;
         }
         QToolButton#mapdexAccountAction:hover {
@@ -310,6 +420,41 @@ def build_companion_panel(workflows, endpoint_settings=True):
         /* The reason under a control, not a separate announcement. A button
            that asks for a decision and supplies none reads as configuration. */
         QLabel#mapdexPromise { color: #8F96A8; font-size: 11px; }
+        /* The one repeated shape. Same height, same radius, same padding, so a
+           screen of choices reads as one list rather than as four products. */
+        QFrame#mapdexRow, QFrame#mapdexRowPrimary, QFrame#mapdexRowQuiet {
+            border-radius: 8px;
+        }
+        QFrame#mapdexRow {
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+        }
+        QFrame#mapdexRow:hover { background: #2A2A2A; border-color: #6366F1; }
+        QFrame#mapdexRowPrimary { background: #4F46E5; border: 0; }
+        QFrame#mapdexRowPrimary:hover { background: #6366F1; }
+        QFrame#mapdexRowQuiet { background: transparent; border: 0; }
+        QLabel#mapdexRowLabel { color: #F7F7F5; font-size: 12px; }
+        QLabel#mapdexRowSub { color: #8F96A8; font-size: 11px; }
+        QLabel#mapdexRowGlyph { background: transparent; border: 0; }
+        QFrame#mapdexRowPrimary QLabel#mapdexRowLabel { color: #FFFFFF; font-weight: 600; }
+        QFrame#mapdexRowPrimary QLabel#mapdexRowSub { color: rgba(255, 255, 255, 0.78); }
+        QFrame#mapdexRowQuiet QLabel#mapdexRowLabel { color: #A5A2F5; }
+        QFrame#mapdexRowQuiet:hover QLabel#mapdexRowLabel { color: #C7C5FA; }
+        /* A state is a dot and a word, top left, and it is the only place the
+           panel says what it is doing. */
+        QToolButton#mapdexHeaderIcon {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            padding: 4px;
+        }
+        QToolButton#mapdexHeaderIcon:hover {
+            background: #2A2A2A;
+            border-color: rgba(230, 233, 242, 0.18);
+        }
+        QToolButton#mapdexHeaderIcon:disabled { opacity: 0.4; }
+        QLabel#mapdexStateDot { font-size: 15px; }
+        QLabel#mapdexStateWord { color: #C9CDD8; font-size: 12px; }
         QLabel#mapdexFirstOpenTitle {
             color: #F7F7F5;
             font-size: 14px;
@@ -317,8 +462,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
         }
         QLabel#mapdexLockedNotice {
             padding: 12px;
-            color: palette(text);
-            border: 1px solid palette(mid);
+            color: #C9CDD8;
+            border: 1px solid rgba(230, 233, 242, 0.16);
             border-radius: 6px;
         }
         QScrollArea#mapdexChatTranscript {
@@ -327,16 +472,36 @@ def build_companion_panel(workflows, endpoint_settings=True):
             padding: 0;
         }
         QWidget#mapdexChatTranscriptContent { background: transparent; }
-        QLineEdit#mapdexNivoInput {
+        QFrame#mapdexComposer {
             background: #1c1c1c;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            border-radius: 8px;
+        }
+        QFrame#mapdexComposer:focus-within { border-color: #6366F1; }
+        QLineEdit#mapdexNivoInput {
+            background: transparent;
             color: #F7F7F5;
             selection-background-color: #4F46E5;
-            border: 1px solid rgba(230, 233, 242, 0.22);
-            border-radius: 7px;
-            padding: 8px 10px;
-            min-height: 20px;
+            border: 0;
+            padding: 6px 6px;
+            min-height: 22px;
         }
-        QLineEdit#mapdexNivoInput:focus { border-color: #6366F1; }
+        QToolButton#mapdexSendButton {
+            background: #4F46E5;
+            border: 0;
+            border-radius: 6px;
+            padding: 5px 7px;
+        }
+        QToolButton#mapdexSendButton:hover { background: #6366F1; }
+        QToolButton#mapdexSendButton:disabled { background: #2A2A2A; }
+        QToolButton#mapdexStopButton {
+            color: #C9CDD8;
+            background: transparent;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            border-radius: 6px;
+            padding: 4px 9px;
+            font-size: 11px;
+        }
         QToolButton#mapdexSegment {
             color: #8F96A8;
             background: transparent;
@@ -346,13 +511,13 @@ def build_companion_panel(workflows, endpoint_settings=True):
             padding: 9px 13px 8px;
         }
         QToolButton#mapdexSegment:checked {
-            color: palette(text);
+            color: #F7F7F5;
             background: transparent;
-            border-bottom-color: palette(highlight);
+            border-bottom-color: #6366F1;
             font-weight: 600;
         }
         QStackedWidget#mapdexPages { background: transparent; }
-        QWidget#mapdexPage { background: palette(window); }
+        QWidget#mapdexPage { background: #191919; }
         QToolButton#mapdexSettingsButton { padding: 3px 6px; }
         QToolButton#mapdexNivoHeaderButton {
             color: #C9CDD8;
@@ -406,10 +571,40 @@ def build_companion_panel(workflows, endpoint_settings=True):
     disconnect_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
     )
+    nivo_new_button = QToolButton()
+    nivo_new_button.setObjectName("mapdexNivoHeaderButton")
+    nivo_new_button.setText("New chat")
+    nivo_new_button.setToolTip(
+        "Start a new conversation. The current one is kept in History; "
+        "nothing is deleted from Mapdex."
+    )
+    nivo_new_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
+    nivo_history_button = QToolButton()
+    nivo_history_button.setObjectName("mapdexNivoHeaderButton")
+    nivo_history_button.setText("History")
+    nivo_history_button.setToolTip(
+        "Open an earlier Nivo conversation in this project and continue it"
+    )
+    nivo_history_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+    )
     header_actions = QWidget()
     header_actions_row = QHBoxLayout(header_actions)
     header_actions_row.setContentsMargins(0, 0, 0, 0)
     header_actions_row.setSpacing(6)
+    # Icon-only, with tooltips, because a label here costs width the map is
+    # paying for and these two are reached rarely.
+    for control, name in ((nivo_new_button, "mActionFileNew.svg"),
+                          (nivo_history_button, "mActionHistory.svg")):
+        control.setObjectName("mapdexHeaderIcon")
+        control.setToolButtonStyle(
+            enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
+        control.setIcon(QgsApplication.getThemeIcon(name))
+        control.setIconSize(QSize(16, 16))
+        control.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        header_actions_row.addWidget(control)
     header_actions_row.addWidget(disconnect_button)
     header_actions_row.addWidget(settings_button)
     layout.addLayout(root.register_pair(connection_label, header_actions))
@@ -505,7 +700,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connection_layout.addWidget(assistant_key_state)
     assistant_privacy = QLabel("Mapdex-hosted assistant: bounded map context is sent to Mapdex.")
     assistant_privacy.setWordWrap(True)
-    assistant_privacy.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    assistant_privacy.setStyleSheet("color: #8F96A8; font-size: 11px;")
     connection_layout.addWidget(assistant_privacy)
 
     save_settings_button = QPushButton("Save settings")
@@ -520,25 +715,26 @@ def build_companion_panel(workflows, endpoint_settings=True):
 
     # Connect stays a full-width primary action: it is the one thing to do when
     # nothing is connected yet. Disconnect now lives in the header row above.
-    connect_button = QPushButton("Connect Mapdex")
-    connect_button.setObjectName("mapdexPrimaryButton")
-    connect_promise = QLabel(CONNECT_PROMISE)
+    # One row each, in the panel's one shape. The promise is the row's second
+    # line rather than a caption under it: a button that asks for a decision
+    # and keeps its reason outside itself stops being one object the moment the
+    # layout gets tight.
+    connect_button = action_row("Connect Mapdex", CONNECT_PROMISE, tone="primary")
+    connect_promise = QLabel("")
     connect_promise.setObjectName("mapdexPromise")
-    connect_promise.setWordWrap(True)
+    connect_promise.setVisible(False)
     first_open_prompt = QLabel(FIRST_OPEN_PROMPT)
     first_open_prompt.setObjectName("mapdexPromise")
     first_open_prompt.setWordWrap(True)
-    own_model_button = QPushButton(OWN_MODEL_LABEL)
-    own_model_button.setObjectName("mapdexSecondaryButton")
-    own_model_promise = QLabel(OWN_MODEL_PROMISE)
+    own_model_button = action_row(OWN_MODEL_LABEL, OWN_MODEL_PROMISE)
+    own_model_promise = QLabel("")
     own_model_promise.setObjectName("mapdexPromise")
-    own_model_promise.setWordWrap(True)
+    own_model_promise.setVisible(False)
     own_model = QWidget()
     own_model_layout = QVBoxLayout(own_model)
-    own_model_layout.setContentsMargins(0, 4, 0, 0)
-    own_model_layout.setSpacing(5)
+    own_model_layout.setContentsMargins(0, 0, 0, 0)
+    own_model_layout.setSpacing(0)
     own_model_layout.addWidget(own_model_button)
-    own_model_layout.addWidget(own_model_promise)
 
     # The choice, and it is placed AFTER the pages below so the reading in the
     # Nivo transcript has already said something true about the open file
@@ -546,9 +742,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # would be a wall in front of a product nobody has seen yet, and it asks a
     # billing-and-privacy question the reader cannot answer at that moment.
     sign_in = QWidget()
+    sign_in.setMaximumWidth(READING_WIDTH)
     sign_in_layout = QVBoxLayout(sign_in)
-    sign_in_layout.setContentsMargins(0, 8, 0, 0)
-    sign_in_layout.setSpacing(5)
+    sign_in_layout.setContentsMargins(0, 10, 0, 0)
+    sign_in_layout.setSpacing(8)
     sign_in_layout.addWidget(first_open_prompt)
     sign_in_layout.addWidget(connect_button)
     sign_in_layout.addWidget(connect_promise)
@@ -575,7 +772,17 @@ def build_companion_panel(workflows, endpoint_settings=True):
     layout.addWidget(first_open_title)
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
-    layout.addWidget(sign_in)
+    layout.addWidget(sign_in, 0, enum_member(Qt, "AlignmentFlag", "AlignHCenter"))
+    # First open has no conversation to fill a tall dock, so the pages stop
+    # grabbing the spare height and this takes it instead - which puts the
+    # choice directly under the reading rather than 300 px below it.
+    tail = QWidget()
+    tail.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Preferred"),
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+    )
+    tail.setVisible(False)
+    layout.addWidget(tail)
 
     workspace = QWidget()
     workspace.setObjectName("mapdexPage")
@@ -619,7 +826,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     workspace_layout.addLayout(form)
     source_summary = QLabel("No source selected")
     source_summary.setWordWrap(True)
-    source_summary.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    source_summary.setStyleSheet("color: #8F96A8; font-size: 11px;")
     workspace_layout.addWidget(source_summary)
     run_button = QPushButton("Start task")
     run_button.setObjectName("mapdexPrimaryButton")
@@ -634,6 +841,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_layout.setSpacing(9)
     nivo_surface = QFrame()
     nivo_surface.setObjectName("mapdexNivoSurface")
+    # Capped, not stretched: a dock dragged to the width of the QGIS window
+    # otherwise runs every sentence across 1,400 px.
+    nivo_surface.setMaximumWidth(READING_WIDTH)
     surface_layout = QVBoxLayout(nivo_surface)
     surface_layout.setContentsMargins(0, 0, 0, 0)
     surface_layout.setSpacing(10)
@@ -675,33 +885,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # Two compact conversation controls, beside the title rather than near the
     # composer: they act on the transcript as a whole, and putting them by the
     # input would read as something the next message does.
-    nivo_new_button = QToolButton()
-    nivo_new_button.setObjectName("mapdexNivoHeaderButton")
-    nivo_new_button.setText("New chat")
-    nivo_new_button.setToolTip(
-        "Start a new conversation. The current one is kept in History; "
-        "nothing is deleted from Mapdex."
-    )
-    nivo_new_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
-    nivo_history_button = QToolButton()
-    nivo_history_button.setObjectName("mapdexNivoHeaderButton")
-    nivo_history_button.setText("History")
-    nivo_history_button.setToolTip(
-        "Open an earlier Nivo conversation in this project and continue it"
-    )
-    nivo_history_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
     nivo_header_layout.addWidget(nivo_icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
     nivo_header_layout.addWidget(nivo_header_text, 1)
-    nivo_header_layout.addWidget(
-        nivo_new_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop")
-    )
-    nivo_header_layout.addWidget(
-        nivo_history_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop")
-    )
     # A widget transcript keeps messages as native Qt widgets. It intentionally
     # is not HTML: assistant text is data, never markup.
     nivo_reply = QScrollArea()
@@ -727,24 +912,38 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_input = QLineEdit()
     nivo_input.setObjectName("mapdexNivoInput")
     nivo_input.setPlaceholderText("Ask Nivo about this layer or map view…")
-    nivo_send_button = QPushButton("Ask Nivo")
-    nivo_send_button.setObjectName("mapdexPrimaryButton")
-    nivo_stop_button = QPushButton("Stop")
-    nivo_stop_button.setObjectName("mapdexSecondaryButton")
+    nivo_send_button = QToolButton()
+    nivo_send_button.setObjectName("mapdexSendButton")
+    nivo_send_button.setToolTip("Ask Nivo")
+    nivo_send_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
+    nivo_send_button.setIconSize(QSize(16, 16))
+    # The glyph belongs to the control. Set by the plugin instead, a panel
+    # built any other way had a blank button with no label to fall back on -
+    # and no palette is read here, because this surface is always dark, so
+    # the choice is a constant rather than a theme decision.
+    nivo_send_button.setIcon(QIcon(surface_asset_path(ACTION_ICONS["send"])))
+    nivo_stop_button = QToolButton()
+    nivo_stop_button.setObjectName("mapdexStopButton")
+    nivo_stop_button.setText("Stop")
     nivo_stop_button.setToolTip("Stop the current Nivo request")
+    nivo_stop_button.setToolButtonStyle(
+        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly"))
     nivo_stop_button.setVisible(False)
     nivo_stop_button.setEnabled(False)
-    nivo_action_row = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
-    nivo_action_row.setContentsMargins(0, 0, 0, 0)
-    nivo_action_row.setSpacing(8)
-    nivo_action_row.addWidget(nivo_send_button, 1)
-    nivo_action_row.addWidget(nivo_stop_button, 0)
+    composer = QFrame()
+    composer.setObjectName("mapdexComposer")
+    composer_row = QHBoxLayout(composer)
+    composer_row.setContentsMargins(4, 3, 4, 3)
+    composer_row.setSpacing(4)
+    composer_row.addWidget(nivo_input, 1)
+    composer_row.addWidget(nivo_stop_button, 0)
+    composer_row.addWidget(nivo_send_button, 0)
     surface_layout.addWidget(nivo_header)
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
-    surface_layout.addWidget(nivo_input)
-    surface_layout.addLayout(nivo_action_row)
-    nivo_layout.addWidget(nivo_surface, 1)
+    surface_layout.addWidget(composer)
+    nivo_layout.addWidget(nivo_surface, 1, enum_member(Qt, "AlignmentFlag", "AlignHCenter"))
 
     jobs = QWidget()
     jobs.setObjectName("mapdexPage")
@@ -779,7 +978,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     batch_layout.addWidget(progress_bar)
     guidance_label = QLabel("Mapdex will show the next action here.")
     guidance_label.setWordWrap(True)
-    guidance_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+    guidance_label.setStyleSheet("color: #8F96A8; font-size: 11px;")
     batch_layout.addWidget(guidance_label)
     retry_button = QPushButton("Retry failed item")
     # Jobs shows Retry and Get result together, so exactly one of them can
@@ -851,6 +1050,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "connect_button": connect_button,
         "connect_promise": connect_promise,
         "sign_in": sign_in,
+        "tail": tail,
+        "body_layout": layout,
         "first_open_prompt": first_open_prompt,
         "first_open_title": first_open_title,
         "own_model": own_model,
@@ -882,6 +1083,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "nivo_status": nivo_status,
         "nivo_input": nivo_input,
         "nivo_send_button": nivo_send_button,
+        "composer": composer,
         "nivo_stop_button": nivo_stop_button,
         "cancel_button": cancel_button,
         "retry_button": retry_button,

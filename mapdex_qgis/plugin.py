@@ -8,17 +8,15 @@ import traceback
 from functools import partial
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QSize, QTimer, QUrl
+from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
-    QBoxLayout,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -105,7 +103,7 @@ from .guidance import (
     task_guidance,
     with_failure_guidance,
 )
-from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
+from .layout_rules import BUBBLE_WIDTH, MINIMUM_WIDTH, PREFERRED_WIDTH
 from .nivo import (
     GEOMETRY_CHOICES,
     THREAD_ID_SETTING,
@@ -122,7 +120,7 @@ from .nivo import (
     thread_turns,
     transition,
 )
-from .panel import build_companion_panel, build_thread_history_dialog
+from .panel import action_row, build_companion_panel, build_thread_history_dialog
 from . import branding
 from . import first_look
 from . import panel_state
@@ -232,11 +230,12 @@ PANEL_WIDGET_REFS = (
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_project_button", "recent", "recent_box", "resume_button",
-    "connect_promise", "sign_in", "first_open_prompt", "first_open_title",
+    "connect_promise", "sign_in", "tail", "body_layout",
+    "first_open_prompt", "first_open_title",
     "own_model", "own_model_button", "segment_bar",
     "tabs", "workspace_body", "workspace_locked", "jobs_locked",
     "assistant_key_state",
-    "nivo_context", "nivo_runtime",
+    "nivo_context", "nivo_runtime", "composer",
     "nivo_reply", "nivo_input", "nivo_send_button",
     "nivo_stop_button", "nivo_status",
     "nivo_new_button", "nivo_history_button",
@@ -261,6 +260,38 @@ def transcript_turn(sender, text, steps=None, actions=None, severity="", fact=""
         "severity": str(severity or ""),
         "fact": str(fact or ""),
     }
+
+
+def opening_turns(state):
+    """The opening reading, as transcript entries.
+
+    Module level and pure so the render harness can draw exactly what the
+    panel draws. It kept its own copy of this and the two drifted within a day:
+    the harness went on appending the capability chip to the last finding after
+    the product had moved it to a row of its own, so the screenshots were of a
+    layout nobody shipped.
+    """
+    reading = first_look.opening_reading(state)
+    layer_id = state.get("layer_id", "")
+    turns = [
+        transcript_turn(
+            "assistant",
+            finding["detail"],
+            actions=[dict(action, layer_id=layer_id) for action in finding["actions"]],
+            severity=finding["severity"],
+            fact=finding["headline"],
+        )
+        for finding in reading["findings"]
+    ]
+    # "What can this thing do" is the question a stranger has in front of every
+    # one of these states, so it is offered from all of them - on its own row,
+    # because three chips do not fit a narrow dock and Qt has no wrapping row
+    # to rescue them.
+    if turns:
+        turns.append(transcript_turn(
+            "assistant", "",
+            actions=[{"label": "What can Nivo do?", "kind": "capabilities"}]))
+    return turns
 
 
 def plugin_icon() -> QIcon:
@@ -766,6 +797,8 @@ class MapdexPlugin:
         self.connect_button = None
         self.connect_promise = None
         self.sign_in = None
+        self.tail = None
+        self.body_layout = None
         self.first_open_prompt = None
         self.first_open_title = None
         self.own_model = None
@@ -807,6 +840,7 @@ class MapdexPlugin:
         self.nivo_status = None
         self.nivo_input = None
         self.nivo_send_button = None
+        self.composer = None
         self.nivo_stop_button = None
         self.nivo_new_button = None
         self.nivo_history_button = None
@@ -2177,7 +2211,14 @@ class MapdexPlugin:
         # never a stored flag - a flag goes stale and, once spent, cannot come
         # back. The reading above it needed neither, which is what lets this
         # screen say something true before it asks for anything.
-        first = panel_state.is_first_open(connected, self._has_provider())
+        has_provider = self._has_provider()
+        first = panel_state.is_first_open(connected, has_provider)
+        if self.connect_button is not None and hasattr(self.connect_button, "set_tone"):
+            # Connect is the one filled action while nothing has been chosen.
+            # To somebody already answering from their own model it is an
+            # upgrade, not the thing to press, so it drops a rank rather than
+            # sitting under their composer as a permanent indigo block.
+            self.connect_button.set_tone("primary" if first else "quiet")
         for widget, shown in (
             (self.sign_in, not connected),
             (self.connect_promise, not connected),
@@ -2187,6 +2228,11 @@ class MapdexPlugin:
             (self.first_open_prompt, first),
             (self.first_open_title, first),
             (self.own_model, first),
+            # Nothing can be asked yet, and a disabled field above the choice
+            # is dead weight where the eye lands last.
+            (self.composer, not first),
+            (self.nivo_status, not first),
+            (self.tail, first),
             # One page and no tab bar while nothing has been chosen: Task and
             # Jobs are Mapdex session surfaces and cannot do anything yet.
             (self.segment_bar, not first),
@@ -2195,6 +2241,18 @@ class MapdexPlugin:
                 widget.setVisible(shown)
         if first and self.tabs is not None:
             self.tabs.setCurrentIndex(0)
+        if self.body_layout is not None and self.tabs is not None:
+            # Stop the transcript grabbing the spare height while it holds
+            # only a reading; the tail below takes it instead.
+            self.body_layout.setStretchFactor(self.tabs, 0 if first else 1)
+        if self.nivo_reply is not None:
+            # With no stretch the transcript falls back to its minimum, which
+            # put a scrollbar on a reading that had room to sit whole. Give it
+            # the height its content asks for, bounded so a long reading still
+            # leaves the choice on screen.
+            content = self.nivo_reply.widget()
+            wanted = content.sizeHint().height() + 20 if content is not None else 0
+            self.nivo_reply.setMinimumHeight(min(max(wanted, 120), 460) if first else 170)
 
         # The page stays mounted so its segment button is never a dead end;
         # the BODY and the notice swap. Setting the page itself invisible was
@@ -2523,43 +2581,24 @@ class MapdexPlugin:
         self._nivo_opening = []
         if self._nivo_turns:
             return
-        state = self._first_look_state()
-        reading = first_look.opening_reading(state)
-        layer_id = state.get("layer_id", "")
-        for finding in reading["findings"]:
-            self._nivo_opening.append(transcript_turn(
-                "assistant",
-                finding["detail"],
-                actions=[dict(action, layer_id=layer_id) for action in finding["actions"]],
-                severity=finding["severity"],
-                fact=finding["headline"],
-            ))
-        # "What can this thing do" is the question a stranger has in front of
-        # every one of these states, so it is offered from all of them.
-        if self._nivo_opening:
-            self._nivo_opening[-1]["actions"].append(
-                {"label": "What can Nivo do?", "kind": "capabilities"})
+        self._nivo_opening = opening_turns(self._first_look_state())
 
     def _action_chip(self, action):
         """One thing to do, attached to the turn that earned it.
 
-        Free work and Mapdex work are told apart by shape and by a glyph, not
-        by shouting: the paid one is outlined and carries the icon of the work
-        it would run, which is enough to read before pressing and quiet enough
-        not to compete with the sentence above it.
+        The panel's one row shape, so a choice here looks like a choice
+        anywhere else in it. Free work and Mapdex work are told apart by the
+        glyph and by the tone, not by inventing a second control language:
+        two chips in one strip used to come out 364 px and 280 px wide with
+        different heights, which is most of what read as unfinished.
         """
-        button = QToolButton()
         paid = action.get("kind") == first_look.MAPDEX
-        button.setObjectName("mapdexAccountAction" if paid else "mapdexFreeAction")
-        button.setText(str(action.get("label") or ""))
-        button.setToolButtonStyle(
-            enum_member(Qt, "ToolButtonStyle", "ToolButtonTextBesideIcon" if paid
-                        else "ToolButtonTextOnly"))
-        if paid:
-            icon = self._action_icon(str(action.get("workflow") or ""))
-            if icon is not None:
-                button.setIcon(icon)
-                button.setIconSize(QSize(13, 13))
+        icon = self._action_icon(str(action.get("workflow") or "")) if paid else None
+        button = action_row(
+            str(action.get("label") or ""),
+            icon=icon,
+            tone="normal" if paid else "quiet",
+        )
         if action.get("promise"):
             button.setToolTip(str(action["promise"]))
         button.clicked.connect(
@@ -3466,21 +3505,28 @@ class MapdexPlugin:
         row = QVBoxLayout(card)
 
         if sender != "user" and str(text).startswith("Thinking"):
+            card.setObjectName("mapdexTurn")
             row.setContentsMargins(2, 2, 2, 2)
             body = self._plain(QLabel(), text)
+            body.setObjectName("mapdexTurnThinking")
             body.setWordWrap(True)
-            body.setStyleSheet("color:#8F96A8; background:transparent; border:0;")
             row.addWidget(body)
-            card.setStyleSheet("background:transparent; border:0;")
             return card
 
         row.setContentsMargins(8, 7, 8, 7)
         row.setSpacing(3)
+        if not text and not turn.get("fact"):
+            # A turn that carries only actions: no name, no empty body line.
+            card.setObjectName("mapdexTurn")
+            strip = QVBoxLayout()
+            strip.setContentsMargins(0, 0, 0, 0)
+            strip.setSpacing(5)
+            for action in turn.get("actions") or []:
+                strip.addWidget(self._action_chip(action))
+            row.addLayout(strip)
+            return card
         label = QLabel("You" if sender == "user" else "Nivo")
-        label.setStyleSheet(
-            "color:#ffffff; font-weight:600;" if sender == "user"
-            else "color:#8F96A8; font-weight:600;"
-        )
+        label.setObjectName("mapdexTurnWhoUser" if sender == "user" else "mapdexTurnWho")
         row.addWidget(label)
 
         # The measurement, set apart from the sentence about it. Mono, because
@@ -3512,21 +3558,21 @@ class MapdexPlugin:
             row.addWidget(body)
 
         if sender == "user":
-            card.setStyleSheet("background:#4F46E5; color:#ffffff; border-radius:8px;")
-            body.setStyleSheet("color:#ffffff;")
+            card.setObjectName("mapdexTurnUser")
+            card.setMaximumWidth(BUBBLE_WIDTH)
+            body.setObjectName("mapdexTurnBodyUser")
         else:
-            card.setStyleSheet("background:transparent; color:#F7F7F5; border:0;")
-            body.setStyleSheet("color:#F7F7F5;")
+            card.setObjectName("mapdexTurn")
+            body.setObjectName("mapdexTurnBody")
             for row_data in turn.get("steps") or []:
                 row.addWidget(self._step_widget(row_data))
             actions = turn.get("actions") or []
             if actions:
-                strip = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
-                strip.setContentsMargins(0, 3, 0, 0)
-                strip.setSpacing(6)
+                strip = QVBoxLayout()
+                strip.setContentsMargins(0, 5, 0, 0)
+                strip.setSpacing(5)
                 for action in actions:
                     strip.addWidget(self._action_chip(action))
-                strip.addStretch(1)
                 row.addLayout(strip)
         return card
 

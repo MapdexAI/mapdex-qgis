@@ -361,12 +361,22 @@ def test_a_message_envelope_is_accepted_as_well_as_the_bare_array():
 # --------------------------------------------------------------------------
 
 
-def test_the_panel_offers_both_controls_in_the_nivo_header():
-    header = PANEL[PANEL.index("nivo_header = QWidget()"):PANEL.index("nivo_reply = QScrollArea()")]
-    assert "nivo_header_layout.addWidget(\n        nivo_new_button" in header
-    assert "nivo_header_layout.addWidget(\n        nivo_history_button" in header
+def test_the_panel_offers_both_conversation_controls():
+    """They act on the transcript as a whole, so they sit in the identity row.
+
+    They used to be in the message header beside the avatar, the assistant's
+    name, the layer context and the runtime line - six things in a row that no
+    real dock width can hold, and two of them acting on something other than
+    the message they sat next to.
+    """
+    row = PANEL[PANEL.index("header_actions_row = QHBoxLayout"):PANEL.index("status = QLabel(")]
     for handle in ("nivo_new_button", "nivo_history_button"):
+        assert handle in row, "{} is not in the identity row".format(handle)
         assert '"{}": {}'.format(handle, handle) in PANEL, "not handed back to plugin.py"
+    # Icon-only, measured: as text buttons on the tab row they took its minimum
+    # width to 614 px, which forced the whole panel to 638 and clipped every
+    # message at a normal dock width.
+    assert "ToolButtonIconOnly" in row, "they carry labels again, and the panel cannot afford them"
 
 
 def test_new_task_is_described_as_local_so_it_never_reads_as_a_delete():

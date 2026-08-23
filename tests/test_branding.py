@@ -220,8 +220,13 @@ def test_the_eight_are_eight():
     """An icon earns its place by carrying state or destination. The set grew
     once already, from four to nine, and every addition was decoration on a
     word that was already clear."""
-    assert len(branding.SEVERITY_ICONS) == 4, sorted(branding.SEVERITY_ICONS)
+    assert len(branding.SEVERITY_ICONS) == 3, sorted(branding.SEVERITY_ICONS)
     assert len(branding.ACTION_ICONS) == 4, sorted(branding.ACTION_ICONS)
+    assert "info" not in branding.SEVERITY_ICONS, (
+        "info is the absence of a problem; a glyph there adds nothing the "
+        "sentence does not say, and QGIS draws it as a speech bubble beside a "
+        "line that is already a message"
+    )
 
 
 def test_every_drawn_glyph_has_both_variants_on_disk():
