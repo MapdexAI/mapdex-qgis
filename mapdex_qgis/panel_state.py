@@ -89,32 +89,25 @@ JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their
 # Mapdex or your own model is a billing and privacy decision, and the person
 # reading it does not know what either would do for them.
 #
-# So the reading goes first. It needs neither - it is local, measured, and
-# costs no model call - which means the screen has already said something true
-# about the file in front of them before it asks for anything.
-# Nivo introduces itself, because a name nobody has met is a name nobody
-# trusts with their data. Two sentences: who it is, and what it does with the
-# project already open - not a feature list, which is the vitrine version of
-# this screen and sells nothing.
-# Two lines. The first draft ran to five and took a third of a narrow dock
-# before the reader reached the one decision underneath it, which is the same
-# mistake as putting the decision at the bottom, made with words instead.
-FIRST_OPEN_TITLE = (
-    "I'm Nivo. I read the layers you already have open in QGIS and measure, "
-    "style and analyse them - and I say what I measured rather than guessing."
-)
-FIRST_OPEN_PROMPT = "I need somewhere to think. Choose one:"
-FIRST_OPEN_FREE = "That reading needed no account."
+# First open is a focused provider decision. A normal Nivo reading, runtime
+# notice and prepared turns belong to the conversation after a provider can
+# answer; showing them here made onboarding and chat look like one broken
+# transcript. Keep the value proposition short enough to survive a 420 px dock.
+FIRST_OPEN_TITLE = "Your map-aware assistant, inside QGIS"
+FIRST_OPEN_PROMPT = "Choose how you want to start:"
 
 # The two are not equals and are not drawn as equals. "Use your key" would be
 # the wrong words for a GIS technician - hard rule 22 keeps developer jargon
 # off the end-user screen - so it says what it is, and names the providers so
 # it is recognisable.
-CONNECT_PROMISE = "Free account. Georeference, digitize, validate and batch run here."
+CONNECT_PROMISE = (
+    "Recommended. Free to start. Ask Nivo and run verified Georeference, "
+    "digitize, validate and batch workflows."
+)
 OWN_MODEL_LABEL = "Use my own AI model"
 OWN_MODEL_PROMISE = (
-    "OpenAI, Anthropic, Gemini, or a model running on this machine. "
-    "Mapdex work stays unavailable."
+    "Chat with OpenAI, Anthropic, Gemini or a local model. "
+    "Mapdex workflows and cloud results stay unavailable."
 )
 
 

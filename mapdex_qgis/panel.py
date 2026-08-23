@@ -504,7 +504,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         QLabel#mapdexStateWord { color: #C9CDD8; font-size: 12px; }
         QLabel#mapdexFirstOpenTitle {
             color: #F7F7F5;
-            font-size: 14px;
+            font-size: 18px;
             font-weight: 600;
         }
         QLabel#mapdexLockedNotice {
@@ -834,8 +834,8 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # billing-and-privacy question the reader cannot answer at that moment.
     sign_in = QWidget()
     sign_in_layout = QVBoxLayout(sign_in)
-    sign_in_layout.setContentsMargins(0, 10, 0, 0)
-    sign_in_layout.setSpacing(8)
+    sign_in_layout.setContentsMargins(0, 8, 0, 0)
+    sign_in_layout.setSpacing(10)
     sign_in_layout.addWidget(first_open_prompt)
     sign_in_layout.addWidget(connect_button)
     sign_in_layout.addWidget(connect_promise)

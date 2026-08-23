@@ -49,9 +49,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 PRISTINE = os.path.join(HERE, "mapdex-test-parcels.gpkg")
-FIXTURE = os.path.join(HERE, "_e2e-parcels.gpkg")
-if os.path.exists(FIXTURE):
-    os.remove(FIXTURE)
+# A live QGIS verification session may still have the previous fixture open.
+# Reusing one fixed path then makes the next UI render fail with
+# ``database is locked`` before it draws anything. Each run owns its copy;
+# the source fixture stays immutable and parallel/manual checks cannot collide.
+FIXTURE = os.path.join(tempfile.mkdtemp(prefix="mapdex-qgis-e2e-"), "parcels.gpkg")
 shutil.copyfile(PRISTINE, FIXTURE)
 
 

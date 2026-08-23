@@ -2236,14 +2236,6 @@ class MapdexPlugin:
         total = int(counts.get("total", 0) or 0)
         completed = succeeded + needs_review + failed + int(counts.get("cancelled", 0) or 0)
 
-        if self.connection_label is not None:
-            self.connection_label.setText("Connected to Mapdex" if connected else "Not connected")
-
-        self.connect_button.setVisible(not connected)
-        self.connect_button.setEnabled(not self._busy)
-        self.disconnect_button.setVisible(connected)
-        self.disconnect_button.setEnabled(connected and not self._busy)
-
         # First open: neither a session nor a provider, so nothing can be asked
         # yet and the panel is nine controls a stranger cannot rank. Derived,
         # never a stored flag - a flag goes stale and, once spent, cannot come
@@ -2251,6 +2243,15 @@ class MapdexPlugin:
         # screen say something true before it asks for anything.
         has_provider = self._has_provider()
         first = panel_state.is_first_open(connected, has_provider)
+        if self.connection_label is not None:
+            self.connection_label.setText(
+                "Connected to Mapdex" if connected else ("Meet Nivo" if first else "Not connected")
+            )
+
+        self.connect_button.setVisible(not connected)
+        self.connect_button.setEnabled(not self._busy)
+        self.disconnect_button.setVisible(connected)
+        self.disconnect_button.setEnabled(connected and not self._busy)
         if self.connect_button is not None and hasattr(self.connect_button, "set_tone"):
             # Connect is the one filled action while nothing has been chosen.
             # To somebody already answering from their own model it is an
@@ -2258,6 +2259,11 @@ class MapdexPlugin:
             # sitting under their composer as a permanent indigo block.
             self.connect_button.set_tone("primary" if first else "quiet")
         for widget, shown in (
+            # First open is a decision screen, not a disabled conversation.
+            # The connection label already states the state; repeating it in
+            # the status banner and again inside Nivo made three competing
+            # messages before the reader reached either choice.
+            (self.status, not first),
             (self.sign_in, not connected),
             (self.connect_promise, not connected),
             # Only on first open: afterwards the settings panel owns the
@@ -2274,14 +2280,19 @@ class MapdexPlugin:
             # One page and no tab bar while nothing has been chosen: Task and
             # Jobs are Mapdex session surfaces and cannot do anything yet.
             (self.segment_bar, not first),
+            (self.tabs, not first),
+            # Conversation management and generic settings are normal-session
+            # controls. Onboarding has exactly two routes; each route opens
+            # what it needs without a third competing way into configuration.
+            (self.nivo_new_button, not first),
+            (self.nivo_history_button, not first),
+            (self.settings_button, not first),
         ):
             if widget is not None:
                 widget.setVisible(shown)
         if first and self.switch_page is not None:
             self.switch_page(0)
         if self.body_layout is not None and self.tabs is not None:
-            # Stop the transcript grabbing the spare height while it holds
-            # only a reading; the tail below takes it instead.
             self.body_layout.setStretchFactor(self.tabs, 0 if first else 1)
         if self.nivo_reply is not None:
             # With no stretch the transcript falls back to its minimum, which

@@ -212,6 +212,20 @@ def test_the_choice_sits_above_the_reading():
     )
 
 
+def test_first_open_is_only_the_two_provider_choices():
+    """Onboarding must not compete with a disabled Nivo transcript.
+
+    Once either route can answer, the normal pages return. Until then the
+    connection label, short title and two actions are the whole screen.
+    """
+    body = _method(PLUGIN, "_refresh_ui")
+    assert "(self.status, not first)" in body, body
+    assert "(self.tabs, not first)" in body, body
+    assert "(self.nivo_new_button, not first)" in body, body
+    assert "(self.nivo_history_button, not first)" in body, body
+    assert "(self.settings_button, not first)" in body, body
+
+
 def test_the_second_option_routes_to_the_settings_that_already_exist():
     """A second provider form would be two controls for one decision."""
     body = _method(PLUGIN, "choose_own_model")
