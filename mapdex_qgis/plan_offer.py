@@ -174,7 +174,14 @@ def plan_run_report(run: Any) -> dict[str, Any]:
     if state in {"completed", "succeeded"}:
         message = "Done."
     elif state == "needs_review":
-        message = "Finished, and it needs a person to look at it in Mapdex before it is final."
+        # Not "finished". A run in this state has stopped in front of a
+        # decision - which of several places was meant, or an approval before a
+        # step that changes risk - and calling that finished-but-unapproved
+        # made ordinary data acquisition read as though somebody had to go and
+        # audit it. Any result it did produce is still imported below; what is
+        # outstanding is an answer, not an inspection.
+        message = ("That run stopped and is waiting for a decision. "
+                   "Open it in Mapdex to answer; anything it already produced is below.")
     elif state == "failed":
         message = "That run failed in Mapdex."
     elif state == "cancelled":

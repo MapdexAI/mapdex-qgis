@@ -119,8 +119,13 @@ def test_needs_review_is_terminal_and_is_not_a_failure():
 
     report = plan_run_report({"job": {"state": "review_required"}})
     assert report["terminal"] is True
-    assert "needs a person" in report["message"]
     assert "fail" not in report["message"].lower()
+    # It stopped in front of a decision - which place was meant, or an approval
+    # before a step that changes risk. It is not finished, and it is not an
+    # audit of the data: calling it either made ordinary data acquisition read
+    # as though somebody had to go and inspect the result.
+    assert "waiting for a decision" in report["message"]
+    assert "finished" not in report["message"].lower()
 
 
 def test_an_unrecognised_state_keeps_polling():
