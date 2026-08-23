@@ -2779,13 +2779,17 @@ class MapdexPlugin:
     # every domain is in it. A new domain fails the build instead of vanishing
     # from the answer.
     CAPABILITY_GROUPS = (
-        ("Measure and analyse", ("analytics", "measure", "inspect", "spatial", "field", "filter")),
-        ("Survey computation", ("survey", "coordinates", "crs")),
-        ("Reshape and process", ("geoprocessing", "processing", "terrain", "draw")),
-        ("Map and style", ("map", "style", "layer", "selection", "sheet")),
-        ("Databases", ("postgis",)),
-        ("Deliver", ("export", "report", "publish")),
-        ("Mapdex work", ("mapdex",)),
+        ("Understand your data", "Inspect layers, measure geometry, compare values and find patterns.",
+         ("analytics", "measure", "inspect", "spatial", "field", "filter", "postgis")),
+        ("Survey and coordinates", "Work with bearings, traverses, coordinate formats and reference systems.",
+         ("survey", "coordinates", "crs")),
+        ("Make and refine maps", "Repair or derive layers, then select, style, label and present them.",
+         ("geoprocessing", "processing", "terrain", "draw", "map", "style", "layer",
+          "selection", "sheet")),
+        ("Deliver results", "Export layers and prepare outputs for the next person or system.",
+         ("export", "report", "publish")),
+        ("Run verified Mapdex workflows", "Georeference, digitize, validate and review durable results.",
+         ("mapdex",)),
     )
 
     @guarded
@@ -2797,10 +2801,9 @@ class MapdexPlugin:
         describing. A turn scrolls, it stays, and the next question is already
         in the box below it.
 
-        Generated, so a capability added to the registry cannot go missing from
-        the answer, and the account-only ones are marked rather than hidden: a
-        person deciding whether to sign up is entitled to see what signing up
-        is for.
+        This is an outcome map, not the registry dumped into the transcript.
+        The registry decides which groups exist and which require a connection;
+        the copy explains those groups in language a GIS user can scan.
         """
         offline = session_allowance(CLIENT_QGIS)
         by_domain = {}
@@ -2808,19 +2811,25 @@ class MapdexPlugin:
             by_domain.setdefault(capability.domain, []).append(
                 (capability.summary, capability.id not in offline))
         lines = []
-        for title, domains in self.CAPABILITY_GROUPS:
+        for title, description, domains in self.CAPABILITY_GROUPS:
             rows = sorted(row for domain in domains for row in by_domain.get(domain, []))
             if not rows:
                 continue
             needs_account = all(paid for _summary, paid in rows)
-            lines.append("{}{}".format(title, " - needs a connection" if needs_account else ""))
-            lines.extend("  " + summary for summary, _paid in rows)
+            lines.append("{}{}".format(title, " · Mapdex" if needs_account else ""))
+            lines.append(description)
             lines.append("")
         self._say(
             "\n".join(lines).rstrip(),
-            fact="Everything below runs here in QGIS unless it says otherwise.",
-            actions=[{"label": "What can you do with this layer?", "kind": first_look.ASK,
-                      "prompt": "What can you do with the layer I have open?"}],
+            fact="Tell Nivo the outcome you want. It chooses and explains the GIS operations.",
+            actions=[
+                {"label": "Profile this layer", "kind": first_look.ASK,
+                 "prompt": "Profile the layer I have open and tell me what stands out."},
+                {"label": "Check for data issues", "kind": first_look.ASK,
+                 "prompt": "Check the layer I have open for data and geometry issues."},
+                {"label": "Suggest a useful map", "kind": first_look.ASK,
+                 "prompt": "Suggest and apply a useful map style for the layer I have open."},
+            ],
         )
 
     @guarded

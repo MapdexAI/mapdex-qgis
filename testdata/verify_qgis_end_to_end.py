@@ -850,6 +850,9 @@ if os.environ.get("MAPDEX_RENDER"):
     PLUGIN._refresh_ui()
     for _width in (1540, 420):
         render_panel("connected-empty", _width)
+    PLUGIN._say_capabilities()
+    for _width in (1540, 420):
+        render_panel("capability-discovery", _width)
     if os.environ.get("MAPDEX_RENDER") == "only":
         sys.exit(0)
 

@@ -299,7 +299,7 @@ def test_resume_is_not_offered_without_a_session():
 def test_the_capability_answer_is_read_from_the_registry():
     body = _method(PLUGIN, "_say_capabilities")
     assert "for_client(CLIENT_QGIS)" in body, (
-        "a hand-written list would go stale the first time a capability is added"
+        "the outcome map must hide groups this client cannot actually execute"
     )
     assert "session_allowance" in body, (
         "account-only capabilities were not marked, so the answer to "
@@ -331,6 +331,14 @@ def test_every_registry_domain_is_in_a_group():
         "domains missing from the grouping, so their capabilities vanish from the "
         "answer: {}".format(sorted(live - grouped))
     )
+
+
+def test_capability_discovery_is_not_a_registry_dump():
+    body = _method(PLUGIN, "_say_capabilities")
+    assert 'lines.extend("  " + summary' not in body, body
+    assert "Profile this layer" in body
+    assert "Check for data issues" in body
+    assert "Suggest a useful map" in body
 
 
 # -- the stored key reads as stored -----------------------------------------
