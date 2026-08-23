@@ -226,6 +226,17 @@ def test_first_open_is_only_the_two_provider_choices():
     assert "(self.settings_button, not first)" in body, body
 
 
+def test_empty_chat_is_one_owned_welcome_card():
+    """The fixed Nivo header owns the sender; the reading owns its action."""
+    opening = _method(PLUGIN, "opening_turns")
+    turn = _method(PLUGIN, "_turn_widget")
+    assert 'opening=True' in opening, opening
+    assert 'turns[-1]["actions"].append' in opening, opening
+    assert 'See what Nivo can do' in opening, opening
+    assert 'mapdexOpeningTurn' in turn, turn
+    assert 'if not turn.get("opening")' in turn, turn
+
+
 def test_the_second_option_routes_to_the_settings_that_already_exist():
     """A second provider form would be two controls for one decision."""
     body = _method(PLUGIN, "choose_own_model")

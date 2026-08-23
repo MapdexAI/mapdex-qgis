@@ -842,6 +842,14 @@ if os.environ.get("MAPDEX_RENDER"):
     for _width in (1540, 420):
         render_panel("settings-open", _width)
     PLUGIN.settings_button.setChecked(False)
+    # The first screen after connecting is a separate visual state: normal
+    # conversation chrome plus the local reading, but no user turns yet. It is
+    # where duplicate Nivo labels and a detached capability action previously
+    # made the empty chat look like several unfinished components.
+    PLUGIN.api.token = "render-session"
+    PLUGIN._refresh_ui()
+    for _width in (1540, 420):
+        render_panel("connected-empty", _width)
     if os.environ.get("MAPDEX_RENDER") == "only":
         sys.exit(0)
 

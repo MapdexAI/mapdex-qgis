@@ -413,6 +413,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
            to every descendant, so `border: 0` on the card was erasing the
            border of every chip inside it. */
         QWidget#mapdexTurn { background: transparent; border: 0; }
+        QWidget#mapdexOpeningTurn {
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+            border-radius: 8px;
+        }
         QWidget#mapdexTurnUser { background: #4F46E5; border-radius: 8px; }
         QLabel#mapdexTurnWho { color: #8F96A8; font-weight: 600; }
         QLabel#mapdexTurnWhoUser { color: #FFFFFF; font-weight: 600; }

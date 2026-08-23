@@ -247,7 +247,7 @@ PANEL_WIDGET_REFS = (
 )
 
 
-def transcript_turn(sender, text, steps=None, actions=None, severity="", fact=""):
+def transcript_turn(sender, text, steps=None, actions=None, severity="", fact="", opening=False):
     """One transcript entry, and the only place its shape is written.
 
     A dict rather than a tuple, learned the hard way: the entry used to be
@@ -264,6 +264,7 @@ def transcript_turn(sender, text, steps=None, actions=None, severity="", fact=""
         "actions": list(actions or []),
         "severity": str(severity or ""),
         "fact": str(fact or ""),
+        "opening": bool(opening),
     }
 
 
@@ -285,6 +286,7 @@ def opening_turns(state):
             actions=[dict(action, layer_id=layer_id) for action in finding["actions"]],
             severity=finding["severity"],
             fact=finding["headline"],
+            opening=True,
         )
         for finding in reading["findings"]
     ]
@@ -298,9 +300,10 @@ def opening_turns(state):
     # is what a reader takes for a broken screen rather than for a repeated
     # offer.
     if turns:
-        turns.append(transcript_turn(
-            "assistant", "",
-            actions=[{"label": "What can Nivo do?", "kind": "capabilities"}]))
+        # This belongs to the reading immediately above it. A separate empty
+        # turn produced a large floating link with no visible owner.
+        turns[-1]["actions"].append(
+            {"label": "See what Nivo can do", "kind": "capabilities"})
     return turns
 
 
@@ -3595,9 +3598,13 @@ class MapdexPlugin:
                 strip.addWidget(self._action_chip(action))
             row.addLayout(strip)
             return card
-        label = QLabel("You" if sender == "user" else "Nivo")
-        label.setObjectName("mapdexTurnWhoUser" if sender == "user" else "mapdexTurnWho")
-        row.addWidget(label)
+        if not turn.get("opening"):
+            # The fixed header already introduces Nivo. Repeating the sender
+            # immediately underneath made the empty state look like two
+            # unrelated components; real conversation turns keep attribution.
+            label = QLabel("You" if sender == "user" else "Nivo")
+            label.setObjectName("mapdexTurnWhoUser" if sender == "user" else "mapdexTurnWho")
+            row.addWidget(label)
 
         # The measurement, set apart from the sentence about it. Mono, because
         # a file name, a pixel size and a CRS code are data and read as data.
@@ -3632,7 +3639,7 @@ class MapdexPlugin:
             card.setMaximumWidth(BUBBLE_WIDTH)
             body.setObjectName("mapdexTurnBodyUser")
         else:
-            card.setObjectName("mapdexTurn")
+            card.setObjectName("mapdexOpeningTurn" if turn.get("opening") else "mapdexTurn")
             body.setObjectName("mapdexTurnBody")
             for row_data in turn.get("steps") or []:
                 row.addWidget(self._step_widget(row_data))
