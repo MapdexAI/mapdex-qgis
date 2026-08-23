@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from qgis.PyQt.QtCore import QSize, Qt
+from qgis.PyQt.QtCore import QEvent, QSize, Qt
 from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
@@ -82,6 +82,20 @@ class _CompanionPanel(QWidget):
         self._forms = []
         self._pairs = []
         self._mode = ""
+        # Set by the plugin. The Mapdex mark on the toolbar and the menus is
+        # chosen from the interface palette, and a theme sampled once at build
+        # time is not theme-aware: a user who switches QGIS to Night Mapping
+        # would keep an ink mark on an ink toolbar, which on screen looks
+        # exactly like an icon that failed to load. This panel is a widget, so
+        # it receives the application palette change; the actions are not its
+        # children, so the plugin re-icons them from here.
+        self.on_palette_change = None
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        kind = enum_member(QEvent, "Type", "PaletteChange")
+        if event.type() == kind and callable(self.on_palette_change):
+            self.on_palette_change()
 
     def register_form(self, form):
         self._forms.append(form)

@@ -309,7 +309,18 @@ class TestTheTwoButtonsLookDifferent:
             "beside it")
 
     def test_the_panel_still_carries_the_mark(self):
-        assert "plugin_icon()" in _source("initGui")
+        """Still the mark, now the right variant of it.
+
+        This check exists so the panel button stays distinguishable from the
+        tracer beside it, and it is `mapdex_mark_icon()` that carries the mark
+        now: `plugin_icon()` was the INDIGO symbol, which MEMORY hard rule 27
+        reserves for accent placements and which was the same picture on a
+        light toolbar and a dark one. See branding.py.
+        """
+        assert "mapdex_mark_icon()" in _source("initGui")
+        assert "plugin_icon()" not in _source("initGui"), (
+            "the toolbar is back on the accent-only indigo mark"
+        )
 
     def test_a_missing_asset_falls_back_instead_of_drawing_nothing(self):
         """A QIcon with no file is invisible, and an invisible button is worse

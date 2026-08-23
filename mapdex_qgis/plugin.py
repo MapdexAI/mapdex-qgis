@@ -128,6 +128,7 @@ from .panel import (
     build_companion_panel,
     build_thread_history_dialog,
 )
+from . import branding
 from . import first_look
 from . import panel_state
 from ._vendor.nivo.processing import (
@@ -245,9 +246,28 @@ PANEL_WIDGET_REFS = (
 
 
 def plugin_icon() -> QIcon:
-    """The Mapdex mark, drawn from the packaged icon next to this module."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+    """The listing mark: the indigo symbol `metadata.txt` names.
+
+    Kept for the one surface that has no palette to read - the plugin manager
+    and plugins.qgis.org - and as the last fallback for a build missing its
+    assets, because a QIcon with no file draws nothing and an invisible button
+    is worse than a wrongly coloured one. Inside QGIS the identity is
+    `mapdex_mark_icon()`: see branding.py and MEMORY hard rule 27, which makes
+    the black/white symbol the default mark and the blue one an accent variant.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), branding.LISTING_MARK)
     return QIcon(path) if os.path.isfile(path) else QIcon()
+
+
+def mapdex_mark_icon() -> QIcon:
+    """The Mapdex mark for the interface QGIS is currently wearing.
+
+    Routed through `themed_asset_icon` rather than resolving the file here, so
+    the mark inherits the fallback chain the tracer icon already has: the dark
+    variant, then the light one, then the listing mark. One indigo picture on
+    every theme is what this replaces.
+    """
+    return themed_asset_icon(branding.MARK_FOR_LIGHT_INTERFACE)
 
 
 def asset_icon(name: str) -> QIcon:
@@ -773,7 +793,7 @@ class MapdexPlugin:
 
     @guarded
     def initGui(self):
-        self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
+        self.action = QAction(mapdex_mark_icon(), "Mapdex", self.iface.mainWindow())
         self.action.setToolTip("Open Mapdex for QGIS")
         self.action.triggered.connect(self.show)
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
@@ -1215,7 +1235,7 @@ class MapdexPlugin:
         leave is a trap: the next click on the map would otherwise start a
         measurement they did not ask for.
         """
-        self._measure_action = QAction(plugin_icon(), "Measure with Mapdex", self.iface.mainWindow())
+        self._measure_action = QAction(mapdex_mark_icon(), "Measure with Mapdex", self.iface.mainWindow())
         self._measure_action.setToolTip("Click two points on the map to measure the distance between them")
         self._measure_action.setCheckable(True)
         self._measure_action.triggered.connect(self._toggle_measure_tool)
@@ -1271,7 +1291,7 @@ class MapdexPlugin:
         a modal canvas state the user has to remember to leave turns their next
         click into a vertex of a shape they were not drawing.
         """
-        self._draw_action = QAction(plugin_icon(), "Draw with Mapdex", self.iface.mainWindow())
+        self._draw_action = QAction(mapdex_mark_icon(), "Draw with Mapdex", self.iface.mainWindow())
         self._draw_action.setToolTip(
             "Draw a point, line or area on the map and keep it as a layer")
         self._draw_action.setCheckable(True)
@@ -1459,7 +1479,7 @@ class MapdexPlugin:
         for title, kind, layer_type in self._layer_menu_entries():
             if layer_type is None:
                 continue
-            action = QAction(plugin_icon(), title, window)
+            action = QAction(mapdex_mark_icon(), title, window)
             action.triggered.connect(partial(self._prepare_from_layer_menu, kind))
             try:
                 add(action, "Mapdex", layer_type, True)
@@ -1640,6 +1660,27 @@ class MapdexPlugin:
                 # try and nothing that may be allowed to escape from here.
                 pass
 
+    @guarded
+    def _reicon_actions(self):
+        """Re-choose every Mapdex mark after the interface palette changed.
+
+        Guarded and tolerant: this runs from a Qt event, the actions may have
+        been removed by an unload already, and a wrong icon must never be able
+        to take QGIS down with it.
+        """
+        mark = mapdex_mark_icon()
+        for action in (self.action, self._measure_action, self._draw_action,
+                       *(self._layer_menu_actions or [])):
+            if action is not None:
+                action.setIcon(mark)
+        # The tracer has its own glyph, and it is themed by the same rule.
+        # getattr: unlike the others this one is never initialised to None, it
+        # is created by _install_vectorize_action, so a palette change arriving
+        # before or after that must meet None rather than AttributeError.
+        tracer = getattr(self, "_vectorize_action", None)
+        if tracer is not None:
+            tracer.setIcon(themed_asset_icon("icon_vectorize.png"))
+
     def _ensure_dock(self):
         if self.dock is not None:
             return
@@ -1662,6 +1703,11 @@ class MapdexPlugin:
         # dock as the C++ owner, no widget can be collected while the panel is
         # still being wired up.
         self._panel_root = root
+        # The mark on the toolbar and the menus is chosen from the palette, so
+        # it has to be re-chosen when the palette moves. The actions are not
+        # children of this panel, but the panel is a widget and receives the
+        # application palette change, which is the signal the actions need.
+        root.on_palette_change = self._reicon_actions
         self.dock.setWidget(root)
         for key, value in refs.items():
             setattr(self, key if key != "batch" else "batch_group", value)

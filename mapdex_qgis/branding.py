@@ -1,0 +1,61 @@
+"""Which Mapdex mark goes on the toolbar and the menus.
+
+The plugin put the INDIGO symbol on its toolbar button, its Measure and Draw
+actions and its layer-menu entries. That is not the Mapdex identity:
+`docs/MEMORY.md` hard rule 27 makes the black/white symbol the default mark -
+the white symbol on dark surfaces, the ink symbol on light ones - and reserves
+the blue variant for explicit accent placements, "never the default mark".
+
+Beside the correctness of it, one colour cannot serve a QGIS toolbar. QGIS
+ships light and dark themes, users install their own, and on Windows and macOS
+the system can darken the application with no QGIS setting changing at all. The
+indigo mark was the same picture in all of them; the black/white pair is chosen
+from the palette the same way `icon_vectorize.png` already is.
+
+The two PNGs are the kit geometry, COPIED rather than redrawn: DESIGN.md
+forbids redrawing the mark, so the files on the toolbar are the same ones the
+PDF and HTML reports embed
+(`services/mapdex-extension-host/src/report/assets/mapdex-logo{,-white}.png`).
+
+**The `_dark` suffix means "for a dark interface", so the file whose name says
+dark is the WHITE one.** That is the convention `icon_vectorize.png` /
+`icon_vectorize_dark.png` already established in this directory, and reading it
+the other way round paints a black mark on a black toolbar, which on screen is
+indistinguishable from an icon that failed to load.
+
+Not in scope here: the Nivo avatar, which is its own assistant artwork and is
+left alone; and `icon.png`, which stays the indigo mark on purpose - see below.
+
+No Qt import, so which-file-on-which-surface is decided somewhere a test can
+reach without a host application.
+"""
+from __future__ import annotations
+
+import os
+
+# The default identity, per MEMORY hard rule 27. Named for the INTERFACE each
+# belongs to rather than for its own colour, because the interface is what the
+# caller knows and the colour is what it is choosing.
+MARK_FOR_LIGHT_INTERFACE = "mapdex_mark.png"
+MARK_FOR_DARK_INTERFACE = "mapdex_mark_dark.png"
+
+# `icon.png`, the indigo symbol, keeps its one legitimate job: `metadata.txt`
+# names it for the plugin-manager listing and for plugins.qgis.org. That is a
+# static install surface with no palette to read, where a single mark has to
+# stay visible against a light page and a dark one, and it is the same carve-out
+# MEMORY makes for favicon and app-icon exports. It is deliberately NOT
+# reachable through the helpers below, so it cannot drift back into the
+# workspace as the default mark.
+LISTING_MARK = "icon.png"
+
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+
+def mark_asset(dark_interface: bool) -> str:
+    """The mark file name for the interface currently on screen."""
+    return MARK_FOR_DARK_INTERFACE if dark_interface else MARK_FOR_LIGHT_INTERFACE
+
+
+def mark_path(dark_interface: bool) -> str:
+    """Absolute path to that file. May not exist; callers fall back."""
+    return os.path.join(ASSETS, mark_asset(dark_interface))
