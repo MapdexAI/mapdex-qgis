@@ -120,7 +120,12 @@ from .nivo import (
     thread_turns,
     transition,
 )
-from .panel import action_row, build_companion_panel, build_thread_history_dialog
+from .panel import (
+    action_row,
+    allow_narrow,
+    build_companion_panel,
+    build_thread_history_dialog,
+)
 from . import branding
 from . import first_look
 from . import panel_state
@@ -287,6 +292,11 @@ def opening_turns(state):
     # one of these states, so it is offered from all of them - on its own row,
     # because three chips do not fit a narrow dock and Qt has no wrapping row
     # to rescue them.
+    #
+    # ONE owner. Three findings carried the same chip as well, so the empty
+    # project printed "What can Nivo do?" twice, one row under the other, which
+    # is what a reader takes for a broken screen rather than for a repeated
+    # offer.
     if turns:
         turns.append(transcript_turn(
             "assistant", "",
@@ -3516,7 +3526,14 @@ class MapdexPlugin:
 
     @guarded
     def _render_nivo_turns(self):
-        """Render sender-distinct native widget bubbles; no model HTML."""
+        """Render sender-distinct native widget bubbles; no model HTML.
+
+        Ends by letting every wrapping label it just created be as narrow as
+        the dock. The rule is applied at build time too, and that alone was not
+        enough: these widgets are created later, so the panel could be narrowed
+        and the conversation inside it could not - which is where most of the
+        text lives, so the column stayed 614 px wide in a 300 px dock.
+        """
         if self.nivo_reply is None:
             return
         transcript = self.nivo_reply.widget()
@@ -3535,6 +3552,7 @@ class MapdexPlugin:
         for turn in list(self._nivo_opening) + list(self._nivo_turns):
             layout.addWidget(self._turn_widget(turn))
         layout.addStretch(1)
+        allow_narrow(transcript)
         bar = self.nivo_reply.verticalScrollBar()
         bar.setValue(bar.maximum())
 

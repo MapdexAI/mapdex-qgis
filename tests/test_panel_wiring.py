@@ -179,13 +179,24 @@ def test_asking_whether_a_provider_exists_does_not_open_the_key_store():
     assert "mapdex/nivo/provider" in body, body
 
 
-def test_the_choice_sits_below_the_reading():
-    """Showing the choice alone is a wall in front of a product nobody has seen.
-    The reading needs neither half of it, so it goes first and the panel has
-    already said something true before it asks."""
+def test_the_choice_sits_above_the_reading():
+    """The choice comes first, and this reverses an earlier decision.
+
+    The old rule was that showing the choice alone is a wall in front of a
+    product nobody has seen, so the reading went first and the panel said
+    something true before it asked. Measured on the real dock, what that
+    produced was the choice at y=602 on a first-open screen whose title ended
+    at y=119, with 234 px of empty transcript in between - so the one decision
+    a stranger has to make was the last thing they found, and the founder's
+    words for where it had ended up are not printable here.
+
+    Nivo introduces itself, offers the two ways it can think, and the reading
+    follows as the argument for them. The reading is still first-hand and still
+    needs no account; it is no longer in front of the door.
+    """
     order = [PANEL.index(marker) for marker in (
-        "layout.addWidget(pages, 1)", "layout.addWidget(sign_in)")]
-    assert order == sorted(order), "the choice was placed above the transcript"
+        "layout.addWidget(sign_in)", "layout.addWidget(pages, 1)")]
+    assert order == sorted(order), "the choice fell below the transcript again"
     # And it is left-aligned by a stretch, not by an alignment flag: given one,
     # Qt hands the widget its sizeHint instead of the available width, which
     # collapsed the reading column to ~320 px in a 1,430 px dock and clipped

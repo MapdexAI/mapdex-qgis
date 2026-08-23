@@ -109,11 +109,14 @@ QgsApplication.setPrefixPath(
 QGS = QgsApplication([], True)
 QGS.initQgis()
 
+from qgis.PyQt.QtGui import QPixmap  # noqa: E402
+from qgis.PyQt.QtWidgets import QWidget  # noqa: E402
 from qgis.PyQt.QtCore import (  # noqa: E402
     PYQT_VERSION_STR,
     QT_VERSION_STR,
     QCoreApplication,
     QSettings,
+    QSize,
     Qt,
     QTimer,
 )
@@ -636,6 +639,8 @@ class MessageBoxStub:
 
 plugin_module.QMessageBox = MessageBoxStub
 
+from mapdex_qgis.layout_rules import READING_WIDTH as READING_CAP  # noqa: E402
+
 PLUGIN = None
 try:
     PLUGIN = plugin_module.MapdexPlugin(IFACE)
@@ -653,10 +658,190 @@ else:
                         "docked" if PLUGIN.dock.parentWidget() is not None else "floating")))
 
 
+def render_panel(state, width=1540, height=1200):
+    """Write a PNG of the assembled dock and a geometry table for it.
+
+    Component tests passed while the composed screen was broken six ways at
+    once, because a test can assert that a widget exists and cannot see that
+    the decision it carries sits below two empty gaps, or that a 1,540 px dock
+    leaves 800 px of nothing down the right.
+
+    It renders THE PRODUCT'S OWN dock, in whatever state the harness has put it
+    in, rather than a builder call with the state guessed alongside it - a
+    harness that keeps its own copy of the state measures the copy.
+    """
+    plugin = need_plugin()
+    dock = plugin.dock
+    # Resize the CONTENT, not only the frame. A QDockWidget inside a main
+    # window is laid out by that window, so resizing the dock alone left the
+    # panel at its minimum and the harness reported a width nobody would see.
+    root = plugin._panel_root
+    dock.setFloating(True)
+    dock.resize(width, height)
+    root.resize(width, height)
+    # A resize posts a layout request; `processEvents` alone delivered it one
+    # render too late, so the first measurement reported the PREVIOUS width
+    # (scroll 640 inside a 1,540 px root) and the panel looked broken when the
+    # instrument was simply a frame behind. Activate the layouts explicitly,
+    # top down, then let the queue drain.
+    for _pass in range(3):
+        for widget in [root] + root.findChildren(QWidget):
+            layout = widget.layout()
+            if layout is not None:
+                layout.activate()
+        QGS.processEvents()
+    print("  dock {}x{}, root {}x{}".format(
+        dock.width(), dock.height(), root.width(), root.height()))
+    # The chain the width has to travel: root -> scroll -> viewport -> body ->
+    # column. Whichever link stops growing is the one holding the cap back.
+    from qgis.PyQt.QtWidgets import QScrollArea as _Scroll  # noqa: PLC0415
+    for area in root.findChildren(_Scroll):
+        if area.objectName() == "mapdexChatTranscript":
+            continue
+        inner = area.widget()
+        print("    scroll {} viewport {} body {} (resizable {})".format(
+            area.width(), area.viewport().width(),
+            inner.width() if inner is not None else -1,
+            area.widgetResizable()))
+    pixmap = QPixmap(QSize(root.width(), root.height()))
+    root.render(pixmap)
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "panel-{}-{}.png".format(state, width))
+    pixmap.save(out)
+
+    # Which widget is DICTATING the width. A column that will not shrink is a
+    # column some descendant refuses to shrink, and only the minimum size hint
+    # says which one.
+    def _widest(widget):
+        out = []
+        stack = [widget]
+        while stack:
+            current = stack.pop()
+            out.append((current.minimumSizeHint().width(),
+                        current.objectName() or type(current).__name__))
+            stack.extend(
+                child for child in current.children() if isinstance(child, QWidget))
+        return out
+
+    floor = sorted(_widest(root), reverse=True)[:6]
+    print("  widest minimum size hints:")
+    for hint, name in floor:
+        print("    {:>5}  {}".format(hint, name))
+
+    watched = (
+        "connection_label", "status", "settings_button", "first_open_title",
+        "first_open_prompt", "connect_button", "own_model", "tail",
+        "save_settings_button", "provider_box", "api_key_input",
+        "segment_bar", "tabs", "nivo_reply", "nivo_context", "nivo_runtime",
+        "composer", "column",
+    )
+    print("\n=== {} ({}x{}) -> {}".format(state, width, height, os.path.basename(out)))
+    print("  {:<20} {:>6} {:>6} {:>6} {:>6}  {}".format("widget", "x", "y", "w", "h", "shown"))
+    for name in watched:
+        widget = getattr(plugin, name, None)
+        if widget is None:
+            print("  {:<20} {:>6}".format(name, "absent"))
+            continue
+        point = widget.mapTo(root, widget.rect().topLeft())
+        print("  {:<20} {:>6} {:>6} {:>6} {:>6}  {}".format(
+            name, point.x(), point.y(), widget.width(), widget.height(),
+            "yes" if widget.isVisible() else "NO"))
+    return out
+
+
+def panel_fits_and_centres():
+    """The dock is usable at both ends of the width it can be dragged to.
+
+    Measured, because this is exactly the class a component test cannot see:
+    every widget existed and was correct while a 420 px dock rendered a 512 px
+    column, so 92 px of every row - the Settings button included - was simply
+    off-screen, and a 1,540 px dock left the column at x=0 with 820 px of
+    nothing beside it.
+    """
+    plugin = need_plugin()
+    root = plugin._panel_root
+    column = plugin.column
+    was_floating = plugin.dock.isFloating()
+    plugin.dock.setFloating(True)
+    # A hidden widget lays out lazily, so without this the scroll viewport kept
+    # the width it was built at and the harness reported a 614 px column inside
+    # a 420 px root - the instrument's number, not the panel's.
+    plugin.dock.show()
+    root.show()
+    findings = []
+    try:
+        # 420 is the width the dock opens at and 1,540 is a dock dragged the
+        # width of a monitor; both reproduce here and both match what the
+        # founder photographed. 300 is NOT measured: the scroll chain does not
+        # settle within the layout passes this harness can force, so it reports
+        # a 300 px root around a 614 px column - a number from the instrument,
+        # not from the panel. Narrower than 420 is unverified, and saying so is
+        # better than a check that passes because it stopped asking.
+        for width in (420, 1540):
+            plugin.dock.resize(width, 900)
+            root.resize(width, 900)
+            for _pass in range(3):
+                for widget in [root] + root.findChildren(QWidget):
+                    layout = widget.layout()
+                    if layout is not None:
+                        layout.activate()
+                QGS.processEvents()
+            # Against the width the panel ACTUALLY took, never the width asked
+            # for: a layout minimum can refuse a resize, and comparing against
+            # the request then reports a refusal as an overflow.
+            actual = root.width()
+            left = column.mapTo(root, column.rect().topLeft()).x()
+            right = actual - (left + column.width())
+            if actual > width:
+                findings.append("{}px refused, floor {}".format(width, actual))
+                continue
+            if left < 0 or right < 0:
+                # Name the widget holding the floor open, or the failure says
+                # only that something did and leaves the reader to grep.
+                floor = []
+                stack = [column]
+                while stack:
+                    current = stack.pop()
+                    if current.isVisible() or current is column:
+                        floor.append((current.minimumSizeHint().width(),
+                                      current.objectName() or type(current).__name__))
+                    stack.extend(c for c in current.children() if isinstance(c, QWidget))
+                widest = "; ".join(
+                    "{} needs {}".format(name, hint)
+                    for hint, name in sorted(floor, reverse=True)[:4])
+                raise AssertionError(
+                    "at {} px the column runs off the dock: x={} w={} (overflow {}). {}"
+                    .format(actual, left, column.width(), min(left, right), widest))
+            if actual > READING_CAP + 40 and abs(left - right) > 4:
+                raise AssertionError(
+                    "at {} px the capped column is not centred: {} left, {} right"
+                    .format(actual, left, right))
+            findings.append("{}px -> col {} at x{}".format(actual, column.width(), left))
+    finally:
+        plugin.dock.setFloating(was_floating)
+    return "; ".join(findings)
+
+
 def need_plugin():
     if PLUGIN is None or PLUGIN.dock is None:
         raise NotRun("the plugin did not build its dock")
     return PLUGIN
+
+if os.environ.get("MAPDEX_RENDER"):
+    # The screen a stranger opens: no account, no provider, nothing chosen.
+    # It has to be taken HERE, before a single check has touched anything.
+    for _width in (1540, 420):
+        render_panel("first-open", _width)
+    # The state the founder objected to hardest: pressing "use my own AI model"
+    # opened a nine-field form, and the two cards it belongs to were pushed
+    # below it. Rendered separately because the fields are hidden until asked
+    # for, so the first-open shot cannot show where they land.
+    PLUGIN.settings_button.setChecked(True)
+    for _width in (1540, 420):
+        render_panel("settings-open", _width)
+    PLUGIN.settings_button.setChecked(False)
+    if os.environ.get("MAPDEX_RENDER") == "only":
+        sys.exit(0)
 
 
 def synchronous_tasks(plugin):
@@ -1380,6 +1565,9 @@ def refusals_name_the_capability():
             len(vague), vague[:4]))
     refused = [name for name, verdict, _why in DISPATCH if verdict == "refused"]
     return "{} refusals, each naming its capability or its missing precondition".format(len(refused))
+
+
+check("the panel fits a narrow dock and centres in a wide one", panel_fits_and_centres)
 
 
 check("each refusal names the capability or the missing precondition",

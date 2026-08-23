@@ -257,6 +257,38 @@ class _CompanionPanel(QWidget):
             row.setAlignment(first, left if compact else enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
 
 
+def allow_narrow(widget):
+    """Let a wrapping label be as narrow as the dock is.
+
+    A label with `setWordWrap(True)` has already said it can be any width, and
+    then reports a minimum as wide as its longest line anyway. Every one of
+    those is a floor under the whole column, and together they made the panel
+    un-narrowable: measured, a 300 px dock rendered a 614 px column, so half of
+    every row - the Settings button included - was off the screen.
+
+    Called at build time AND after the transcript draws. The first call alone
+    was not enough and that is the instructive half: turn widgets are created
+    later, so the rule applied to the panel and not to the conversation inside
+    it, which is where most of the text lives.
+    """
+    for label in widget.findChildren(QLabel):
+        if label.wordWrap():
+            label.setMinimumWidth(1)
+    # A resizable scroll area adopts its content's minimum width as its own,
+    # so a wide transcript makes the whole panel un-narrowable even though the
+    # scroll area is the one widget that could simply scroll. Measured: with a
+    # real conversation in it the column would not go below 614 px whatever the
+    # dock did. Let both ends of that pair shrink.
+    for area in widget.findChildren(QScrollArea):
+        area.setMinimumWidth(1)
+        inner = area.widget()
+        if inner is not None:
+            inner.setMinimumWidth(1)
+    if isinstance(widget, QScrollArea):
+        widget.setMinimumWidth(1)
+    widget.setMinimumWidth(1)
+
+
 def build_companion_panel(workflows, endpoint_settings=True):
     """Build the panel.
 
@@ -566,8 +598,38 @@ def build_companion_panel(workflows, endpoint_settings=True):
     column = QWidget()
     column.setObjectName("mapdexColumn")
     column.setMaximumWidth(READING_WIDTH)
-    body_row.addWidget(column, 1)
-    body_row.addStretch(0)
+    # A capped column pinned to the left edge is what "there is a huge gap on
+    # the right" actually is: measured at a 1,540 px dock the column sat at
+    # x=0, 720 wide, with 820 px of nothing beside it. Centred, the same cap
+    # keeps the line length readable and the empty width reads as margin
+    # instead of as a column that failed to fill.
+    #
+    # Equal stretch on both sides, and the column takes NO stretch of its own:
+    # with stretch on the column the spacers collapse and it goes back to the
+    # left edge.
+    # The column takes the larger share and the two spacers divide what its cap
+    # leaves over. With the spacers on equal footing (or ahead of it) they ate
+    # the width and the column stayed at its minimum - 347 px inside a 1,540 px
+    # dock - so centring it only moved the emptiness from one side to both.
+    # The ratio is what makes one rule serve both docks. The column asks for
+    # essentially all of the width, so in a narrow dock the spacers round down
+    # to a few pixels and it fills - at 4:1:1 a 420 px dock kept 140 px empty,
+    # which is the same waste at the other end of the scale. In a wide dock the
+    # cap stops it and the spacers divide the remainder evenly, so the emptiness
+    # becomes a margin rather than a column that failed to fill.
+    body_row.addStretch(1)
+    body_row.addWidget(column, 100)
+    body_row.addStretch(1)
+    column.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+        enum_member(QSizePolicy, "Policy", "Preferred"),
+    )
+    # Below the cap the column has to actually shrink. It would not: its own
+    # minimum came from descendants that refuse to be narrower than their
+    # text, so a 420 px dock got a 512 px column and 92 px of it was simply
+    # off-screen. `_shrinkable` is applied to every wrapping label as it is
+    # built; this is the container's half of the same rule.
+    column.setMinimumWidth(1)
     layout = QVBoxLayout(column)
     layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(10)
@@ -732,7 +794,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     save_settings_button.setObjectName("mapdexSecondaryButton")
     connection_layout.addWidget(save_settings_button)
     settings_button.toggled.connect(connection_panel.setVisible)
-    layout.addWidget(connection_panel)
+    # Added to the column further down, under the choice rather than above it.
+    # Opening it here pushed the two cards below a nine-field form, so picking
+    # "use my own model" answered the question by burying it: the decision the
+    # form belongs to scrolled off while the form filled the screen.
     if not endpoint_settings:
         # A released build talks to the hosted Mapdex, so nobody can repoint it
         # by accident - but the assistant provider settings remain reachable.
@@ -795,9 +860,23 @@ def build_companion_panel(workflows, endpoint_settings=True):
     first_open_title.setWordWrap(True)
     first_open_title.setVisible(False)
     layout.addWidget(first_open_title)
+    # The choice comes BEFORE the transcript, and that reverses an earlier
+    # decision on purpose. The reasoning was that a reading of the open project
+    # should say something true before the panel asks anyone to pick a side;
+    # what shipped was the choice at y=602 on a first-open screen whose title
+    # ended at y=119, with 234 px of empty transcript between them, so the one
+    # decision a stranger has to make was the last thing they found.
+    #
+    # Nivo introduces itself, offers the two ways it can think, and the reading
+    # follows as the argument for them. The reading is still there and still
+    # first-hand; it is no longer in front of the door.
+    layout.addWidget(sign_in)
+    # The settings form belongs to the choice above it, so it opens underneath
+    # it. When nothing is connected the reader sees the two cards, presses one,
+    # and its fields appear where they were looking.
+    layout.addWidget(connection_panel)
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
-    layout.addWidget(sign_in)
     # First open has no conversation to fill a tall dock, so the pages stop
     # grabbing the spare height and this takes it instead - which puts the
     # choice directly under the reading rather than 300 px below it.
@@ -1071,6 +1150,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
 
     scroll.setWidget(body)
     outer.addWidget(scroll)
+
+    allow_narrow(body)
+
     # Lay out for the width the dock opens at; resizeEvent takes over after.
     root.apply_layout_mode(panel_layout_mode(PREFERRED_WIDTH))
     return root, {

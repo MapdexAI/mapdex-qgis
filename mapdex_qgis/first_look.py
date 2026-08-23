@@ -84,10 +84,7 @@ def _empty_project() -> list[dict[str, Any]]:
             "Nothing is open yet.",
             "Open a layer or a scanned map and Nivo reads it here. Nivo can also "
             "measure, style, analyse and run QGIS processing on whatever you load.",
-            [
-                _action("Add an OpenStreetMap basemap", LOCAL, capability="map.basemap@1"),
-                _action("What can Nivo do?", "capabilities"),
-            ],
+            [_action("Add an OpenStreetMap basemap", LOCAL, capability="map.basemap@1")],
         )
     ]
 
@@ -277,7 +274,7 @@ def opening_reading(state: Mapping[str, Any] | None) -> dict[str, Any]:
                 INFO,
                 "No layer is selected.",
                 "Click a layer in the Layers panel and Nivo reads it here.",
-                [_action("What can Nivo do?", "capabilities")],
+                [],
             )
         ])
     elif kind == "raster":
@@ -291,7 +288,7 @@ def opening_reading(state: Mapping[str, Any] | None) -> dict[str, Any]:
                 INFO,
                 "{} is open.".format(layer.get("name") or "A layer"),
                 "Nivo reads vector and raster layers. Ask it anything about this project.",
-                [_action("What can Nivo do?", "capabilities")],
+                [],
             )
         )
 

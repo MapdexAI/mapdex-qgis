@@ -92,8 +92,18 @@ JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their
 # So the reading goes first. It needs neither - it is local, measured, and
 # costs no model call - which means the screen has already said something true
 # about the file in front of them before it asks for anything.
-FIRST_OPEN_TITLE = "Nivo reads the map you already have open."
-FIRST_OPEN_PROMPT = "To ask Nivo something, choose where it thinks:"
+# Nivo introduces itself, because a name nobody has met is a name nobody
+# trusts with their data. Two sentences: who it is, and what it does with the
+# project already open - not a feature list, which is the vitrine version of
+# this screen and sells nothing.
+# Two lines. The first draft ran to five and took a third of a narrow dock
+# before the reader reached the one decision underneath it, which is the same
+# mistake as putting the decision at the bottom, made with words instead.
+FIRST_OPEN_TITLE = (
+    "I'm Nivo. I read the layers you already have open in QGIS and measure, "
+    "style and analyse them - and I say what I measured rather than guessing."
+)
+FIRST_OPEN_PROMPT = "I need somewhere to think. Choose one:"
 FIRST_OPEN_FREE = "That reading needed no account."
 
 # The two are not equals and are not drawn as equals. "Use your key" would be
