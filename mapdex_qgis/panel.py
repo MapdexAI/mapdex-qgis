@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 
-from qgis.PyQt.QtCore import QEvent, QSize, Qt
-from qgis.PyQt.QtGui import QIcon, QPixmap
+from qgis.PyQt.QtCore import QEvent, QPointF, QSize, Qt
+from qgis.PyQt.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
@@ -25,6 +25,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from qgis.core import QgsApplication
 
 from .layout_rules import (
     MINIMUM_WIDTH,
@@ -43,7 +44,23 @@ from .panel_state import (
     PROVIDER_CHOICES,
     TASK_LOCKED_NOTICE,
 )
-from .branding import ACTION_ICONS, CONTROL_ICONS, surface_asset_path
+
+
+class _ArrowComboBox(QComboBox):
+    """QGIS-styled combo with a guaranteed, SVG-free down chevron."""
+
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(enum_member(QPainter, "RenderHint", "Antialiasing"), True)
+        colour = QColor("#C9CDD8" if self.isEnabled() else "#6B6B6B")
+        painter.setPen(QPen(colour, 1.6))
+        x = self.width() - 15.0
+        y = self.height() / 2.0 - 1.0
+        painter.drawLine(QPointF(x - 4.0, y - 2.0), QPointF(x, y + 2.0))
+        painter.drawLine(QPointF(x, y + 2.0), QPointF(x + 4.0, y - 2.0))
+        painter.end()
+from .branding import ACTION_ICONS, surface_asset_path
 from .qt_compat import enum_member
 
 
@@ -303,7 +320,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         enum_member(QSizePolicy, "Policy", "Preferred"),
         enum_member(QSizePolicy, "Policy", "Expanding"),
     )
-    combo_arrow = surface_asset_path(CONTROL_ICONS["dropdown"]).replace("\\", "/")
     root.setStyleSheet(
         """
         QWidget#mapdexPluginRoot { background: #191919; color: #F7F7F5; }
@@ -396,11 +412,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
             border-color: rgba(230, 233, 242, 0.10);
         }
         QComboBox::drop-down { border: 0; width: 28px; }
-        QComboBox::down-arrow {
-            image: url(MAPDEX_COMBO_ARROW);
-            width: 12px;
-            height: 12px;
-        }
         QComboBox QAbstractItemView {
             background: #212121;
             color: #F7F7F5;
@@ -608,7 +619,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
             border-color: #6366F1;
         }
         QToolButton#mapdexNivoHeaderButton:disabled { color: #6B6B6B; }
-        """.replace("MAPDEX_COMBO_ARROW", combo_arrow)
+        """
     )
 
     outer = QVBoxLayout(root)
@@ -712,12 +723,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     header_actions_row.setSpacing(6)
     # Icon-only, with tooltips, because a label here costs width the map is
     # paying for and these two are reached rarely.
-    for control, key in ((nivo_new_button, "new_chat"),
-                         (nivo_history_button, "history")):
+    for control, theme_icon in ((nivo_new_button, "/mActionAdd.svg"),
+                                (nivo_history_button, "/mActionHistory.svg")):
         control.setObjectName("mapdexHeaderIcon")
         control.setToolButtonStyle(
             enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
-        control.setIcon(QIcon(surface_asset_path(CONTROL_ICONS[key])))
+        control.setIcon(QgsApplication.getThemeIcon(theme_icon))
         control.setIconSize(QSize(16, 16))
         control.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
         header_actions_row.addWidget(control)
@@ -755,9 +766,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connection_form.setFieldGrowthPolicy(
         enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
     )
-    api_url_input = _elastic(QComboBox())
+    api_url_input = _elastic(_ArrowComboBox())
     api_url_input.setEditable(True)
-    web_url_input = _elastic(QComboBox())
+    web_url_input = _elastic(_ArrowComboBox())
     web_url_input.setEditable(True)
     for value in ("https://api.mapdex.ai", "http://127.0.0.1:8080"):
         api_url_input.addItem(value)
@@ -779,7 +790,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     assistant_form.setFieldGrowthPolicy(
         enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
     )
-    provider_box = _elastic(QComboBox())
+    provider_box = _elastic(_ArrowComboBox())
     # One list, in panel_state, so the sentence that names the running engine
     # and the menu the user picked it from cannot disagree about its name.
     for label, value in PROVIDER_CHOICES:
@@ -957,9 +968,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     form = root.register_form(QFormLayout())
     form.setFieldGrowthPolicy(enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow"))
     form.setSpacing(7)
-    project_box = _elastic(QComboBox())
-    workflow_box = _elastic(QComboBox())
-    input_box = _elastic(QComboBox())
+    project_box = _elastic(_ArrowComboBox())
+    workflow_box = _elastic(_ArrowComboBox())
+    input_box = _elastic(_ArrowComboBox())
     for title, key in workflows:
         workflow_box.addItem(title, key)
     input_box.addItem("Select source…", "")
@@ -1151,7 +1162,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     recent_layout.setContentsMargins(0, 4, 0, 0)
     recent_layout.setSpacing(6)
     recent_layout.addWidget(_section_label("Recent tasks"))
-    recent_box = _elastic(QComboBox())
+    recent_box = _elastic(_ArrowComboBox())
     resume_button = QPushButton("Resume")
     recent_layout.addLayout(root.register_pair(recent_box, resume_button))
     jobs_layout.addWidget(recent)

@@ -91,16 +91,6 @@ ACTION_ICONS = {
     "send": "icon_send.png",
 }
 
-# Icon-only controls use the ready-made Lucide SVG set (ISC), rather than
-# one-off generated glyphs. The same family supplies the combo-box chevron so
-# compact controls speak one visual language.
-CONTROL_ICONS = {
-    "new_chat": "lucide-plus.svg",
-    "history": "lucide-history.svg",
-    "dropdown": "lucide-chevron-down.svg",
-}
-
-
 def mark_asset(dark_interface: bool) -> str:
     """The mark file name for the interface currently on screen."""
     return MARK_FOR_DARK_INTERFACE if dark_interface else MARK_FOR_LIGHT_INTERFACE

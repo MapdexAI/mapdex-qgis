@@ -17,6 +17,7 @@ from qgis.PyQt.QtWidgets import (
     QInputDialog,
     QLabel,
     QMessageBox,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )

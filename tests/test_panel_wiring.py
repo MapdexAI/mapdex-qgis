@@ -353,6 +353,7 @@ def test_choosing_a_discovery_prompt_removes_the_choice_card():
 
 def test_all_turns_share_one_wide_screen_measure():
     body = _method(PLUGIN, "_turn_widget")
+    assert "QSizePolicy," in PLUGIN[:PLUGIN.index("from qgis.core import")]
     assert "card.setMaximumWidth(BUBBLE_WIDTH)" in body, body
     assert body.index("card.setMaximumWidth(BUBBLE_WIDTH)") < body.index("if sender !="), body
 
@@ -365,12 +366,15 @@ def test_settings_form_is_a_named_panel_not_loose_fields():
     assert "Choose how Nivo connects" in PANEL
 
 
-def test_header_controls_and_dropdown_use_ready_svg_icons():
-    assert '"new_chat": "lucide-plus.svg"' in BRANDING
-    assert '"history": "lucide-history.svg"' in BRANDING
-    assert '"dropdown": "lucide-chevron-down.svg"' in BRANDING
-    assert "QComboBox::down-arrow" in PANEL
-    assert 'surface_asset_path(CONTROL_ICONS["dropdown"])' in PANEL
+def test_header_controls_use_qgis_theme_icons_and_combos_keep_native_arrow():
+    assert 'QgsApplication.getThemeIcon(theme_icon)' in PANEL
+    assert '"/mActionAdd.svg"' in PANEL
+    assert '"/mActionHistory.svg"' in PANEL
+    assert "class _ArrowComboBox(QComboBox):" in PANEL
+    assert "painter.drawLine" in PANEL
+    assert PANEL.count("_elastic(_ArrowComboBox())") == 7
+    assert "QComboBox::down-arrow" not in PANEL
+    assert "CONTROL_ICONS" not in BRANDING
 
 
 def test_opening_metadata_failure_uses_a_local_fallback_not_global_error_banner():
@@ -379,6 +383,8 @@ def test_opening_metadata_failure_uses_a_local_fallback_not_global_error_banner(
     assert 'log_debug("Could not build Nivo opening"' in body
     assert 'opening_turns({' in body
     assert "self._nivo_opening = opening" in body
+
+
 
 
 def test_open_project_uses_the_unlocalized_app_route():
