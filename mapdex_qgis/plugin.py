@@ -45,6 +45,7 @@ from qgis.core import (
 from .build_profile import (
     ALLOW_CUSTOM_ENDPOINT_SETTING,
     endpoints_unlocked,
+    is_production,
     resolve_endpoints,
 )
 from .api_client import (
@@ -2202,11 +2203,17 @@ class MapdexPlugin:
         detail = str(exc)
         if isinstance(exc, MapdexAPIError):
             bits = [detail]
-            if exc.url:
+            # Request URLs are useful while developing a local stack, but the
+            # hosted endpoint is implementation detail in a production dialog.
+            if exc.url and not is_production():
                 bits.append("\n\n{method} {url}".format(method=exc.method or "HTTP", url=exc.url))
             if exc.correlation_id:
                 bits.append("\ncorrelation_id: {cid}".format(cid=exc.correlation_id))
-            if exc.status == 404 and "api.mapdex.ai" in (exc.url or ""):
+            if (
+                not is_production()
+                and exc.status == 404
+                and "api.mapdex.ai" in (exc.url or "")
+            ):
                 bits.append(
                     "\n\nProduction may not expose device auth yet. "
                     "Set API URL to http://127.0.0.1:8080 while the local API is running."

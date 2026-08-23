@@ -348,6 +348,31 @@ def test_api_error_parses_nested_envelope(monkeypatch):
         assert exc.retry_after == 17
 
 
+def test_production_404_never_suggests_localhost(monkeypatch):
+    import mapdex_qgis.build_profile as profile
+
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+
+    class FakeResponse:
+        def read(self):
+            return b""
+
+        def close(self):
+            return None
+
+    exc = error.HTTPError(
+        "https://api.mapdex.ai/v1/compose", 404, "Not Found", hdrs={}, fp=FakeResponse()
+    )
+    monkeypatch.setattr(profile, "CHANNEL", "production")
+    try:
+        api._raise_http("POST", "https://api.mapdex.ai/v1/compose", exc)
+        raise AssertionError("expected MapdexAPIError")
+    except MapdexAPIError as raised:
+        assert "try again later" in str(raised).lower()
+        assert "localhost" not in str(raised).lower()
+        assert "127.0.0.1" not in str(raised)
+
+
 def test_succeeded_and_review_run_ids():
     detail = {
         "status": "partial",

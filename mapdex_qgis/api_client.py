@@ -7,6 +7,7 @@ import re
 from typing import Any, Optional
 from urllib import error, parse, request
 
+from .build_profile import is_production
 from .build_version import PLUGIN_VERSION
 
 
@@ -221,10 +222,16 @@ class MapdexAPI:
                 message = message or err
         if not message:
             if exc.code == 404:
-                message = (
-                    "{method} {url} returned 404. Check the API URL — for local "
-                    "Mapdex use http://127.0.0.1:8080 (device auth must be running)."
-                ).format(method=method, url=url)
+                if is_production():
+                    message = (
+                        "Mapdex could not find that service. Please update the plugin "
+                        "or try again later."
+                    )
+                else:
+                    message = (
+                        "{method} {url} returned 404. Check the API URL — for local "
+                        "Mapdex use http://127.0.0.1:8080 (device auth must be running)."
+                    ).format(method=method, url=url)
             elif exc.code == 501:
                 message = "Device authorization is not enabled on this API deployment."
             else:
