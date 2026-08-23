@@ -1043,10 +1043,17 @@ def build_companion_panel(workflows, endpoint_settings=True):
     for page in page_order:
         pages.addWidget(page)
 
+    segment_buttons = []
+
     def switch_page(target):
         pages.setCurrentIndex(target)
         for index, page in enumerate(page_order):
             page.setVisible(index == target)
+        # The buttons are auto-exclusive, which handles a CLICK. It does not
+        # handle the panel moving the page itself, and a tab bar showing one
+        # page while the stack shows another is worse than not moving at all.
+        for index, button in enumerate(segment_buttons):
+            button.setChecked(index == target)
 
     for index, title in enumerate(("Nivo AI", "Task", "Jobs")):
         button = QToolButton()
@@ -1055,6 +1062,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         button.setCheckable(True)
         button.setAutoExclusive(True)
         button.clicked.connect(lambda _checked=False, target=index: switch_page(target))
+        segment_buttons.append(button)
         segment_layout.addWidget(button)
         if index == 0:
             button.setChecked(True)
@@ -1092,6 +1100,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "disconnect_button": disconnect_button,
         "workspace": workspace,
         "tabs": pages,
+        "switch_page": switch_page,
         "batch": batch,
         "batch_title": batch_title,
         "phase_label": phase_label,

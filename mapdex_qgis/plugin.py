@@ -233,7 +233,7 @@ PANEL_WIDGET_REFS = (
     "connect_promise", "sign_in", "tail", "body_layout",
     "first_open_prompt", "first_open_title",
     "own_model", "own_model_button", "segment_bar",
-    "tabs", "workspace_body", "workspace_locked", "jobs_locked",
+    "tabs", "switch_page", "workspace_body", "workspace_locked", "jobs_locked",
     "assistant_key_state",
     "nivo_context", "nivo_runtime", "composer",
     "nivo_reply", "nivo_input", "nivo_send_button",
@@ -830,6 +830,7 @@ class MapdexPlugin:
         self.recent_box = None
         self.resume_button = None
         self.tabs = None
+        self.switch_page = None
         self.workspace_body = None
         self.workspace_locked = None
         self.jobs_locked = None
@@ -891,7 +892,8 @@ class MapdexPlugin:
         self.toolbar = self.iface.addToolBar("Mapdex")
         self.toolbar.setObjectName("MapdexToolbar")
         self.toolbar.addAction(self.action)
-        self.toolbar.addAction(self._vectorize_action)
+        if self._vectorize_action is not None:
+            self.toolbar.addAction(self._vectorize_action)
         self._install_measure_action()
         self._install_draw_action()
         self._install_layer_menu_actions()
@@ -899,6 +901,24 @@ class MapdexPlugin:
         # not as a floating overlay over the menu bar.
         self._ensure_dock()
         self.dock.hide()
+
+    @staticmethod
+    def tracing_enabled() -> bool:
+        """Whether the tracer is offered at all. Off by default.
+
+        Withdrawn rather than deleted, and the difference is the point: the
+        live wire, the fill, the follow, their tests and the measurement
+        harnesses are all still here and all still run. What is not good enough
+        is the gesture on a real sheet - the line a person gets is not the line
+        they drew often enough to sell - and the last several rounds each fixed
+        one report and caused another.
+
+        `mapdex/tracer/beta` brings the buttons back for exactly that work. The
+        key is the one `claude/ai-vectorizer-comparison-63cb97` uses, so the two
+        branches cannot end up with two different switches for one decision.
+        """
+        return str(QSettings().value("mapdex/tracer/beta", "") or "").strip().lower() in {
+            "1", "true", "yes", "on"}
 
     def _install_vectorize_action(self):
         """Trace a drawn line instead of clicking along it.
@@ -909,6 +929,14 @@ class MapdexPlugin:
         it here, so it works on an archive that is not allowed to leave the
         building and costs nothing per stroke.
         """
+        if not self.tracing_enabled():
+            # Nothing to install, and nothing downstream breaks: every reader
+            # of these two attributes already copes with None, because unload
+            # sets them to None and a palette change can arrive before or after
+            # this method runs.
+            self._vectorize_action = None
+            self._vectorize_settings_action = None
+            return
         self._vectorize_action = QAction(
             themed_asset_icon("icon_vectorize.png"), "Vectorize with Mapdex",
             self.iface.mainWindow())
@@ -2239,8 +2267,8 @@ class MapdexPlugin:
         ):
             if widget is not None:
                 widget.setVisible(shown)
-        if first and self.tabs is not None:
-            self.tabs.setCurrentIndex(0)
+        if first and self.switch_page is not None:
+            self.switch_page(0)
         if self.body_layout is not None and self.tabs is not None:
             # Stop the transcript grabbing the spare height while it holds
             # only a reading; the tail below takes it instead.
@@ -2714,7 +2742,11 @@ class MapdexPlugin:
             target = self.input_box.findData("active_layer")
             if target >= 0:
                 self.input_box.setCurrentIndex(target)
-        self.tabs.setCurrentIndex(1)
+        # Through the panel's own switcher, never setCurrentIndex: the stack
+        # index is one of three things a page change owns, and setting it alone
+        # left the tab bar on one page and the content on another.
+        if self.switch_page is not None:
+            self.switch_page(1)
 
     # What a person wants to do, mapped onto the registry's own domains.
     # Grouping by task reads far better than "analytics / geoprocessing /

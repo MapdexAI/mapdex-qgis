@@ -305,3 +305,42 @@ def test_the_settings_panel_states_the_stored_key_as_text():
         "the stored key showed only as a grey placeholder, which reads as an "
         "empty field - the reason a user with a working key reported having none"
     )
+
+
+# -- one owner for the page ---------------------------------------------------
+
+def test_the_page_is_changed_through_the_panels_own_switcher():
+    """A page change owns three things at once: the stack index, the visibility
+    of every page, and which segment button is checked.
+
+    `setCurrentIndex` sets one of them. Pressing a Mapdex action therefore moved
+    the stack to Task while the Nivo page stayed visible and the tab bar stayed
+    on Nivo - the founder's "navigation is broken, the tab looks like Task and
+    the content is not".
+    """
+    # Narrowed to the page stack: the combo boxes in this method legitimately
+    # use setCurrentIndex, and a check that forbids the whole name would be a
+    # guard nobody can satisfy.
+    assert "self.tabs.setCurrentIndex" not in PLUGIN, (
+        "the page is moved behind the switcher's back again"
+    )
+    assert "self.switch_page(" in _method(PLUGIN, "_preselect_workflow")
+    assert '"switch_page": switch_page' in PANEL, "the switcher is not handed to the plugin"
+    switcher = PANEL[PANEL.index("def switch_page(target):"):PANEL.index("for index, title in enumerate")]
+    for owned in ("setCurrentIndex", "setVisible", "setChecked"):
+        assert owned in switcher, "the switcher stopped owning {}".format(owned)
+
+
+def test_the_tracer_is_withdrawn_unless_it_is_asked_for():
+    """Not good enough on a real sheet, so it is not on the toolbar. Withdrawn
+    rather than deleted: the live wire, the follow and their harnesses all stay
+    and all still run, behind the same QSettings key the vectorizer branch uses
+    so the two cannot end up with two switches for one decision."""
+    assert "def tracing_enabled" in PLUGIN
+    assert "mapdex/tracer/beta" in PLUGIN, "a second switch for one decision"
+    install = _method(PLUGIN, "_install_vectorize_action")
+    assert "if not self.tracing_enabled():" in install, install[:200]
+    assert "self._vectorize_action = None" in install
+    assert "if self._vectorize_action is not None:" in _method(PLUGIN, "initGui"), (
+        "initGui adds a toolbar action that may not exist"
+    )

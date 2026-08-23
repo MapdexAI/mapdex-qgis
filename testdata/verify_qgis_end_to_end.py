@@ -1804,19 +1804,30 @@ print()
 # --------------------------------------------------------------------------
 
 
-def tracer_is_on_the_toolbar():
+def tracer_is_withdrawn_from_the_toolbar():
+    """It is not good enough on a real sheet, so it is not offered.
+
+    Withdrawn rather than deleted: everything behind it still exists and still
+    runs, and `mapdex/tracer/beta` brings the buttons back for that work. What
+    is checked here is that the default install carries no button for it, and
+    that nothing else on the toolbar went with it.
+    """
     if PLUGIN is None:
         raise NotRun("the plugin did not build")
     toolbar = getattr(PLUGIN, "toolbar", None)
     if toolbar is None:
         raise NotRun("no Mapdex toolbar was created")
     titles = [a.text() for a in toolbar.actions()]
-    if "Vectorize with Mapdex" not in titles:
-        raise AssertionError("toolbar carries {}".format(titles))
-    return "toolbar actions: {}".format(titles)
+    if "Vectorize with Mapdex" in titles:
+        raise AssertionError("the tracer is still offered: {}".format(titles))
+    if "Mapdex" not in titles:
+        raise AssertionError("the panel button went with it: {}".format(titles))
+    if PLUGIN.tracing_enabled():
+        raise AssertionError("tracing is on by default")
+    return "toolbar actions: {}, tracer behind mapdex/tracer/beta".format(titles)
 
 
-check("the tracer is a button on the Mapdex toolbar", tracer_is_on_the_toolbar)
+check("the tracer is withdrawn from the toolbar", tracer_is_withdrawn_from_the_toolbar)
 
 
 def tracer_action_is_a_mode():
