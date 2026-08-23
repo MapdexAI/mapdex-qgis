@@ -303,6 +303,7 @@ class Iface:
         self.attribute_tables = []
         self.processing_dialogs = 0
         self.messages = []
+        self.toolbars = []
         # A real one: `apply_visualization` calls refreshLayerSymbology on it
         # after every restyle, unguarded. A stub without it turns a working
         # restyle into a reported AttributeError.
@@ -313,6 +314,21 @@ class Iface:
     # -- the parts the plugin and the runtime call --------------------------
     def mainWindow(self):
         return self.window
+
+    def addToolBar(self, title):
+        """A real QToolBar, because the plugin configures the one it gets.
+
+        This stub did not have the method at all, and `initGui` is @guarded, so
+        the AttributeError was swallowed: `initGui` returned having built no
+        dock, and Parts 3 and 4 - pressing the plugin's controls and dispatching
+        every advertised capability, which is most of what this script is for -
+        skipped themselves on "the plugin did not build its dock" while
+        reporting nothing about the toolbar. A harness that quietly stops
+        measuring is worse than one that fails.
+        """
+        bar = self.window.addToolBar(title)
+        self.toolbars.append(bar)
+        return bar
 
     def mapCanvas(self):
         return self.canvas
@@ -1921,7 +1937,11 @@ def tracer_leaves_on_unload():
     import ast
     import pathlib
 
-    source = (pathlib.Path(PLUGIN_DIR) / "plugin.py").read_text(encoding="utf-8")
+    # HERE, not a PLUGIN_DIR that this script has never defined. The name was
+    # unbound, so this check raised NameError and reported a working unload as
+    # a failure - invisible for as long as the toolbar stub kept Part 3 from
+    # running at all.
+    source = (pathlib.Path(HERE) / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "unload":

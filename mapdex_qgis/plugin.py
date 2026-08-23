@@ -11,12 +11,15 @@ from typing import Callable, Optional
 from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
+    QBoxLayout,
     QDockWidget,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -77,6 +80,7 @@ from .byok import (
 from ._vendor.nivo.capabilities import (
     CLIENT_QGIS,
     CapabilityError,
+    for_client,
     get as get_capability,
     validate_request,
 )
@@ -85,6 +89,7 @@ from .qgis_runtime import (
     QGISRuntime,
     RuntimeUnavailable,
     build_executor,
+    raster_is_georeferenced,
 )
 from ._vendor.nivo.features import (
     can_place,
@@ -118,7 +123,13 @@ from .nivo import (
     thread_turns,
     transition,
 )
-from .panel import build_companion_panel, build_thread_history_dialog
+from .panel import (
+    build_capabilities_dialog,
+    build_companion_panel,
+    build_thread_history_dialog,
+)
+from . import first_look
+from . import panel_state
 from ._vendor.nivo.processing import (
     PROCESSING_OPERATION_CATALOG,
     PROCESSING_OUTPUT_ORDER,
@@ -224,8 +235,10 @@ PANEL_WIDGET_REFS = (
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_project_button", "recent", "recent_box", "resume_button",
-    "tabs",
-    "nivo_context", "nivo_reply", "nivo_input", "nivo_send_button",
+    "tabs", "workspace_body", "workspace_locked", "jobs_locked",
+    "assistant_key_state",
+    "nivo_context", "nivo_runtime", "nivo_reading",
+    "nivo_reply", "nivo_input", "nivo_send_button",
     "nivo_stop_button", "nivo_status",
     "nivo_new_button", "nivo_history_button",
 )
@@ -654,6 +667,9 @@ class MapdexPlugin:
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
         self.imported_layer_ids = set()  # type: set[str]
         self.selected_paths = []  # type: list[str]
+        # The resolved assistant runtime, held so the Nivo header does not open
+        # the encrypted authentication database on every layer click.
+        self._assistant_runtime_cache = None
         self._last_batch: Optional[dict] = None
         self._source_label = ""
         self._pending_is_batch = False
@@ -715,7 +731,13 @@ class MapdexPlugin:
         self.recent_box = None
         self.resume_button = None
         self.tabs = None
+        self.workspace_body = None
+        self.workspace_locked = None
+        self.jobs_locked = None
+        self.assistant_key_state = None
         self.nivo_context = None
+        self.nivo_runtime = None
+        self.nivo_reading = None
         self.nivo_reply = None
         self.nivo_status = None
         self.nivo_input = None
@@ -1502,6 +1524,10 @@ class MapdexPlugin:
         try:
             if self.input_box.currentData() == "active_layer":
                 self._summarize_active_layer()
+            # The reading describes the ACTIVE layer, so it is stale the moment
+            # that changes. This is the signal that makes it feel like a
+            # companion rather than a splash screen.
+            self._refresh_nivo_context()
         except RuntimeError:
             # The panel this instance owned is gone; stay quiet.
             return
@@ -1847,6 +1873,24 @@ class MapdexPlugin:
             "hosted_provider_name": HOSTED_PROVIDER_NAME,
         })
         self.assistant_privacy.setText(describe_privacy(runtime))
+        # The stored key as TEXT. It showed only in the field's placeholder,
+        # which is grey and reads as "this is empty, type here" - which is why
+        # a user with a working stored key reported configuring no provider.
+        if self.assistant_key_state is not None:
+            self.assistant_key_state.setText(
+                panel_state.key_state_line(provider, bool(typed_key or stored_key))
+            )
+        # Remove had nothing to remove for most of its life on screen. getattr,
+        # because this handle is not in PANEL_WIDGET_REFS and so is not nulled
+        # on unload; a late callback must meet None, not a dead wrapper.
+        clear_button = getattr(self, "clear_key_button", None)
+        if clear_button is not None:
+            clear_button.setVisible(bool(stored_key))
+        # This function is the last act of both save and clear, so it is the
+        # one place the runtime decision can have changed. Drop the cache, then
+        # restate the engine in the Nivo header from the fresh answer.
+        self._forget_assistant_runtime()
+        self._refresh_assistant_state()
 
     @guarded
     def save_assistant_settings(self) -> bool:
@@ -2032,8 +2076,21 @@ class MapdexPlugin:
         self.disconnect_button.setVisible(connected)
         self.disconnect_button.setEnabled(connected and not self._busy)
 
-        self.workspace.setVisible(connected)
-        self.workspace.setEnabled(connected and not self._busy)
+        # The page stays mounted so its segment button is never a dead end;
+        # the BODY and the notice swap. Setting the page itself invisible was
+        # fought by the segment switch, which shows the page it moves to, so a
+        # disconnected user clicking Task got the previous session's project,
+        # workflow and source in greyed-out controls - a signed-out product
+        # reading as a broken one.
+        self.workspace.setVisible(True)
+        self.workspace.setEnabled(not self._busy)
+        if self.workspace_body is not None:
+            self.workspace_body.setVisible(connected)
+            self.workspace_body.setEnabled(connected and not self._busy)
+        if self.workspace_locked is not None:
+            self.workspace_locked.setVisible(not connected)
+        if self.jobs_locked is not None:
+            self.jobs_locked.setVisible(not connected)
         self.run_button.setEnabled(connected and not self._busy and not active)
 
         # History needs a session and a project to list anything; New chat is
@@ -2095,6 +2152,12 @@ class MapdexPlugin:
                 self.batch_title.setText("Processing {} of {} files".format(completed, total))
             else:
                 self.batch_title.setText("Task in progress" if active else "Latest task")
+        if self.recent is not None and self.recent_box is not None:
+            self.recent.setVisible(self.recent_box.count() > 0 and connected)
+        # Which engine answers, and the reading of the open project, are both
+        # functions of the connection state that just changed.
+        self._refresh_assistant_state()
+        self._render_first_look()
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
@@ -2262,6 +2325,269 @@ class MapdexPlugin:
         self.nivo_context.setText("{} · {} selected · {}".format(
             label, context.get("selection_count", 0), context.get("crs", "No CRS")
         ))
+        self._refresh_assistant_state()
+        self._render_first_look()
+
+    # ----------------------------------------------------------------------
+    # The opening reading: what Nivo says before it is asked anything
+    # ----------------------------------------------------------------------
+
+    def _first_look_state(self):
+        """Measured QGIS metadata for `first_look`, read in O(1).
+
+        Deliberately NOT `companion_context`: that envelope is versioned, is
+        posted to a server and is bounded for that reason. This one never
+        leaves the machine, and it needs two things that envelope has no field
+        for - whether a raster is placed, and which layers disagree with the
+        project CRS.
+
+        Nothing here walks a feature. Anything that would (validity, field
+        profiles) is offered as a one-click action instead, so introducing
+        itself cannot make the panel hang on a large layer.
+        """
+        from qgis.core import QgsProject
+
+        project = QgsProject.instance()
+        layer = self._active_qgis_layer()
+        described = {}
+        if layer is not None and layer.isValid():
+            is_vector = isinstance(layer, QgsVectorLayer)
+            described = {
+                "name": layer.name(),
+                "kind": "vector" if is_vector else "raster" if isinstance(layer, QgsRasterLayer) else "other",
+                "crs": layer.crs().authid() if layer.crs().isValid() else "",
+                "feature_count": layer.featureCount() if is_vector else 0,
+            }
+            if described["kind"] == "raster":
+                described["width"] = getattr(layer, "width", lambda: 0)()
+                described["height"] = getattr(layer, "height", lambda: 0)()
+                described["georeferenced"] = raster_is_georeferenced(layer)
+
+        # Layers QGIS is silently reprojecting on the fly. The map looks right
+        # and every measurement crossing them is not, which is the most common
+        # invisible defect in a working project and free to detect.
+        project_crs = project.crs().authid() if project.crs().isValid() else ""
+        mismatched = []
+        layers = list(project.mapLayers().values())
+        for candidate in layers:
+            try:
+                if not candidate.isValid():
+                    continue
+                authid = candidate.crs().authid() if candidate.crs().isValid() else ""
+            except (AttributeError, RuntimeError):
+                continue
+            if project_crs and authid and authid != project_crs:
+                mismatched.append(candidate.name())
+        return {
+            "layer": described,
+            "layer_id": layer.id() if layer is not None and layer.isValid() else "",
+            "layer_count": len(layers),
+            "crs_mismatch": mismatched,
+        }
+
+    @guarded
+    def _render_first_look(self):
+        """Draw the reading above the transcript.
+
+        Hidden once a conversation has started: it is an opening, not a status
+        bar, and leaving it above a running transcript pushes the thing the
+        user is reading off the top of a narrow dock.
+        """
+        if self.nivo_reading is None:
+            return
+        layout = self.nivo_reading.layout()
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        if self._nivo_turns:
+            self.nivo_reading.setVisible(False)
+            return
+        state = self._first_look_state()
+        reading = first_look.opening_reading(state)
+        for finding in reading["findings"]:
+            layout.addWidget(self._finding_card(finding, state.get("layer_id", "")))
+        # Always reachable, not only from the empty-project reading: "what can
+        # this thing do" is the question a stranger has in front of every one
+        # of these states, and the registry can answer it.
+        layout.addWidget(
+            self._finding_button({"label": "What can Nivo do?", "kind": "capabilities"}, "")
+        )
+        self.nivo_reading.setVisible(True)
+
+    def _finding_card(self, finding, layer_id):
+        """One measured statement, with what can be done about it.
+
+        Free actions and the Mapdex action are visually distinct because the
+        difference between them is the only thing the reader has to decide.
+        """
+        card = QFrame()
+        card.setObjectName("mapdexFinding")
+        # A Qt property, so the stylesheet colours the severity stripe without
+        # this method knowing a single colour value.
+        card.setProperty("severity", str(finding.get("severity") or "info"))
+        column = QVBoxLayout(card)
+        column.setContentsMargins(10, 9, 10, 9)
+        column.setSpacing(4)
+
+        headline = self._plain(QLabel(), finding["headline"])
+        headline.setObjectName("mapdexFindingHeadline")
+        headline.setWordWrap(True)
+        column.addWidget(headline)
+
+        detail = self._plain(QLabel(), finding["detail"])
+        detail.setObjectName("mapdexFindingDetail")
+        detail.setWordWrap(True)
+        column.addWidget(detail)
+
+        actions = finding.get("actions") or []
+        if actions:
+            row = QBoxLayout(enum_member(QBoxLayout, "Direction", "LeftToRight"))
+            row.setContentsMargins(0, 3, 0, 0)
+            row.setSpacing(6)
+            for action in actions:
+                row.addWidget(self._finding_button(action, layer_id))
+            row.addStretch(1)
+            column.addLayout(row)
+        return card
+
+    def _finding_button(self, action, layer_id):
+        button = QToolButton()
+        paid = action.get("kind") == first_look.MAPDEX
+        button.setObjectName("mapdexAccountAction" if paid else "mapdexFreeAction")
+        button.setText(str(action.get("label") or ""))
+        button.setToolButtonStyle(enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly"))
+        if action.get("promise"):
+            button.setToolTip(str(action["promise"]))
+        button.clicked.connect(
+            lambda _checked=False, chosen=dict(action), target=layer_id:
+            self._first_look_action(chosen, target)
+        )
+        return button
+
+    @guarded
+    def _first_look_action(self, action, layer_id):
+        """Act on a finding.
+
+        Three kinds, and the difference between them is the whole design: a
+        local capability runs here and now for free, a question goes to
+        whichever engine is configured, and Mapdex work is routed rather than
+        pretended.
+        """
+        kind = str(action.get("kind") or "")
+        if kind == "capabilities":
+            self._open_capabilities_dialog()
+            return
+        if kind == first_look.LOCAL:
+            capability = str(action.get("capability") or "")
+            params = {}
+            if "layer_id" in (get_capability(capability).params if get_capability(capability) else {}):
+                if not layer_id:
+                    self._set_status("Select a layer first.")
+                    return
+                params["layer_id"] = layer_id
+            self._run_capability(capability, params, summary=str(action.get("label") or ""))
+            self._render_first_look()
+            return
+        if kind == first_look.ASK:
+            if self.nivo_input is not None:
+                self.nivo_input.setText(str(action.get("prompt") or ""))
+                self.ask_nivo()
+            return
+        if kind == first_look.MAPDEX:
+            self._offer_mapdex_work(action)
+
+    @guarded
+    def _offer_mapdex_work(self, action):
+        """Route a measured finding to the Mapdex work that answers it.
+
+        Connected, this preselects the workflow on the Task page so the user
+        lands on a form already filled in rather than on three empty
+        dropdowns. Disconnected, it states what the work would do and offers
+        the connection, because a button that silently does nothing is worse
+        than an honest ask.
+        """
+        workflow = str(action.get("workflow") or "")
+        promise = str(action.get("promise") or "")
+        if not self.api.token:
+            answer = QMessageBox.question(
+                self.iface.mainWindow(),
+                str(action.get("label") or "Mapdex"),
+                "{}\n\nThis runs in Mapdex and needs an account. Creating one is free "
+                "and the browser opens on the approval page.".format(promise),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.connect()
+            return
+        self._preselect_workflow(workflow)
+
+    def _preselect_workflow(self, workflow):
+        """Open the Task page with this workflow and the active layer chosen."""
+        if self.workflow_box is None or self.tabs is None:
+            return
+        for index in range(self.workflow_box.count()):
+            data = self.workflow_box.itemData(index)
+            if str(getattr(data, "value", data) or "") == workflow:
+                self.workflow_box.setCurrentIndex(index)
+                break
+        if self.input_box is not None:
+            target = self.input_box.findData("active_layer")
+            if target >= 0:
+                self.input_box.setCurrentIndex(target)
+        self.tabs.setCurrentIndex(1)
+
+    @guarded
+    def _open_capabilities_dialog(self):
+        """Answer "what can Nivo do?" from the registry.
+
+        Generated, so a capability added to the registry cannot go missing
+        from the answer, and the account-only ones are marked rather than
+        hidden: a user deciding whether to sign up is entitled to see what
+        signing up is for.
+        """
+        offline = session_allowance(CLIENT_QGIS)
+        groups = {}
+        for capability in for_client(CLIENT_QGIS):
+            groups.setdefault(capability.domain, []).append(
+                (capability.summary, capability.id not in offline)
+            )
+        ordered = [
+            (domain.replace("_", " ").title(), sorted(rows))
+            for domain, rows in sorted(groups.items())
+        ]
+        dialog, widgets = build_capabilities_dialog(ordered, self.iface.mainWindow())
+        widgets["close_button"].clicked.connect(dialog.accept)
+        dialog.exec()
+
+    @guarded
+    def _refresh_assistant_state(self):
+        """State which engine answers the next turn, where the user is standing.
+
+        One resolution, shared with the turn itself. The panel used to hold
+        this fact only inside a settings section that is collapsed by default,
+        so a disconnected session answering from the user's own key read as a
+        leak rather than as the design it is.
+        """
+        if self.nivo_runtime is None:
+            return
+        engine = panel_state.assistant_engine(
+            self.assistant_runtime(), bool(self.api.token), self.project_id
+        )
+        self.nivo_runtime.setText(engine["line"])
+        if self.nivo_send_button is not None:
+            self.nivo_send_button.setEnabled(engine["can_ask"] and not self._busy)
+        if self.nivo_input is not None:
+            self.nivo_input.setEnabled(engine["can_ask"])
+        # Deliberately does NOT write nivo_status. That line is a transient
+        # reply to what the user just did, and this method runs on every layer
+        # click and every connection refresh; writing a standing reason there
+        # overwrote whatever the last action had reported - measured, it was
+        # "New chat" losing its own "the old conversation is in History"
+        # message. The reason lives in the header line above instead, which is
+        # why `assistant_engine` states it there in every blocked state.
 
     def _active_qgis_layer(self):
         layer = self.iface.activeLayer()
@@ -2314,10 +2640,20 @@ class MapdexPlugin:
         return self._active_qgis_layer()
 
     def _set_nivo_compose_busy(self, busy):
-        if self.nivo_send_button is not None:
-            self.nivo_send_button.setEnabled(not busy)
-        if self.nivo_input is not None:
-            self.nivo_input.setEnabled(not busy)
+        """Busy always disables; not busy ASKS whether this state can ask.
+
+        Two owners of one control disagree eventually. Re-enabling
+        unconditionally meant that finishing a turn switched Ask back on in a
+        disconnected hosted session that cannot take one, so the button was
+        live and the next press produced only a status line.
+        """
+        if busy:
+            if self.nivo_send_button is not None:
+                self.nivo_send_button.setEnabled(False)
+            if self.nivo_input is not None:
+                self.nivo_input.setEnabled(False)
+        else:
+            self._refresh_assistant_state()
         self._refresh_stop_button()
 
     def _refresh_stop_button(self):
@@ -2340,8 +2676,20 @@ class MapdexPlugin:
         One resolution for the label and for the turn. Reading it twice from
         two different places is how the panel came to promise a direct path
         that the turn never took.
+
+        Cached, because `assistant_settings` loads the stored key and that
+        opens the encrypted QGIS authentication database. Once per turn is
+        right; once per layer click - which is how often the header line now
+        asks - is not. It is dropped at the only two places the answer can
+        change, so it is never stale rather than merely usually fresh.
         """
-        return resolve_runtime(self.assistant_settings())
+        if getattr(self, "_assistant_runtime_cache", None) is None:
+            self._assistant_runtime_cache = resolve_runtime(self.assistant_settings())
+        return self._assistant_runtime_cache
+
+    def _forget_assistant_runtime(self):
+        """Drop the cached decision after the settings behind it moved."""
+        self._assistant_runtime_cache = None
 
     @guarded
     def ask_nivo(self, *args):
@@ -2355,7 +2703,11 @@ class MapdexPlugin:
         # make the feature unreachable for exactly the people it is offered to.
         runtime = self.assistant_runtime()
         if needs_mapdex_account(runtime) and (not self.api.token or not self.project_id):
-            self._set_status("Connect Mapdex and choose a project before asking Nivo.")
+            # The same sentence the header already shows, from the same place,
+            # so the reason a press did nothing matches the reason on screen.
+            self._set_status(panel_state.assistant_engine(
+                runtime, bool(self.api.token), self.project_id
+            )["blocked_reason"])
             return
         message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
         if not message:
@@ -2950,6 +3302,10 @@ class MapdexPlugin:
         layout.addStretch(1)
         bar = self.nivo_reply.verticalScrollBar()
         bar.setValue(bar.maximum())
+        # The reading is an opening, not a status bar: once a conversation has
+        # started it would push what the user is reading off the top of a
+        # narrow dock. New chat empties the transcript and brings it back.
+        self._render_first_look()
 
     # ----------------------------------------------------------------------
     # Conversations: New chat, History, and the thread the panel is continuing
@@ -4126,7 +4482,14 @@ class MapdexPlugin:
             self.token_store.clear()
         else:
             settings.remove(LEGACY_TOKEN_SETTING)
-        settings.remove("mapdex/project_id")
+        # Everything that belonged to the session, not only its token. The
+        # recent-task list used to survive, so the Jobs page kept offering
+        # Resume on batches the next token cannot read - and after connecting a
+        # different account, on another workspace's tasks. The provider key is
+        # deliberately not in this list: it is the user's own credential for
+        # their own account elsewhere.
+        for key in panel_state.SESSION_SCOPED_SETTINGS:
+            settings.remove(key)
         # The conversation belonged to the session that just ended. Keeping its
         # id would send the next connection's first question into a thread the
         # new token may not be able to see.
@@ -4134,7 +4497,20 @@ class MapdexPlugin:
         self._nivo_turns = []
         self._render_nivo_turns()
         self.project_box.clear()
-        self._set_status("Disconnected.")
+        # The Task page's own selections are session state too: a project's
+        # file left selected there reads as ready to submit when it is not.
+        self.selected_paths = []
+        if self.input_box is not None:
+            self.input_box.blockSignals(True)
+            self.input_box.setCurrentIndex(0)
+            self.input_box.blockSignals(False)
+        if self.source_summary is not None:
+            self.source_summary.setText("No source selected")
+        self._load_recent_tasks()
+        # Reported before the refresh, so the panel and the sentence agree.
+        # "Disconnected." full stop, above an assistant that keeps answering
+        # from the user's own provider, is what read as a defect.
+        self._set_status(panel_state.disconnect_notice(self.assistant_runtime()))
         self._refresh_ui()
 
     @guarded
@@ -5007,7 +5383,9 @@ class MapdexPlugin:
         for item in self._recent_tasks():
             label = "{} · {}".format(item.get("workflow") or "Task", item.get("source") or "Source")
             self.recent_box.addItem(label, item)
-        self.recent.setVisible(self.recent_box.count() > 0)
+        # A Resume needs a session: without one it submits a batch id the API
+        # answers with a tenant-safe NOT_FOUND, which reads as a lost task.
+        self.recent.setVisible(self.recent_box.count() > 0 and bool(self.api.token))
 
     @guarded
     def resume_recent(self, *args):

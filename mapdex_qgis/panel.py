@@ -32,6 +32,11 @@ from .layout_rules import (
     PREFERRED_WIDTH,
     panel_layout_mode,
 )
+from .panel_state import (
+    JOBS_LOCKED_NOTICE,
+    PROVIDER_CHOICES,
+    TASK_LOCKED_NOTICE,
+)
 from .qt_compat import enum_member
 
 
@@ -193,6 +198,59 @@ def build_companion_panel(workflows, endpoint_settings=True):
             color: #8F96A8;
             font-size: 11px;
         }
+        /* Which engine answers the next turn. Accent-coloured because it is a
+           statement about where the user's data and money go, not chrome. */
+        QLabel#mapdexNivoRuntime {
+            color: #A5A2F5;
+            font-size: 11px;
+        }
+        QFrame#mapdexNivoReading { background: transparent; border: 0; }
+        /* One finding: a measured statement about the open project. */
+        QFrame#mapdexFinding {
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+            border-left: 3px solid #6366F1;
+            border-radius: 6px;
+        }
+        QFrame#mapdexFinding[severity="blocking"] { border-left-color: #E05260; }
+        QFrame#mapdexFinding[severity="warning"] { border-left-color: #D9A441; }
+        QLabel#mapdexFindingHeadline { color: #F7F7F5; font-weight: 600; }
+        QLabel#mapdexFindingDetail { color: #A8ADBA; font-size: 11px; }
+        /* Free work and Mapdex work must be told apart before they are pressed.
+           The account action is the only filled button in a finding. */
+        QToolButton#mapdexFreeAction {
+            color: #C9CDD8;
+            background: #2A2A2A;
+            border: 1px solid rgba(230, 233, 242, 0.20);
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 11px;
+        }
+        QToolButton#mapdexFreeAction:hover { color: #F7F7F5; border-color: #6366F1; }
+        QToolButton#mapdexAccountAction {
+            color: #FFFFFF;
+            background: #4F46E5;
+            border: 0;
+            border-radius: 6px;
+            padding: 6px 11px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        QToolButton#mapdexAccountAction:hover { background: #6366F1; }
+        QLabel#mapdexAccountMarker {
+            color: #A5A2F5;
+            border: 1px solid rgba(165, 162, 245, 0.45);
+            border-radius: 4px;
+            padding: 1px 5px;
+            font-size: 10px;
+        }
+        QLabel#mapdexKeyState { color: #C9CDD8; font-size: 11px; }
+        QLabel#mapdexLockedNotice {
+            padding: 12px;
+            color: palette(text);
+            border: 1px solid palette(mid);
+            border-radius: 6px;
+        }
         QScrollArea#mapdexChatTranscript {
             background: transparent;
             border: 0;
@@ -330,14 +388,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
         enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
     )
     provider_box = _elastic(QComboBox())
-    for label, value in (
-        ("Mapdex (hosted, uses your plan)", ""),
-        ("OpenAI", "openai"),
-        ("Anthropic", "anthropic"),
-        ("Google Gemini", "gemini"),
-        ("OpenAI-compatible endpoint", "openai_compatible"),
-        ("Ollama (local)", "ollama"),
-    ):
+    # One list, in panel_state, so the sentence that names the running engine
+    # and the menu the user picked it from cannot disagree about its name.
+    for label, value in PROVIDER_CHOICES:
         provider_box.addItem(label, value)
     model_input = QLineEdit()
     model_input.setPlaceholderText("Provider default")
@@ -372,6 +425,14 @@ def build_companion_panel(workflows, endpoint_settings=True):
     api_key_row_layout.addWidget(clear_key_button, 0)
     assistant_form.addRow("API key", api_key_row)
     connection_layout.addLayout(assistant_form)
+    # Stored settings, as text rather than as a hint. The key showed only in
+    # the field's PLACEHOLDER, and a placeholder is grey and reads as "this is
+    # empty, type here" - which is how a user with a working stored OpenAI key
+    # came to report that no provider was configured at all.
+    assistant_key_state = QLabel("No provider key stored. Nivo runs on your Mapdex plan.")
+    assistant_key_state.setObjectName("mapdexKeyState")
+    assistant_key_state.setWordWrap(True)
+    connection_layout.addWidget(assistant_key_state)
     assistant_privacy = QLabel("Mapdex-hosted assistant: bounded map context is sent to Mapdex.")
     assistant_privacy.setWordWrap(True)
     assistant_privacy.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
@@ -412,8 +473,24 @@ def build_companion_panel(workflows, endpoint_settings=True):
 
     workspace = QWidget()
     workspace.setObjectName("mapdexPage")
-    workspace_layout = QVBoxLayout(workspace)
-    workspace_layout.setContentsMargins(12, 12, 12, 12)
+    workspace_page_layout = QVBoxLayout(workspace)
+    workspace_page_layout.setContentsMargins(12, 12, 12, 12)
+    workspace_page_layout.setSpacing(0)
+    # Everything on this page is Mapdex session state. Disconnected, it kept
+    # showing the previous session's project, workflow and selected source in
+    # greyed-out controls, which reads as a product that is broken rather than
+    # as one that is signed out. The body and the notice swap; the page itself
+    # stays mounted so the segment button never becomes a dead end.
+    workspace_locked = QLabel(TASK_LOCKED_NOTICE)
+    workspace_locked.setObjectName("mapdexLockedNotice")
+    workspace_locked.setWordWrap(True)
+    workspace_locked.setVisible(False)
+    workspace_page_layout.addWidget(workspace_locked)
+    workspace_body = QWidget()
+    workspace_page_layout.addWidget(workspace_body)
+    workspace_page_layout.addStretch(1)
+    workspace_layout = QVBoxLayout(workspace_body)
+    workspace_layout.setContentsMargins(0, 0, 0, 0)
     workspace_layout.setSpacing(8)
     workspace_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
     new_task_label = _section_label("New chat")
@@ -475,12 +552,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_context = QLabel("No active QGIS layer")
     nivo_context.setObjectName("mapdexNivoContext")
     nivo_context.setWordWrap(True)
+    # Which engine answers the next turn, where the user actually is. The only
+    # sentence that named it used to live in the settings panel, which is
+    # collapsed by default - so a disconnected session answering from the
+    # user's own key read as a leak rather than as the design it is.
+    nivo_runtime = QLabel("")
+    nivo_runtime.setObjectName("mapdexNivoRuntime")
+    nivo_runtime.setWordWrap(True)
     nivo_header_text = QWidget()
     nivo_header_text_layout = QVBoxLayout(nivo_header_text)
     nivo_header_text_layout.setContentsMargins(0, 0, 0, 0)
     nivo_header_text_layout.setSpacing(1)
     nivo_header_text_layout.addWidget(nivo_title)
     nivo_header_text_layout.addWidget(nivo_context)
+    nivo_header_text_layout.addWidget(nivo_runtime)
     # Two compact conversation controls, beside the title rather than near the
     # composer: they act on the transcript as a whole, and putting them by the
     # input would read as something the next message does.
@@ -548,7 +633,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_action_row.setSpacing(8)
     nivo_action_row.addWidget(nivo_send_button, 1)
     nivo_action_row.addWidget(nivo_stop_button, 0)
+    # What Nivo says about the open project before anybody asks it anything.
+    # An empty chat box with a generic placeholder was the whole first-run
+    # experience: a hundred registered capabilities and no way to discover one,
+    # so a stranger typed "hello" and closed a GIS agent believing it was a
+    # chat toy. The findings are built by the plugin from `first_look`, which
+    # reads only O(1) layer metadata, so this costs nothing to produce and
+    # needs neither an account nor a configured model provider.
+    nivo_reading = QFrame()
+    nivo_reading.setObjectName("mapdexNivoReading")
+    nivo_reading_layout = QVBoxLayout(nivo_reading)
+    nivo_reading_layout.setContentsMargins(0, 0, 0, 0)
+    nivo_reading_layout.setSpacing(6)
     surface_layout.addWidget(nivo_header)
+    surface_layout.addWidget(nivo_reading)
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(nivo_input)
@@ -561,6 +659,15 @@ def build_companion_panel(workflows, endpoint_settings=True):
     jobs_layout.setContentsMargins(12, 12, 12, 12)
     jobs_layout.setSpacing(10)
     jobs_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
+
+    # The recent-task list is read from QSettings and survived disconnect, so
+    # this page kept offering Resume on batches the next token cannot read -
+    # and after connecting a different account, on another workspace's tasks.
+    jobs_locked = QLabel(JOBS_LOCKED_NOTICE)
+    jobs_locked.setObjectName("mapdexLockedNotice")
+    jobs_locked.setWordWrap(True)
+    jobs_locked.setVisible(False)
+    jobs_layout.addWidget(jobs_locked)
 
     batch = QFrame()
     batch.setObjectName("mapdexResultCard")
@@ -661,6 +768,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "source_summary": source_summary,
         "run_button": run_button,
         "nivo_context": nivo_context,
+        "nivo_runtime": nivo_runtime,
+        "nivo_reading": nivo_reading,
+        "assistant_key_state": assistant_key_state,
+        "workspace_body": workspace_body,
+        "workspace_locked": workspace_locked,
+        "jobs_locked": jobs_locked,
         "nivo_new_button": nivo_new_button,
         "nivo_history_button": nivo_history_button,
         "nivo_reply": nivo_reply,
@@ -743,3 +856,78 @@ def build_thread_history_dialog(parent=None):
         "delete_button": delete_button,
         "close_button": close_button,
     }
+
+
+def build_capabilities_dialog(groups, parent=None):
+    """"What can Nivo do?", answered from the registry rather than from prose.
+
+    The registry already carries a one-line summary for all hundred
+    capabilities and the plugin showed none of them, so the only way to find
+    out what the assistant could do was to guess at an empty text box. This is
+    not the pitch and it is not a manual: it is the answer to a question the
+    user asks once, and it is generated, so a capability added to the registry
+    cannot go missing from it.
+
+    ``groups`` is ``[(title, [(summary, needs_account), ...]), ...]`` prepared
+    by the caller from the registry, so this file stays layout-only.
+    """
+    dialog = QDialog(parent)
+    dialog.setObjectName("mapdexCapabilitiesDialog")
+    dialog.setWindowTitle("What Nivo can do")
+    dialog.setMinimumWidth(470)
+    dialog.setMinimumHeight(430)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(9)
+
+    intro = QLabel(
+        "Ask in your own words. Everything below runs in QGIS on this machine "
+        "unless it is marked as Mapdex work."
+    )
+    intro.setWordWrap(True)
+    layout.addWidget(intro)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(enum_member(QFrame, "Shape", "NoFrame"))
+    scroll.setHorizontalScrollBarPolicy(
+        enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
+    )
+    body = QWidget()
+    body_layout = QVBoxLayout(body)
+    body_layout.setContentsMargins(0, 0, 0, 0)
+    body_layout.setSpacing(10)
+    for title, rows in groups:
+        body_layout.addWidget(_section_label(title))
+        for summary, needs_account in rows:
+            # A summary is registry text, rendered as data like every other
+            # string in this panel. The marker is a separate label rather than
+            # a suffix on the sentence, so it cannot be mistaken for part of it.
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            text = QLabel()
+            text.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+            text.setText(str(summary))
+            text.setWordWrap(True)
+            row_layout.addWidget(text, 1)
+            if needs_account:
+                marker = QLabel("Mapdex")
+                marker.setObjectName("mapdexAccountMarker")
+                row_layout.addWidget(marker, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+            body_layout.addWidget(row)
+    body_layout.addStretch(1)
+    scroll.setWidget(body)
+    layout.addWidget(scroll, 1)
+
+    close_button = QPushButton("Close")
+    close_button.setObjectName("mapdexPrimaryButton")
+    actions = QHBoxLayout()
+    actions.setContentsMargins(0, 0, 0, 0)
+    actions.addStretch(1)
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+
+    return dialog, {"dialog": dialog, "close_button": close_button}

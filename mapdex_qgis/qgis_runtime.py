@@ -49,6 +49,21 @@ class RuntimeUnavailable(Exception):
     """A QGIS object the request needs is missing or no longer valid."""
 
 
+def raster_is_georeferenced(layer: Any) -> bool:
+    """Whether a raster has a real-world placement.
+
+    A valid CRS AND a non-empty extent. A scan carrying a CRS but no
+    geotransform is still nowhere, and a CRS check alone would call it placed.
+
+    This is the extraction prerequisite, and it is also the single measurement
+    the panel's opening reading turns on, so it lives here rather than being
+    re-derived beside each caller: two copies of this expression is how one of
+    them comes to disagree about what "placed" means.
+    """
+    crs = layer.crs()
+    return bool(crs.isValid()) and not layer.extent().isEmpty()
+
+
 def _require(condition: Any, message: str) -> None:
     if not condition:
         raise RuntimeUnavailable(message)
@@ -179,7 +194,7 @@ class QGISRuntime:
             info["bands"] = getattr(layer, "bandCount", lambda: 0)()
             # A raster with no valid CRS is the georeferencing prerequisite the
             # extraction workflow checks, so it is reported here explicitly.
-            info["georeferenced"] = bool(crs.isValid()) and not extent.isEmpty()
+            info["georeferenced"] = raster_is_georeferenced(layer)
         return info
 
     def numeric(self, layer_id: str, field: str, scope: str = "all") -> dict[str, Any]:
