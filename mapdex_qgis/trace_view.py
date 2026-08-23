@@ -37,19 +37,6 @@ _STATUS_LABELS = {
     "awaiting_confirmation": "waiting for your approval",
 }
 
-# The marker is ASCII on purpose: the panel is themed by QGIS and a glyph that
-# renders on one platform and boxes on another is worse than a plain character.
-_STATUS_MARKERS = {
-    "planned": "-",
-    "running": ">",
-    "succeeded": "+",
-    "failed": "!",
-    "skipped": "-",
-    "refused": "x",
-    "awaiting_input": "?",
-    "awaiting_confirmation": "?",
-}
-
 _TONES = {
     "failed": "danger",
     "refused": "muted",
@@ -121,7 +108,6 @@ def _row(step: Mapping[str, Any], position: int) -> dict[str, Any]:
         "capability": capability,
         "status": status,
         "status_label": _STATUS_LABELS.get(status, status),
-        "marker": _STATUS_MARKERS.get(status, "+"),
         "tone": _TONES.get(status, "quiet"),
         "detail": detail,
         "duration": format_duration(step.get("duration_ms")),

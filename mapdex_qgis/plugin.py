@@ -3511,12 +3511,20 @@ class MapdexPlugin:
         QGIS and a reader on a monochrome theme or a screen reader must get the
         same answer as everyone else.
         """
-        line = "{}  {}. {}".format(row_data.get("marker", "+"), row_data.get("index", 1), row_data.get("title", ""))
+        line = "{}. {}".format(row_data.get("index", 1), row_data.get("title", ""))
         tail = [part for part in (row_data.get("status_label"), row_data.get("duration")) if part]
         if tail:
             line += "  (" + ", ".join(tail) + ")"
-        detail = row_data.get("detail") or ""
-        params = row_data.get("params") or ""
+        # Successful execution details and raw parameters belong to the trace,
+        # not to the conversation's reading path. They used to render as TASK
+        # tokens and long key=value dumps beneath every answer. Keep actionable
+        # failure/waiting detail visible; a completed step needs only its human
+        # title, status and duration.
+        status = row_data.get("status") or ""
+        show_detail = status in {
+            "failed", "refused", "awaiting_input", "awaiting_confirmation"
+        }
+        detail = (row_data.get("detail") or "") if show_detail else ""
         widget = QWidget()
         column = QVBoxLayout(widget)
         column.setContentsMargins(2, 1, 2, 1)
@@ -3533,14 +3541,6 @@ class MapdexPlugin:
             body.setWordWrap(True)
             body.setStyleSheet("color:#A9B0C0;")
             column.addWidget(body)
-        if params:
-            # The arguments are the half of "what did it do" that nothing used
-            # to record. They are shown small rather than hidden, because the
-            # panel has no room for a disclosure control per step.
-            argument_line = self._plain(QLabel(), "     " + params)
-            argument_line.setWordWrap(True)
-            argument_line.setStyleSheet("color:#6F7688; font-family:monospace; font-size:10px;")
-            column.addWidget(argument_line)
         widget.setStyleSheet("background:transparent; border:0;")
         return widget
 
@@ -4383,7 +4383,11 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "error")
             return False
         described = self._describe_capability_result(summary or capability_id, result)
-        self._say(described)
+        # This action is part of the answer already on screen, not a second
+        # message from Nivo. Updating the pending answer also lets a continuation
+        # replace it with the final wording, so one user request produces one
+        # assistant result instead of "prepared" followed by the same result.
+        self._replace_last_assistant_turn(described)
         self._report_action_result(capability_id, True, summary=described, result=result)
         self.iface.mapCanvas().refresh()
         return True

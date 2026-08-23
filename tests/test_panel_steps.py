@@ -53,12 +53,18 @@ def test_a_step_states_its_status_in_words():
     # a monochrome theme must get the same answer as everyone else.
     body = _method("_step_widget", "\n    @guarded")
     assert 'row_data.get("status_label")' in body
-    assert 'row_data.get("marker"' in body
+    assert 'row_data.get("marker"' not in body
 
 
-def test_a_step_shows_what_it_was_called_with():
+def test_successful_steps_do_not_dump_raw_arguments_into_chat():
     body = _method("_step_widget", "\n    @guarded")
-    assert 'row_data.get("params")' in body
+    assert 'row_data.get("params")' not in body
+
+
+def test_capability_result_updates_the_current_answer_instead_of_adding_one():
+    body = _method("_run_capability", "\n    def _report_action_result")
+    assert "self._replace_last_assistant_turn(described)" in body
+    assert "self._say(described)" not in body
 
 
 def test_step_text_never_takes_a_rich_text_path():
