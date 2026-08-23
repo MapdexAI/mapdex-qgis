@@ -356,6 +356,14 @@ def test_all_turns_share_one_wide_screen_measure():
     assert body.index("card.setMaximumWidth(BUBBLE_WIDTH)") < body.index("if sender !="), body
 
 
+def test_settings_form_is_a_named_panel_not_loose_fields():
+    assert 'connection_panel.setObjectName("mapdexSettingsPanel")' in PANEL
+    assert 'settings_title = QLabel("Settings")' in PANEL
+    assert 'settings_title.setObjectName("mapdexSettingsTitle")' in PANEL
+    assert 'settings_description.setObjectName("mapdexSettingsDescription")' in PANEL
+    assert "Choose how Nivo connects" in PANEL
+
+
 def test_open_project_uses_the_unlocalized_app_route():
     body = _method(PLUGIN, "open_project")
     assert '"/workspace/{}"' in body, body

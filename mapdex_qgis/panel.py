@@ -318,6 +318,24 @@ def build_companion_panel(workflows, endpoint_settings=True):
             color: #F7F7F5;
             border-left: 3px solid #6366F1;
         }
+        QFrame#mapdexSettingsPanel {
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.16);
+            border-radius: 8px;
+        }
+        QLabel#mapdexSettingsTitle {
+            color: #F7F7F5;
+            font-size: 14px;
+            font-weight: 600;
+            background: transparent;
+            border: 0;
+        }
+        QLabel#mapdexSettingsDescription {
+            color: #8F96A8;
+            font-size: 11px;
+            background: transparent;
+            border: 0;
+        }
         QFrame#mapdexResultCard {
             background: transparent;
             border: 0;
@@ -707,9 +725,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
     layout.addWidget(status)
 
     connection_panel = QFrame()
+    connection_panel.setObjectName("mapdexSettingsPanel")
     connection_panel.setVisible(False)
     connection_layout = QVBoxLayout(connection_panel)
-    connection_layout.setContentsMargins(0, 0, 0, 0)
+    connection_layout.setContentsMargins(14, 12, 14, 14)
+    connection_layout.setSpacing(8)
+    settings_title = QLabel("Settings")
+    settings_title.setObjectName("mapdexSettingsTitle")
+    connection_layout.addWidget(settings_title)
+    settings_description = QLabel(
+        "Choose how Nivo connects, which model answers, and where your map context is sent."
+    )
+    settings_description.setObjectName("mapdexSettingsDescription")
+    settings_description.setWordWrap(True)
+    connection_layout.addWidget(settings_description)
     # The endpoint fields are the part a released build pins; the assistant
     # settings below them stay available either way, because choosing your own
     # model provider is a user decision, not a deployment one.
