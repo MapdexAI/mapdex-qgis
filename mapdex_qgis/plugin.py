@@ -3574,13 +3574,27 @@ class MapdexPlugin:
         layout.addStretch(1)
         allow_narrow(transcript)
         bar = self.nivo_reply.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        # A discovery/empty-state card belongs at the top. Forcing the scroll
+        # bar to its maximum after a tall resize could move that only card out
+        # of view and leave an apparently empty transcript above the composer.
+        # Real conversation turns still follow the newest message.
+        has_conversation = any(not turn.get("opening") for turn in self._nivo_turns)
+        bar.setValue(bar.maximum() if has_conversation else bar.minimum())
 
     def _turn_widget(self, turn):
         """One transcript entry: a measured line, what was said, what to do."""
         sender = turn.get("sender")
         text = turn.get("text", "")
         card = QWidget()
+        # Every transcript object occupies the same readable measure on a wide
+        # dock. Previously discovery filled the entire 720 px column, user
+        # bubbles stopped at 560 px, and assistant replies sized to their text;
+        # one conversation therefore looked like three unrelated columns.
+        card.setMaximumWidth(BUBBLE_WIDTH)
+        card.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+            enum_member(QSizePolicy, "Policy", "Preferred"),
+        )
         row = QVBoxLayout(card)
 
         if sender != "user" and str(text).startswith("Thinking"):
@@ -3642,7 +3656,6 @@ class MapdexPlugin:
 
         if sender == "user":
             card.setObjectName("mapdexTurnUser")
-            card.setMaximumWidth(BUBBLE_WIDTH)
             body.setObjectName("mapdexTurnBodyUser")
         else:
             card.setObjectName("mapdexOpeningTurn" if turn.get("opening") else "mapdexTurn")
@@ -5719,12 +5732,11 @@ class MapdexPlugin:
     @guarded
     def open_project(self, *args):
         project_id = self._active_project_id()
-        locale = QLocale.system().name().split("_")[0]
-        prefix = "" if locale == "en" else "/{}".format(locale)
         path = "/workspace/{}".format(project_id) if project_id else "/workspace"
-        QDesktopServices.openUrl(
-            QUrl("{}{}{}".format(self.web_base, prefix, path))
-        )
+        # The authenticated application has one URL tree. Locale prefixes are
+        # for authored marketing pages; `/tr/workspace/...` and friends are
+        # stale routes that can 404 or bounce through the public host.
+        QDesktopServices.openUrl(QUrl("{}{}".format(self.web_base, path)))
 
     def _recent_tasks(self):
         raw = str(QSettings().value("mapdex/recent_tasks", "[]") or "[]")

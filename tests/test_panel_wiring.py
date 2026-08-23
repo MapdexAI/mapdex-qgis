@@ -343,6 +343,25 @@ def test_capability_discovery_is_not_a_registry_dump():
         assert choice in PLUGIN, choice
 
 
+def test_all_turns_share_one_wide_screen_measure():
+    body = _method(PLUGIN, "_turn_widget")
+    assert "card.setMaximumWidth(BUBBLE_WIDTH)" in body, body
+    assert body.index("card.setMaximumWidth(BUBBLE_WIDTH)") < body.index("if sender !="), body
+
+
+def test_open_project_uses_the_unlocalized_app_route():
+    body = _method(PLUGIN, "open_project")
+    assert '"/workspace/{}"' in body, body
+    assert "QLocale.system" not in body and 'prefix =' not in body, body
+    assert 'QUrl("{}{}".format(self.web_base, path))' in body, body
+
+
+def test_discovery_stays_at_the_top_after_a_tall_resize():
+    body = _method(PLUGIN, "_render_nivo_turns")
+    assert 'has_conversation = any(not turn.get("opening")' in body, body
+    assert 'bar.maximum() if has_conversation else bar.minimum()' in body, body
+
+
 # -- the stored key reads as stored -----------------------------------------
 
 def test_the_settings_panel_states_the_stored_key_as_text():
