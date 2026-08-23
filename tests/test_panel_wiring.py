@@ -184,7 +184,7 @@ def test_the_choice_sits_below_the_reading():
     The reading needs neither half of it, so it goes first and the panel has
     already said something true before it asks."""
     order = [PANEL.index(marker) for marker in (
-        "layout.addWidget(pages, 1)", "layout.addLayout(sign_in_left)")]
+        "layout.addWidget(pages, 1)", "layout.addWidget(sign_in)")]
     assert order == sorted(order), "the choice was placed above the transcript"
     # And it is left-aligned by a stretch, not by an alignment flag: given one,
     # Qt hands the widget its sizeHint instead of the available width, which
@@ -192,6 +192,12 @@ def test_the_choice_sits_below_the_reading():
     # every row mid-sentence.
     assert "AlignHCenter" not in PANEL, (
         "an alignment flag is centring a capped widget again, which starves it"
+    )
+    # ONE capped column owns the width. Capping each element separately gave
+    # three different right edges - status in one place, transcript in another,
+    # composer in a third - and a ragged edge is what reads as "not responsive".
+    assert PANEL.count("setMaximumWidth(READING_WIDTH)") == 1, (
+        "the width is capped in more than one place again"
     )
 
 

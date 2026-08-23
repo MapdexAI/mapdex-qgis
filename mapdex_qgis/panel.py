@@ -560,7 +560,15 @@ def build_companion_panel(workflows, endpoint_settings=True):
     )
     body = QWidget()
     body.setObjectName("mapdexPluginRoot")
-    layout = QVBoxLayout(body)
+    body_row = QHBoxLayout(body)
+    body_row.setContentsMargins(0, 0, 0, 0)
+    body_row.setSpacing(0)
+    column = QWidget()
+    column.setObjectName("mapdexColumn")
+    column.setMaximumWidth(READING_WIDTH)
+    body_row.addWidget(column, 1)
+    body_row.addStretch(0)
+    layout = QVBoxLayout(column)
     layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(10)
 
@@ -629,12 +637,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     status = QLabel("Connect Mapdex to start a task.")
     status.setObjectName("mapdexStatus")
     status.setWordWrap(True)
-    status.setMaximumWidth(READING_WIDTH)
-    status_left = QHBoxLayout()
-    status_left.setContentsMargins(0, 0, 0, 0)
-    status_left.addWidget(status, 1)
-    status_left.addStretch(0)
-    layout.addLayout(status_left)
+    layout.addWidget(status)
 
     connection_panel = QFrame()
     connection_panel.setVisible(False)
@@ -765,7 +768,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # would be a wall in front of a product nobody has seen yet, and it asks a
     # billing-and-privacy question the reader cannot answer at that moment.
     sign_in = QWidget()
-    sign_in.setMaximumWidth(READING_WIDTH)
     sign_in_layout = QVBoxLayout(sign_in)
     sign_in_layout.setContentsMargins(0, 10, 0, 0)
     sign_in_layout.setSpacing(8)
@@ -792,20 +794,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     first_open_title.setObjectName("mapdexFirstOpenTitle")
     first_open_title.setWordWrap(True)
     first_open_title.setVisible(False)
-    first_open_title.setMaximumWidth(READING_WIDTH)
-    title_left = QHBoxLayout()
-    title_left.setContentsMargins(0, 0, 0, 0)
-    title_left.addWidget(first_open_title, 1)
-    title_left.addStretch(0)
-    layout.addLayout(title_left)
+    layout.addWidget(first_open_title)
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
-    sign_in_left = QHBoxLayout()
-    sign_in_left.setContentsMargins(0, 0, 0, 0)
-    sign_in_left.setSpacing(0)
-    sign_in_left.addWidget(sign_in, 1)
-    sign_in_left.addStretch(0)
-    layout.addLayout(sign_in_left)
+    layout.addWidget(sign_in)
     # First open has no conversation to fill a tall dock, so the pages stop
     # grabbing the spare height and this takes it instead - which puts the
     # choice directly under the reading rather than 300 px below it.
@@ -874,13 +866,15 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_layout.setSpacing(9)
     nivo_surface = QFrame()
     nivo_surface.setObjectName("mapdexNivoSurface")
-    # Capped, not stretched: a dock dragged to the width of the QGIS window
-    # otherwise runs every sentence across 1,400 px.
-    nivo_surface.setMaximumWidth(READING_WIDTH)
+
     surface_layout = QVBoxLayout(nivo_surface)
     surface_layout.setContentsMargins(0, 0, 0, 0)
     surface_layout.setSpacing(10)
     nivo_header = QWidget()
+    nivo_header.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Preferred"),
+        enum_member(QSizePolicy, "Policy", "Fixed"),
+    )
     nivo_header_layout = QHBoxLayout(nivo_header)
     nivo_header_layout.setContentsMargins(0, 0, 0, 0)
     nivo_header_layout.setSpacing(8)
@@ -909,6 +903,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_runtime.setObjectName("mapdexNivoRuntime")
     nivo_runtime.setWordWrap(True)
     nivo_header_text = QWidget()
+    nivo_header_text.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Preferred"),
+        enum_member(QSizePolicy, "Policy", "Fixed"),
+    )
     nivo_header_text_layout = QVBoxLayout(nivo_header_text)
     nivo_header_text_layout.setContentsMargins(0, 0, 0, 0)
     nivo_header_text_layout.setSpacing(1)
@@ -976,12 +974,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(composer)
-    nivo_left = QHBoxLayout()
-    nivo_left.setContentsMargins(0, 0, 0, 0)
-    nivo_left.setSpacing(0)
-    nivo_left.addWidget(nivo_surface, 1)
-    nivo_left.addStretch(0)
-    nivo_layout.addLayout(nivo_left, 1)
+    nivo_layout.addWidget(nivo_surface, 1)
 
     jobs = QWidget()
     jobs.setObjectName("mapdexPage")
@@ -1088,6 +1081,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "connect_button": connect_button,
         "connect_promise": connect_promise,
         "sign_in": sign_in,
+        "column": column,
         "tail": tail,
         "body_layout": layout,
         "first_open_prompt": first_open_prompt,
