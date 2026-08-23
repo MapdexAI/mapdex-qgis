@@ -2251,8 +2251,17 @@ class MapdexPlugin:
             # the height its content asks for, bounded so a long reading still
             # leaves the choice on screen.
             content = self.nivo_reply.widget()
-            wanted = content.sizeHint().height() + 20 if content is not None else 0
-            self.nivo_reply.setMinimumHeight(min(max(wanted, 120), 460) if first else 170)
+            wanted = content.sizeHint().height() + 12 if content is not None else 0
+            if first:
+                # Fixed to its content, so a reading that fits shows whole. A
+                # minimum alone left the scroll area at that minimum and put a
+                # scrollbar on a reading with room to sit.
+                exact = min(max(wanted, 120), 520)
+                self.nivo_reply.setMinimumHeight(exact)
+                self.nivo_reply.setMaximumHeight(exact)
+            else:
+                self.nivo_reply.setMinimumHeight(170)
+                self.nivo_reply.setMaximumHeight(16777215)
 
         # The page stays mounted so its segment button is never a dead end;
         # the BODY and the notice swap. Setting the page itself invisible was

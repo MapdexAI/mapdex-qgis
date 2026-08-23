@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 
 from qgis.PyQt.QtCore import QEvent, QSize, Qt
-from qgis.core import QgsApplication
 from qgis.PyQt.QtGui import QIcon, QPixmap
 from qgis.PyQt.QtWidgets import (
     QComboBox,
@@ -44,7 +43,7 @@ from .panel_state import (
     PROVIDER_CHOICES,
     TASK_LOCKED_NOTICE,
 )
-from .branding import ACTION_ICONS, surface_asset_path
+from .branding import ACTION_ICONS, CONTROL_ICONS, surface_asset_path
 from .qt_compat import enum_member
 
 
@@ -97,11 +96,13 @@ class ActionRow(QFrame):
         title = QLabel(label)
         title.setObjectName("mapdexRowLabel")
         title.setWordWrap(True)
+        title.setMinimumWidth(1)
         text.addWidget(title)
         if sublabel:
             detail = QLabel(sublabel)
             detail.setObjectName("mapdexRowSub")
             detail.setWordWrap(True)
+            detail.setMinimumWidth(1)
             text.addWidget(detail)
         row.addLayout(text, 1)
 
@@ -442,6 +443,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
         QFrame#mapdexRowQuiet:hover QLabel#mapdexRowLabel { color: #C7C5FA; }
         /* A state is a dot and a word, top left, and it is the only place the
            panel says what it is doing. */
+        QToolButton#mapdexHeaderButton {
+            color: #C9CDD8;
+            background: transparent;
+            border: 1px solid rgba(230, 233, 242, 0.20);
+            border-radius: 6px;
+            padding: 5px 11px;
+            font-size: 11px;
+        }
+        QToolButton#mapdexHeaderButton:hover { color: #F7F7F5; border-color: #6366F1; }
+        QToolButton#mapdexHeaderButton:checked {
+            color: #F7F7F5;
+            background: #2A2A2A;
+            border-color: #6366F1;
+        }
         QToolButton#mapdexHeaderIcon {
             background: transparent;
             border: 1px solid transparent;
@@ -558,6 +573,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # squeezed the state text into two lines at the dock's normal width.
     settings_button.setText("Settings")
     settings_button.setToolTip("Connection settings (API and web addresses)")
+    settings_button.setObjectName("mapdexHeaderButton")
     settings_button.setCheckable(True)
     settings_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
@@ -567,6 +583,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # unrelated controls. The two sit in one widget so the responsive pair
     # keeps working: on a narrow dock the label stacks above both actions.
     disconnect_button = QToolButton()
+    disconnect_button.setObjectName("mapdexHeaderButton")
     disconnect_button.setText("Disconnect")
     disconnect_button.setToolButtonStyle(
         enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
@@ -596,12 +613,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     header_actions_row.setSpacing(6)
     # Icon-only, with tooltips, because a label here costs width the map is
     # paying for and these two are reached rarely.
-    for control, name in ((nivo_new_button, "mActionFileNew.svg"),
-                          (nivo_history_button, "mActionHistory.svg")):
+    for control, key in ((nivo_new_button, "new_chat"),
+                         (nivo_history_button, "history")):
         control.setObjectName("mapdexHeaderIcon")
         control.setToolButtonStyle(
             enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
-        control.setIcon(QgsApplication.getThemeIcon(name))
+        control.setIcon(QIcon(surface_asset_path(CONTROL_ICONS[key])))
         control.setIconSize(QSize(16, 16))
         control.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
         header_actions_row.addWidget(control)
@@ -612,7 +629,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     status = QLabel("Connect Mapdex to start a task.")
     status.setObjectName("mapdexStatus")
     status.setWordWrap(True)
-    layout.addWidget(status)
+    status.setMaximumWidth(READING_WIDTH)
+    status_left = QHBoxLayout()
+    status_left.setContentsMargins(0, 0, 0, 0)
+    status_left.addWidget(status, 1)
+    status_left.addStretch(0)
+    layout.addLayout(status_left)
 
     connection_panel = QFrame()
     connection_panel.setVisible(False)
@@ -704,6 +726,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connection_layout.addWidget(assistant_privacy)
 
     save_settings_button = QPushButton("Save settings")
+    save_settings_button.setObjectName("mapdexSecondaryButton")
     connection_layout.addWidget(save_settings_button)
     settings_button.toggled.connect(connection_panel.setVisible)
     layout.addWidget(connection_panel)
@@ -769,10 +792,20 @@ def build_companion_panel(workflows, endpoint_settings=True):
     first_open_title.setObjectName("mapdexFirstOpenTitle")
     first_open_title.setWordWrap(True)
     first_open_title.setVisible(False)
-    layout.addWidget(first_open_title)
+    first_open_title.setMaximumWidth(READING_WIDTH)
+    title_left = QHBoxLayout()
+    title_left.setContentsMargins(0, 0, 0, 0)
+    title_left.addWidget(first_open_title, 1)
+    title_left.addStretch(0)
+    layout.addLayout(title_left)
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
-    layout.addWidget(sign_in, 0, enum_member(Qt, "AlignmentFlag", "AlignHCenter"))
+    sign_in_left = QHBoxLayout()
+    sign_in_left.setContentsMargins(0, 0, 0, 0)
+    sign_in_left.setSpacing(0)
+    sign_in_left.addWidget(sign_in, 1)
+    sign_in_left.addStretch(0)
+    layout.addLayout(sign_in_left)
     # First open has no conversation to fill a tall dock, so the pages stop
     # grabbing the spare height and this takes it instead - which puts the
     # choice directly under the reading rather than 300 px below it.
@@ -943,7 +976,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(composer)
-    nivo_layout.addWidget(nivo_surface, 1, enum_member(Qt, "AlignmentFlag", "AlignHCenter"))
+    nivo_left = QHBoxLayout()
+    nivo_left.setContentsMargins(0, 0, 0, 0)
+    nivo_left.setSpacing(0)
+    nivo_left.addWidget(nivo_surface, 1)
+    nivo_left.addStretch(0)
+    nivo_layout.addLayout(nivo_left, 1)
 
     jobs = QWidget()
     jobs.setObjectName("mapdexPage")

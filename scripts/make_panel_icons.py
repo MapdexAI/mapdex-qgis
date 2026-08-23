@@ -1,15 +1,21 @@
-"""Draw the four glyphs QGIS does not ship, on the same 24-unit grid.
+"""Draw the glyphs QGIS does not ship, on the same 24-unit grid.
 
-Eight icons reach the panel and four of them come from QGIS itself
-(`mIconCritical`, `mIconWarning`, `mIconInfo`, `mIconSuccess`), themed for
-free. The four here are the ones QGIS has no equivalent for: the three pieces
-of Mapdex work, plus send, which is the only control in the panel with no word
-on it.
+Three states come from QGIS itself (`mIconCritical`, `mIconWarning`,
+`mIconSuccess`), themed for free. `info` has none: it is the absence of a
+problem, and QGIS draws it as a speech bubble, which beside an assistant's
+reply says "this is a message" - which every line in a transcript already is.
 
-Every other glyph was deliberately cut. An icon earns its space when it carries
-STATE or DESTINATION - what condition something is in, or where the work runs.
-Layer kinds, zoom, tables, filters and tabs all had one and lost it, because a
-picture beside a word that already says the same thing is decoration.
+An icon earns its space when it carries STATE, DESTINATION, or when the control
+has no room for a word at all. The six here are the second and third cases: the
+three pieces of Mapdex work, and send, new chat and history, which are icon-only
+controls where the glyph IS the label. Layer kinds, zoom, tables, filters and
+tabs all had one and lost it, because a picture beside a word that already says
+the same thing is decoration.
+
+New chat and history were QGIS icons for one build. `mActionFileNew` draws a
+sheet of paper, which says "document" beside a control that starts a
+conversation, and `mActionHistory` draws a multi-coloured arrow that belongs to
+nothing else in this panel.
 
     python scripts/make_panel_icons.py
 
@@ -95,11 +101,31 @@ def send(d, p):
            fill=p["accent"], width=int(u(2.1)), joint="curve")
 
 
+def new_chat(d, p):
+    """A plus. The control has no room for a word, so the glyph is the label.
+
+    QGIS's own mActionFileNew draws a sheet of paper, which says "document"
+    beside a control that starts a conversation, and mActionHistory draws a
+    multi-coloured arrow that belongs to nothing else in this panel.
+    """
+    d.line([(u(12.0), u(4.6)), (u(12.0), u(19.4))], fill=p["ink"], width=int(u(2.2)))
+    d.line([(u(4.6), u(12.0)), (u(19.4), u(12.0))], fill=p["ink"], width=int(u(2.2)))
+
+
+def history(d, p):
+    """A clock: the conversations that came before this one."""
+    d.ellipse([u(3.4), u(3.4), u(20.6), u(20.6)], outline=p["ink"], width=int(u(1.9)))
+    d.line([(u(12.0), u(7.4)), (u(12.0), u(12.4))], fill=p["ink"], width=int(u(1.9)))
+    d.line([(u(12.0), u(12.4)), (u(16.2), u(14.6))], fill=p["accent"], width=int(u(1.9)))
+
+
 GLYPHS = {
     "icon_georeference": georeference,
     "icon_digitize": digitize,
     "icon_validate": validate,
     "icon_send": send,
+    "icon_new_chat": new_chat,
+    "icon_history": history,
 }
 
 

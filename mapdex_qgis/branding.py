@@ -91,6 +91,15 @@ ACTION_ICONS = {
     "send": "icon_send.png",
 }
 
+# Icon-only controls, where the glyph IS the label because the control has no
+# room for a word. Ours rather than QGIS's: mActionFileNew draws a sheet of
+# paper, which says "document" beside a control that starts a conversation, and
+# mActionHistory draws a multi-coloured arrow belonging to nothing else here.
+CONTROL_ICONS = {
+    "new_chat": "icon_new_chat.png",
+    "history": "icon_history.png",
+}
+
 
 def mark_asset(dark_interface: bool) -> str:
     """The mark file name for the interface currently on screen."""
