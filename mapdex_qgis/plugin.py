@@ -3902,13 +3902,14 @@ class MapdexPlugin:
         target = action.get("target")
         layer = self._nivo_layer_for_action(target)
         if target and (layer is None or not layer.isValid()):
-            self._set_status("Nivo did not run the action because its target layer is no longer available.")
+            self._action_failed(
+                "Nivo did not run the action because its target layer is no longer available.")
             return
 
         try:
             resolved = self._capability_request(tool, action, layer)
         except CapabilityError as error:
-            self._set_status("Nivo could not run that: {}".format(error))
+            self._action_failed("Nivo could not run that: {}".format(error))
             return
         if resolved is not None:
             capability_id, params = resolved
@@ -3921,7 +3922,12 @@ class MapdexPlugin:
             # Filter/style/review/result commands the server can name but this
             # build has no capability for. Never turn free-form model params
             # into QGIS calls just because the id looked familiar.
-            self._set_status("Nivo prepared a confirmation-required action: {}".format(
+            #
+            # Said, not merely set: "Nivo prepared a QGIS action" followed by a
+            # map that never changes is the exact reading that makes this look
+            # like a broken assistant rather than a missing feature, and the
+            # reply above it has already promised the result.
+            self._action_failed("This build cannot carry out that action: {}".format(
                 action.get("summary") or tool))
             return
         if not getattr(self, handler)(action):
@@ -4315,7 +4321,10 @@ class MapdexPlugin:
             # refusal the user can act on, not a malfunction.
             return self._capability_refused(error)
         except Exception as error:  # noqa: BLE001 - the host must survive anything
-            self._set_status("Nivo failed to run {}: {}".format(capability_id, describe_exception(error)))
+            self._set_status("Nivo failed to run {}: {}".format(
+                capability_id, describe_exception(error)))
+            self._say("Nivo failed to run {}: {}".format(
+                capability_id, describe_exception(error)), severity="blocking")
             self._nivo_state = transition(self._nivo_state, "error")
             return False
         described = self._describe_capability_result(summary or capability_id, result)
@@ -4343,8 +4352,27 @@ class MapdexPlugin:
         The turn state machine has no transition out of `executing` except done
         or error, so returning early without one leaves every later turn stuck
         in `executing`.
+
+        It is SAID, not merely set as a status. The reply was already appended
+        to the transcript before any action ran, and that reply is a claim -
+        "Showing X on the map" - so a refusal that goes only to the status line
+        leaves the claim standing beside a canvas that never moved, and the
+        status line is overwritten by the next layer click anyway. The
+        contradiction has to sit where the claim sits.
         """
-        self._set_status("Nivo could not run that: {}".format(error))
+        self._action_failed("Nivo could not run that: {}".format(error))
+        return False
+
+    def _action_failed(self, text):
+        """Report a failed action where the turn's own claim is, and finish it.
+
+        One helper rather than three call sites, because the three ways an
+        action can fail - refused, unimplemented, or an executor that raised -
+        are the same fact to the person reading: the sentence above this one did
+        not happen.
+        """
+        self._set_status(text)
+        self._say(text, severity="warning")
         self._nivo_state = transition(self._nivo_state, "done")
         return False
 

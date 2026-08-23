@@ -1250,10 +1250,25 @@ def dispatch(action_kind, target, params, summary="verification", probe=None):
     plugin._nivo_composed(plugin._nivo_request_id, None, {"thread_id": "", "response": response})
     after = probe() if probe is not None else None
     status = plugin.status.text()
-    # The first turn is the reply text; anything beyond it is a capability
-    # result line, which only `_run_capability` appends.
+    # The first turn is the reply text; anything beyond it is the outcome, and
+    # the outcome says which kind it is.
+    #
+    # This used to read "a second line means it ran", which was true only while
+    # success was the only thing that spoke. A refusal now states itself in the
+    # transcript, because the reply above it has already claimed the result and
+    # a reason that goes only to the status line is overwritten by the next
+    # layer click. Counting lines classified every one of those refusals as an
+    # execution - a degenerate polygon "executed", and a sweep in which nothing
+    # was refused - so the harness read a product that had become MORE honest
+    # as one that had stopped refusing.
+    #
+    # Severity is the right instrument: it is what the person sees, and it is
+    # what DESIGN.md section 8 requires the panel to carry anyway.
     if len(plugin._nivo_turns) > 1:
-        return "executed", plugin._nivo_turns[-1]["text"]
+        outcome = plugin._nivo_turns[-1]
+        if str(outcome.get("severity") or "") in {"warning", "blocking"}:
+            return "refused", outcome["text"]
+        return "executed", outcome["text"]
     if probe is not None and before != after:
         return "executed", "no transcript line; observed effect {!r} -> {!r}".format(before, after)
     if not admitted:
