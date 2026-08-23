@@ -373,6 +373,14 @@ def test_header_controls_and_dropdown_use_ready_svg_icons():
     assert 'surface_asset_path(CONTROL_ICONS["dropdown"])' in PANEL
 
 
+def test_opening_metadata_failure_uses_a_local_fallback_not_global_error_banner():
+    body = _method(PLUGIN, "_refresh_opening")
+    assert "@guarded" not in PLUGIN[PLUGIN.rfind("\n", 0, PLUGIN.index("def _refresh_opening")):PLUGIN.index("def _refresh_opening")]
+    assert 'log_debug("Could not build Nivo opening"' in body
+    assert 'opening_turns({' in body
+    assert "self._nivo_opening = opening" in body
+
+
 def test_open_project_uses_the_unlocalized_app_route():
     body = _method(PLUGIN, "open_project")
     assert '"/workspace/{}"' in body, body

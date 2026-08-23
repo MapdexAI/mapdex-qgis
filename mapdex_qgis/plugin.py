@@ -2597,22 +2597,30 @@ class MapdexPlugin:
         layer = self._active_qgis_layer()
         described = {}
         if layer is not None and layer.isValid():
-            is_vector = isinstance(layer, QgsVectorLayer)
-            described = {
-                "name": layer.name(),
-                "kind": "vector" if is_vector else "raster" if isinstance(layer, QgsRasterLayer) else "other",
-                "crs": layer.crs().authid() if layer.crs().isValid() else "",
-                "feature_count": layer.featureCount() if is_vector else 0,
-            }
-            if described["kind"] == "raster":
-                described["width"] = getattr(layer, "width", lambda: 0)()
-                described["height"] = getattr(layer, "height", lambda: 0)()
-                described["georeferenced"] = raster_is_georeferenced(layer)
-                # Which provider drew it. A tile service has a valid CRS and a
-                # real extent exactly like a placed scan does, so without this
-                # the reading offered to digitize parcels out of an
-                # OpenStreetMap basemap that Nivo had added a turn earlier.
-                described["provider"] = str(getattr(layer, "providerType", lambda: "")() or "")
+            try:
+                is_vector = isinstance(layer, QgsVectorLayer)
+                described = {
+                    "name": layer.name(),
+                    "kind": "vector" if is_vector else "raster" if isinstance(layer, QgsRasterLayer) else "other",
+                    "crs": layer.crs().authid() if layer.crs().isValid() else "",
+                    "feature_count": layer.featureCount() if is_vector else 0,
+                }
+                if described["kind"] == "raster":
+                    described["width"] = getattr(layer, "width", lambda: 0)()
+                    described["height"] = getattr(layer, "height", lambda: 0)()
+                    described["georeferenced"] = raster_is_georeferenced(layer)
+                    # Which provider drew it. A tile service has a valid CRS and a
+                    # real extent exactly like a placed scan does, so without this
+                    # the reading offered to digitize parcels out of an
+                    # OpenStreetMap basemap that Nivo had added a turn earlier.
+                    described["provider"] = str(getattr(layer, "providerType", lambda: "")() or "")
+            except (AttributeError, RuntimeError) as error:
+                # Remote/tile providers can invalidate their C++ wrapper while
+                # the layer still reports valid. The opening card is optional
+                # orientation UI; losing one metadata field must not raise the
+                # plugin-wide crash banner or blank the conversation.
+                log_debug("Could not read active layer for Nivo opening", error)
+                described = {}
 
         # Layers QGIS is silently reprojecting on the fly. The map looks right
         # and every measurement crossing them is not, which is the most common
@@ -2636,7 +2644,6 @@ class MapdexPlugin:
             "crs_mismatch": mismatched,
         }
 
-    @guarded
     def _refresh_opening(self):
         """Rebuild the opening reading as turns, ahead of the conversation.
 
@@ -2646,10 +2653,22 @@ class MapdexPlugin:
         a status bar, and on a 396 px dock it would push the answer they are
         reading off the top.
         """
-        self._nivo_opening = []
         if self._nivo_turns:
+            self._nivo_opening = []
             return
-        self._nivo_opening = opening_turns(self._first_look_state())
+        try:
+            opening = opening_turns(self._first_look_state())
+        except Exception as error:  # noqa: BLE001 - optional presentation fallback
+            # Do not route an empty-state reading through the global error
+            # boundary. It is not a failed task and should never replace the
+            # user's status with "Mapdex hit a problem". Keep the panel usable
+            # with a truthful, layer-neutral opening and retain the traceback
+            # in the Mapdex log for diagnosis.
+            log_debug("Could not build Nivo opening", error)
+            opening = opening_turns({
+                "layer": {}, "layer_id": "", "layer_count": 0, "crs_mismatch": []
+            })
+        self._nivo_opening = opening
 
     def _action_chip(self, action):
         """One thing to do, attached to the turn that earned it.
