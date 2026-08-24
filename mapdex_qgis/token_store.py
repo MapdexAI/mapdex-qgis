@@ -32,10 +32,8 @@ class SecureTokenStore:
         session-only connection, as documented by the plugin UI.
         """
         try:
-            if (
-                hasattr(self._auth_manager, "masterPasswordIsSet")
-                and not self._auth_manager.masterPasswordIsSet()
-            ):
+            verified = getattr(self._auth_manager, "masterPasswordIsVerified", None)
+            if not callable(verified) or not verified():
                 return False
             if (
                 hasattr(self._auth_manager, "isDisabled")
@@ -57,8 +55,8 @@ class SecureTokenStore:
             return ""
         return str(config.config("password", "") or "")
 
-    def save(self, token: str, allow_unlock: bool = False) -> bool:
-        if not token or (not allow_unlock and not self.is_available()):
+    def save(self, token: str) -> bool:
+        if not token or not self.is_available():
             return False
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         config = self._config_factory()
@@ -134,7 +132,6 @@ class SecureTokenStore:
         access_token: str,
         refresh_token: str,
         expires_at: float,
-        allow_unlock: bool = False,
     ) -> bool:
         """Store all three parts, or none of them.
 
@@ -144,7 +141,7 @@ class SecureTokenStore:
         the refresh token would not merely lose a convenience - the next
         refresh would present a revoked token and end the connection.
         """
-        if not access_token or (not allow_unlock and not self.is_available()):
+        if not access_token or not self.is_available():
             return False
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         config = self._config_factory()

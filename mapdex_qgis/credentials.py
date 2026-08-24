@@ -54,7 +54,8 @@ class ProviderCredentialStore:
         if self._auth is None:
             return False
         try:
-            if hasattr(self._auth, "masterPasswordIsSet") and not self._auth.masterPasswordIsSet():
+            verified = getattr(self._auth, "masterPasswordIsVerified", None)
+            if not callable(verified) or not verified():
                 return False
             if hasattr(self._auth, "isDisabled") and self._auth.isDisabled():
                 return False

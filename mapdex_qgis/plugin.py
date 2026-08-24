@@ -5353,49 +5353,14 @@ class MapdexPlugin:
         self._refresh_token = str(payload.get("refresh_token") or self._refresh_token)
         self._token_expires_at = connector_auth.expiry_from(payload, time.time())
         self._connection_kind = "connector"
-        self._connection_persisted = self._offer_secure_connection_storage(
-            lambda: self.token_store.save_session(
+        self._connection_persisted = bool(
+            self.token_store
+            and self.token_store.save_session(
                 self.api.token,
                 self._refresh_token,
                 self._token_expires_at,
-                allow_unlock=True,
             )
         )
-
-    def _offer_secure_connection_storage(self, save) -> bool:
-        """Make persistence an explicit choice before QGIS may show its vault."""
-        if self.token_store is None:
-            return False
-        dialog = QMessageBox(self.iface.mainWindow())
-        dialog.setWindowTitle("Mapdex connection")
-        dialog.setText("Stay connected after restarting QGIS?")
-        dialog.setInformativeText(
-            "QGIS can securely remember this Mapdex connection on this device.\n\n"
-            "If its secure credential store is locked, QGIS may ask for a vault "
-            "password. This is a QGIS security feature, not your Mapdex password."
-        )
-        keep_button = dialog.addButton(
-            "Keep me connected",
-            enum_member(QMessageBox, "ButtonRole", "AcceptRole"),
-        )
-        session_button = dialog.addButton(
-            "This session only",
-            enum_member(QMessageBox, "ButtonRole", "RejectRole"),
-        )
-        dialog.setDefaultButton(session_button)
-        dialog.setEscapeButton(session_button)
-        dialog.exec()
-        if dialog.clickedButton() is not keep_button:
-            return False
-        try:
-            return bool(save())
-        except Exception as exc:  # noqa: BLE001 - QGIS owns the secure-store backend
-            QgsMessageLog.logMessage(
-                "Could not persist the Mapdex connection: {}".format(exc),
-                "Mapdex",
-                enum_member(Qgis, "MessageLevel", "Warning"),
-            )
-            return False
 
     def _renew_connector_token(self) -> str:
         """Trade the refresh token for a new access token, or give up cleanly.
@@ -5475,8 +5440,8 @@ class MapdexPlugin:
         self.api.token = token
         self.project_id = str((response or {}).get("project_id") or self.project_id or "")
         settings = QSettings()
-        persisted = self._offer_secure_connection_storage(
-            lambda: self.token_store.save(self.api.token, allow_unlock=True)
+        persisted = bool(
+            self.token_store and self.token_store.save(self.api.token)
         )
         if self.project_id:
             settings.setValue("mapdex/project_id", self.project_id)
