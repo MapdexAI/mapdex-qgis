@@ -1365,10 +1365,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(composer)
-    # Idle discovery uses this stretch to stay gathered at the top. During a
-    # real conversation `_render_nivo_turns` gives the stretch back to the
-    # transcript, so the composer remains pinned to the bottom as expected.
-    surface_layout.addStretch(0)
     nivo_layout.addWidget(nivo_surface, 1)
 
     jobs = QWidget()

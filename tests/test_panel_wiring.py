@@ -258,14 +258,12 @@ def test_empty_chat_is_one_owned_welcome_card():
     assert 'if not turn.get("opening")' in turn, turn
 
 
-def test_idle_nivo_is_compact_and_does_not_repeat_stale_status():
+def test_idle_nivo_keeps_full_chat_height_without_repeating_stale_status():
     body = _method(PLUGIN, "_render_nivo_turns")
 
-    assert "exact = min(max(wanted, 140), 360)" in body, body
-    assert "self.nivo_reply.setMaximumHeight(exact)" in body, body
-    assert "surface_layout.setStretch(1, 1 if has_conversation else 0)" in body, body
-    assert "surface_layout.setStretch(4, 0 if has_conversation else 1)" in body, body
-    assert 'enum_member(QSizePolicy, "Policy", "Preferred")' in body, body
+    assert "self.nivo_reply.setMaximumHeight(16777215)" in body, body
+    assert body.count('enum_member(QSizePolicy, "Policy", "Expanding")') >= 2, body
+    assert "setMaximumHeight(exact)" not in body, body
     assert "self.nivo_status.setVisible(has_conversation or self._busy)" in body, body
 
 
