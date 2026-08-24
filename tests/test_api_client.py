@@ -13,6 +13,7 @@ from mapdex_qgis.results import (
     collect_geojson_artifact_urls,
     collect_raster_layer_imports,
     collect_layer_imports,
+    fallback_artifact_imports,
     collect_vector_layer_imports,
     first_batch_error,
     review_run_ids,
@@ -494,4 +495,70 @@ def test_collect_geojson_artifact_urls():
     }
     assert collect_geojson_artifact_urls(run) == [
         {"url": "/v1/artifacts/art_1/download", "name": "Preview"}
+    ]
+
+
+def test_a_georeference_run_does_not_also_import_its_footprint():
+    """The reported defect: one polygon in QGIS beside the georeferenced raster.
+
+    The worker emits preview.geojson - the projected footprint of the rectified
+    image - as an artifact of the same run that produced the raster Layer. The
+    plugin imported both, under the same name, so the project gained a
+    rectangle nobody asked for on top of the sheet.
+    """
+    run = {
+        "result_references": [
+            {
+                "kind": "layer",
+                "id": "layer_r",
+                "geometry_type": "raster",
+                "summary": "CA_Cannell Peak - Georeferenced",
+            },
+            {
+                "kind": "artifact",
+                "id": "art_1",
+                "url": "/v1/artifacts/art_1/download",
+                "format": "geojson",
+                "summary": "CA_Cannell Peak - Georeferenced",
+            },
+        ]
+    }
+    assert fallback_artifact_imports(run) == []
+
+
+def test_a_vector_run_does_not_import_its_own_export_twice():
+    # Same rule, and the reason it is a rule rather than a georeference
+    # carve-out: an extraction's GeoJSON artifact is an export OF its Layer, so
+    # importing both puts the same features in the project twice.
+    run = {
+        "result_references": [
+            {"kind": "layer", "id": "layer_v", "geometry_type": "polygon", "summary": "Parcels"},
+            {
+                "kind": "artifact",
+                "id": "art_1",
+                "url": "/v1/artifacts/art_1/download",
+                "format": "geojson",
+                "summary": "Parcels",
+            },
+        ]
+    }
+    assert fallback_artifact_imports(run) == []
+
+
+def test_a_run_with_no_layer_still_imports_its_geojson():
+    # The case the artifact route was written for. Removing it would lose a
+    # real result rather than a duplicate.
+    run = {
+        "result_references": [
+            {
+                "kind": "artifact",
+                "id": "art_1",
+                "url": "/v1/artifacts/art_1/download",
+                "format": "geojson",
+                "summary": "Traverse",
+            }
+        ]
+    }
+    assert fallback_artifact_imports(run) == [
+        {"url": "/v1/artifacts/art_1/download", "name": "Traverse"}
     ]

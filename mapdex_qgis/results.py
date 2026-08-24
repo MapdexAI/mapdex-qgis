@@ -437,3 +437,22 @@ def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
         name = str(ref.get("summary") or ref.get("label") or ref.get("id") or "Mapdex result")
         found.append({"url": url, "name": name})
     return found
+
+
+def fallback_artifact_imports(run: dict[str, Any]) -> list[dict[str, str]]:
+    """GeoJSON artifacts to import, and only when nothing else represents them.
+
+    Every geometry-producing step output materializes as a PostGIS-backed Layer
+    (hard rule 24), so a GeoJSON artifact sitting beside a Layer of the same run
+    is a copy of it. After a georeference it is not even that: the artifact is
+    `preview.geojson`, the projected footprint of the rectified raster, which is
+    a rectangle describing where the image landed rather than data anybody
+    asked for. Importing it unconditionally put a polygon in the QGIS project
+    next to the raster, both carrying the same name.
+
+    The artifact route stays for the run that materialized no Layer at all,
+    which is the case it was written for.
+    """
+    if collect_layer_imports(run):
+        return []
+    return collect_geojson_artifact_urls(run)

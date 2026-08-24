@@ -149,9 +149,9 @@ from .results import (
     batch_failure,
     batch_is_terminal,
     batch_state,
-    collect_geojson_artifact_urls,
     collect_layer_imports,
     every_failure_needs_placement,
+    fallback_artifact_imports,
     first_batch_error,
     geojson_truncation_notice,
     review_run_ids,
@@ -5655,7 +5655,9 @@ class MapdexPlugin:
                         "kind": kind,
                     }
                 )
-            for artifact in collect_geojson_artifact_urls(run):
+            # Artifacts are the fallback for a run that materialized no Layer;
+            # the rule and its reasoning live in `fallback_artifact_imports`.
+            for artifact in fallback_artifact_imports(run):
                 key = artifact["url"]
                 if key in self.imported_layer_ids:
                     continue
