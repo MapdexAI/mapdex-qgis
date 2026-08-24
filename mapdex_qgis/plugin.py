@@ -3082,6 +3082,7 @@ class MapdexPlugin:
             lambda exception, outcome: self._nivo_composed(request_id, exception, outcome),
             busy=False,
         )
+        self._refresh_stop_button()
 
     # -- the BYOK turn -----------------------------------------------------
 
@@ -3145,6 +3146,7 @@ class MapdexPlugin:
             lambda exception, reply: self._byok_replied(turn, request_id, exception, reply),
             busy=False,
         )
+        self._refresh_stop_button()
 
     @guarded
     def _byok_replied(self, turn, request_id, exception, reply):
@@ -3524,6 +3526,7 @@ class MapdexPlugin:
         self._nivo_compose_task = self._task(
             "Nivo is continuing", work,
             lambda error, outcome: self._nivo_composed(request_id, error, outcome))
+        self._refresh_stop_button()
 
     @staticmethod
     def _plain(label, text):

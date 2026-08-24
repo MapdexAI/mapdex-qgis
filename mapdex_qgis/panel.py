@@ -968,6 +968,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     workspace_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
     new_task_label = _section_label("New chat")
     open_project_button = QPushButton("Open in Mapdex")
+    open_project_button.setObjectName("mapdexSecondaryButton")
     open_project_button.setToolTip("Continue this project in the Mapdex workspace")
     workspace_layout.addLayout(root.register_pair(new_task_label, open_project_button))
     form = root.register_form(QFormLayout())

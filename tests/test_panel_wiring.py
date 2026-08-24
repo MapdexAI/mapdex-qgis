@@ -147,6 +147,14 @@ def test_finishing_a_turn_asks_whether_asking_is_possible():
     assert "setEnabled(not busy)" not in body, body
 
 
+def test_every_compose_task_refreshes_stop_after_assignment():
+    for method in ("_start_hosted_turn", "_byok_step", "_continue_objective"):
+        body = _method(PLUGIN, method)
+        assignment = body.index("self._nivo_compose_task = self._task(")
+        refresh = body.index("self._refresh_stop_button()", assignment)
+        assert refresh > assignment, "{} never reveals Stop after creating its task".format(method)
+
+
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
 
@@ -392,6 +400,14 @@ def test_open_project_uses_the_unlocalized_app_route():
     assert '"/workspace/{}"' in body, body
     assert "QLocale.system" not in body and 'prefix =' not in body, body
     assert 'QUrl("{}{}".format(self.web_base, path))' in body, body
+
+
+def test_open_project_uses_the_shared_secondary_button_style():
+    creation = PANEL.index('open_project_button = QPushButton("Open in Mapdex")')
+    placement = PANEL.index("workspace_layout.addLayout", creation)
+    block = PANEL[creation:placement]
+
+    assert 'open_project_button.setObjectName("mapdexSecondaryButton")' in block
 
 
 def test_discovery_stays_at_the_top_after_a_tall_resize():
