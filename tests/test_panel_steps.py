@@ -23,7 +23,7 @@ def _method(name, until="\n    @guarded"):
 def test_the_panel_imports_the_presentation_rule():
     # A module reachable only from its own test is not in the product. The
     # plugin has shipped 3,570 lines of that before; this is the cheap guard.
-    assert "from .trace_view import budget_label, step_rows" in PLUGIN
+    assert "from .trace_view import budget_notice, step_rows" in PLUGIN
 
 
 def test_a_composed_turn_carries_its_steps_into_the_transcript():
@@ -34,9 +34,12 @@ def test_a_composed_turn_carries_its_steps_into_the_transcript():
     )
 
 
-def test_the_status_line_reports_the_step_budget():
+def test_the_status_line_reports_only_a_turn_that_was_cut_short():
+    # It used to write the step counter unconditionally and leave it there, so
+    # a finished turn read "Step 2 of 32" with nothing running.
     body = _method("_nivo_composed")
-    assert "budget_label(response)" in body
+    assert "budget_notice(response)" in body
+    assert "budget_label" not in body
 
 
 def test_the_transcript_draws_a_widget_per_step():

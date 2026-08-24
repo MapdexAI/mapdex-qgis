@@ -1,5 +1,5 @@
 from mapdex_qgis.trace_view import (
-    budget_label,
+    budget_notice,
     format_duration,
     format_params,
     step_rows,
@@ -107,13 +107,30 @@ def test_format_params_states_what_it_cut():
     assert len(format_params({"note": "x" * 500})) <= 170
 
 
-def test_budget_says_when_the_loop_ran_out_of_room():
-    assert budget_label(_response([], {"steps_used": 3, "steps_max": 8})) == "Step 3 of 8"
-    assert budget_label(_response([], {"steps_used": 8, "steps_max": 8, "exhausted": True}) ) == (
-        "Step 8 of 8 (out of steps)"
-    )
-    # No budget reported is not "step 0 of 0"; it is nothing to say.
-    assert budget_label(_response([])) == ""
+def test_a_finished_turn_says_nothing_about_its_spent_budget():
+    # The reported defect: the panel sat reading "Step 2 of 32" with nothing
+    # running. A counter at rest looks like work in progress and invites the
+    # reading that thirty steps remain, when the answer is already on screen.
+    assert budget_notice(_response([], {"steps_used": 3, "steps_max": 8})) == ""
+    assert budget_notice(_response([], {"steps_used": 2, "steps_max": 32})) == ""
+
+
+def test_a_turn_cut_short_says_so_in_words():
+    # The one case worth a line, because the reply may be incomplete. It says
+    # so rather than leaving the person to notice that two numbers are equal.
+    notice = budget_notice(_response([], {"steps_used": 8, "steps_max": 8, "exhausted": True}))
+    assert "Stopped" in notice
+    assert "8 of 8" in notice
+
+
+def test_exhausted_with_no_ceiling_is_still_reported():
+    # Saying so without the arithmetic beats saying nothing, and beats
+    # "step 0 of 0".
+    assert budget_notice(_response([], {"exhausted": True})) ==         "Stopped after running out of steps"
+
+
+def test_no_budget_reported_is_nothing_to_say():
+    assert budget_notice(_response([])) == ""
 
 
 def test_a_malformed_trace_does_not_raise():

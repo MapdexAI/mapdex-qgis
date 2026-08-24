@@ -69,12 +69,27 @@ def step_rows(response: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def budget_label(response: Any) -> str:
-    """"Step 3 of 8", or an empty string when no budget was reported.
+def budget_notice(response: Any) -> str:
+    """What the person needs to know about the step budget, once a turn is over.
 
-    An exhausted budget says so. A loop that stopped because it ran out of room
-    reached a different outcome from one that finished, and rendering them the
-    same way is how "I could not finish" becomes "here is your answer".
+    Which is: nothing, unless the turn was cut short.
+
+    This used to render "Step 3 of 8" for every finished turn and leave it in
+    the status line, so the panel sat there reading "Step 2 of 32" with nothing
+    running. That is worse than saying nothing twice over. It looks like work in
+    progress, and it invites the reading that thirty steps remain, when in fact
+    the answer is already on screen and the count is a spent budget.
+
+    A loop that stopped because it ran out of room DID reach a different outcome
+    from one that finished, and that difference is the only part worth a line -
+    it is the case where the reply may be incomplete. It says so in words rather
+    than leaving the person to notice that two numbers are equal.
+
+    Mid-turn progress is a separate question with a separate source: the
+    continuation loop reports its own steps_used and steps_max under
+    response["continuation"], which continuation.continuation_budget reads. The
+    same numbers are information while work is happening and noise once it has
+    stopped, and that distinction is the whole reason this function exists.
     """
     trace = _trace_of(response)
     if not trace:
@@ -82,14 +97,15 @@ def budget_label(response: Any) -> str:
     budget = trace.get("budget")
     if not isinstance(budget, Mapping):
         return ""
+    if not budget.get("exhausted"):
+        return ""
     used = _int(budget.get("steps_used"))
     total = _int(budget.get("steps_max"))
     if total <= 0:
-        return ""
-    label = "Step {} of {}".format(used, total)
-    if budget.get("exhausted"):
-        return label + " (out of steps)"
-    return label
+        # Exhausted with no ceiling reported is still exhausted. Saying so
+        # without the arithmetic beats saying nothing, and beats "step 0 of 0".
+        return "Stopped after running out of steps"
+    return "Stopped after {} of {} steps".format(used, total)
 
 
 def _row(step: Mapping[str, Any], position: int) -> dict[str, Any]:

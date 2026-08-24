@@ -165,7 +165,7 @@ from .results import (
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
 from .continuation import action_result, continuation_budget, should_continue
 from .plan_offer import offer_prompt, plan_offer, plan_run_report
-from .trace_view import budget_label, step_rows
+from .trace_view import budget_notice, step_rows
 from .source_info import inspect_paths
 from .workspace import review_workspace_path, task_workspace_path
 
@@ -3432,8 +3432,12 @@ class MapdexPlugin:
             self._replace_last_assistant_turn(reply, steps)
         if self.nivo_status is not None:
             notice = str(outcome.get("notice") or "")
-            budget = budget_label(response)
-            self.nivo_status.setText(notice or budget or "Ready")
+            # The turn is OVER here, so the step counter is a spent budget and
+            # not a status. It used to be written unconditionally and left on
+            # screen, which is why the panel sat reading "Step 2 of 32" with
+            # nothing running. Only a turn that was cut short still has
+            # something to say.
+            self.nivo_status.setText(notice or budget_notice(response) or "Ready")
         # A computed answer whose output is POSITIONS goes on the canvas. A
         # bearing is a number and stays in the reply; a traverse is a walk
         # between stations, and handing somebody six coordinate pairs in a chat
