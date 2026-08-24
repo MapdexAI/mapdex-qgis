@@ -60,6 +60,7 @@ class _ArrowComboBox(QComboBox):
         painter.drawLine(QPointF(x, y + 2.0), QPointF(x + 4.0, y - 2.0))
         painter.end()
 from .branding import ACTION_ICONS, surface_asset_path
+from .job_items import item_action, item_status, item_title, items_summary, order_items
 from .qt_compat import enum_member
 
 
@@ -170,6 +171,175 @@ def _section_label(text):
     label = QLabel(text)
     label.setObjectName("mapdexSectionLabel")
     return label
+
+
+class _ElidedLabel(QLabel):
+    """One line that shrinks with the dock instead of pinning it open.
+
+    A plain QLabel reports its whole text as its minimum width, so one long
+    file name puts a floor under the entire panel - the defect `allow_narrow`
+    exists to undo for wrapping labels. Wrapping is the wrong answer in a list:
+    it makes rows variable height, and the scroll bound below is computed from
+    a fixed row. So the text is elided at paint time and the widget claims no
+    minimum of its own.
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full = text
+        self.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        self.setMinimumWidth(1)
+        self.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Ignored"),
+            enum_member(QSizePolicy, "Policy", "Preferred"),
+        )
+
+    def setText(self, text):  # noqa: N802 - Qt virtual name
+        self._full = text or ""
+        # The whole string is still the tooltip: eliding is a layout decision,
+        # and a name the user cannot read anywhere is a name we have hidden.
+        self.setToolTip(self._full)
+        super().setText(self._full)
+
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual name
+        metrics = self.fontMetrics()
+        elided = metrics.elidedText(
+            self._full,
+            enum_member(Qt, "TextElideMode", "ElideMiddle"),
+            max(1, self.width()),
+        )
+        if elided != super().text():
+            super().setText(elided)
+        super().paintEvent(event)
+
+
+class JobItemList(QWidget):
+    """The sheets in a batch, one row each, attention first.
+
+    A batch of three hundred sheets behind a single progress bar tells the
+    reviewer a percentage and nothing they can act on. This is the other half:
+    which sheet failed and why, which is waiting for a decision, and which are
+    finished. Ordering and wording are decided in `job_items`, so this class
+    only mounts rows.
+
+    Rows are rebuilt on each poll rather than diffed. The list is bounded and
+    the panel polls every three seconds, so the simple thing is also the
+    correct thing; a stale row that survived a diff would be the worse failure.
+    """
+
+    #: Above this many rows the list scrolls instead of growing the dock. Chosen
+    #: so a four-sheet batch is entirely visible without a scrollbar, and a
+    #: three-hundred-sheet one does not push Recent tasks off the panel.
+    VISIBLE_ROWS = 6
+    ROW_HEIGHT = 46
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexJobItems")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(5)
+
+        self._summary = QLabel("")
+        self._summary.setObjectName("mapdexJobItemsSummary")
+        self._summary.setWordWrap(True)
+        outer.addWidget(self._summary)
+
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("mapdexJobItemsScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(enum_member(QFrame, "Shape", "NoFrame"))
+        self._scroll.setHorizontalScrollBarPolicy(
+            enum_member(Qt, "ScrollBarPolicy", "ScrollBarAlwaysOff")
+        )
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(3)
+        self._body_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
+        self._scroll.setWidget(self._body)
+        outer.addWidget(self._scroll)
+
+    def set_items(self, items, names=None, on_action=None):
+        """Replace the rows. Returns the number shown.
+
+        `on_action` is called with (key, item) when a row's button is pressed;
+        the key is whatever `job_items.item_action` decided, so this widget
+        never chooses what an action means.
+        """
+        while self._body_layout.count():
+            entry = self._body_layout.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        rows = order_items(items or [])
+        self._summary.setText(items_summary(rows))
+        self._summary.setVisible(bool(rows))
+        for item in rows:
+            self._body_layout.addWidget(self._build_row(item, names or {}, on_action))
+
+        shown = min(len(rows), self.VISIBLE_ROWS)
+        self._scroll.setMaximumHeight(max(self.ROW_HEIGHT, shown * self.ROW_HEIGHT))
+        self.setVisible(bool(rows))
+        return len(rows)
+
+    def _build_row(self, item, names, on_action):
+        status = item_status(item)
+        row = QFrame()
+        row.setObjectName("mapdexJobItemRow")
+        # The state is on the ROW, so a stylesheet can tint it without any
+        # tinting being the only carrier of meaning - the mark and the word are
+        # both in the text beside it (DESIGN.md 4.2). Set before the row is
+        # mounted, which is the second reason rows are rebuilt rather than
+        # updated in place: Qt evaluates a dynamic property in a stylesheet at
+        # polish time, so changing one afterwards needs an explicit unpolish and
+        # silently does nothing without it.
+        row.setProperty("itemState", status["state"])
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(8)
+
+        mark = QLabel(status["mark"])
+        mark.setObjectName("mapdexJobItemMark")
+        mark.setFixedWidth(14)
+        mark.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignCenter"))
+        layout.addWidget(mark, 0)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(1)
+        # The file name is the user's own, so it is data: plain text, never
+        # rich, and elided rather than allowed to widen the dock.
+        title = _ElidedLabel()
+        title.setObjectName("mapdexJobItemTitle")
+        title.setText(item_title(item, names))
+        text.addWidget(title)
+        # A failed item says why on its own row. Sending the person elsewhere to
+        # find out is the wrong economy on the one row that needs them.
+        detail = _ElidedLabel()
+        detail.setObjectName("mapdexJobItemDetail")
+        detail.setText(status["detail"] or status["label"])
+        text.addWidget(detail)
+        layout.addLayout(text, 1)
+
+        action = item_action(item)
+        if action["key"] and on_action is not None:
+            button = QToolButton()
+            button.setObjectName("mapdexJobItemAction")
+            button.setText(action["label"])
+            button.setToolButtonStyle(
+                enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+            )
+            button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+            key = action["key"]
+            captured = dict(item)
+            button.clicked.connect(
+                lambda _checked=False, k=key, i=captured: on_action(k, i)
+            )
+            layout.addWidget(button, 0)
+        return row
 
 
 def _elastic(combo):
@@ -391,6 +561,70 @@ def build_companion_panel(workflows, endpoint_settings=True):
         QPushButton#mapdexSecondaryButton:disabled {
             color: #6B6B6B;
             border-color: rgba(230, 233, 242, 0.12);
+        }
+        /* The quiet tier: stopping work, and other moves that take something
+           away. Borderless so it never competes with the two tiers above it,
+           and it is a QPushButton like them - Cancel used to be a bare
+           QToolButton, which is why it alone wore QGIS's own chrome in a
+           column of Mapdex buttons. */
+        QPushButton#mapdexQuietButton {
+            min-height: 30px;
+            padding: 4px 10px;
+            color: #8F96A8;
+            background: transparent;
+            border: 0;
+            border-radius: 6px;
+            text-align: left;
+        }
+        QPushButton#mapdexQuietButton:hover {
+            color: #F7F7F5;
+            background: rgba(230, 233, 242, 0.08);
+        }
+        QPushButton#mapdexQuietButton:disabled { color: #5A5A5A; }
+        /* The batch item list. One row per sheet, and the row's state is a
+           property so the tint follows it - the mark and the word carry the
+           meaning on their own, so nothing here depends on colour. */
+        QLabel#mapdexJobItemsSummary {
+            color: #8F96A8;
+            font-size: 11px;
+        }
+        QScrollArea#mapdexJobItemsScroll { background: transparent; border: 0; }
+        QFrame#mapdexJobItemRow {
+            background: #1c1c1c;
+            border: 1px solid rgba(230, 233, 242, 0.10);
+            border-radius: 6px;
+        }
+        QFrame#mapdexJobItemRow[itemState="failed"] { border-color: rgba(184, 62, 76, 0.55); }
+        QFrame#mapdexJobItemRow[itemState="needs_review"] { border-color: rgba(154, 106, 34, 0.65); }
+        QFrame#mapdexJobItemRow[itemState="running"] { border-color: rgba(99, 102, 241, 0.55); }
+        QLabel#mapdexJobItemMark {
+            color: #C9CDD8;
+            font-weight: 700;
+            background: transparent;
+            border: 0;
+        }
+        QLabel#mapdexJobItemTitle {
+            color: #F7F7F5;
+            font-size: 12px;
+            background: transparent;
+            border: 0;
+        }
+        QLabel#mapdexJobItemDetail {
+            color: #8F96A8;
+            font-size: 11px;
+            background: transparent;
+            border: 0;
+        }
+        QToolButton#mapdexJobItemAction {
+            color: #C9CDD8;
+            background: transparent;
+            border: 1px solid rgba(230, 233, 242, 0.22);
+            border-radius: 5px;
+            padding: 3px 9px;
+        }
+        QToolButton#mapdexJobItemAction:hover {
+            color: #F7F7F5;
+            border-color: #6366F1;
         }
         /* Fields. The panel painted its own #191919 surface and then left ten
            combos wearing Qt's default, which is what reads as unfinished. One
@@ -1147,6 +1381,14 @@ def build_companion_panel(workflows, endpoint_settings=True):
     guidance_label.setWordWrap(True)
     guidance_label.setStyleSheet("color: #8F96A8; font-size: 11px;")
     batch_layout.addWidget(guidance_label)
+    # The sheets themselves, between the progress bar and the actions. A batch
+    # is not one dataset with one state: three hundred sheets can be two
+    # hundred and eighty finished and twenty needing a person, and a single bar
+    # averages exactly the twenty a reviewer is looking for out of sight.
+    item_list = JobItemList()
+    item_list.setVisible(False)
+    batch_layout.addWidget(item_list)
+
     retry_button = QPushButton("Retry failed item")
     # Jobs shows Retry and Get result together, so exactly one of them can
     # be filled. Get result is the thing the user came for.
@@ -1154,13 +1396,26 @@ def build_companion_panel(workflows, endpoint_settings=True):
     import_button = QPushButton("Add result to QGIS")
     import_button.setObjectName("mapdexPrimaryButton")
     review_button = QPushButton("Review in Mapdex")
-    cancel_button = QToolButton()
-    cancel_button.setText("Cancel task")
-    cancel_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
-    for widget in (retry_button, import_button, review_button, cancel_button):
+    # This carried no object name at all, so the one action that routes the
+    # user to the browser was the only button on the page still wearing QGIS's
+    # own chrome. It is a secondary move: the result belongs in QGIS, and this
+    # is the trip out to decide something first.
+    review_button.setObjectName("mapdexSecondaryButton")
+    # Seeing the task in Mapdex is always available and never the point, so it
+    # is offered beside Cancel rather than in the action column above.
+    open_button = QPushButton("Open task in Mapdex")
+    open_button.setObjectName("mapdexQuietButton")
+    cancel_button = QPushButton("Cancel task")
+    cancel_button.setObjectName("mapdexQuietButton")
+    for widget in (retry_button, import_button, review_button):
         batch_layout.addWidget(widget)
+    quiet_row = QHBoxLayout()
+    quiet_row.setContentsMargins(0, 0, 0, 0)
+    quiet_row.setSpacing(4)
+    quiet_row.addWidget(open_button, 0)
+    quiet_row.addWidget(cancel_button, 0)
+    quiet_row.addStretch(1)
+    batch_layout.addLayout(quiet_row)
     jobs_layout.addWidget(batch)
 
     recent = QWidget()
@@ -1170,6 +1425,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     recent_layout.addWidget(_section_label("Recent tasks"))
     recent_box = _elastic(_ArrowComboBox())
     resume_button = QPushButton("Resume")
+    # Reopening an earlier task is a real move with a real cost, and it was the
+    # last unstyled button on this page.
+    resume_button.setObjectName("mapdexSecondaryButton")
     recent_layout.addLayout(root.register_pair(recent_box, resume_button))
     jobs_layout.addWidget(recent)
     jobs_layout.addStretch(1)
@@ -1266,9 +1524,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "composer": composer,
         "nivo_stop_button": nivo_stop_button,
         "cancel_button": cancel_button,
+        "open_batch_button": open_button,
         "retry_button": retry_button,
         "import_button": import_button,
         "review_button": review_button,
+        "item_list": item_list,
         "recent": recent,
         "recent_box": recent_box,
         "resume_button": resume_button,

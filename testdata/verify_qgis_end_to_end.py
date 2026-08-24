@@ -2206,6 +2206,206 @@ def tracer_leaves_on_unload():
 check("the tracer and its toolbar are removed on unload", tracer_leaves_on_unload)
 
 
+# ==========================================================================
+# Part N: the Jobs page — the batch, its sheets, and its buttons
+# ==========================================================================
+
+def _jobs_buttons():
+    refs = PANEL.get("refs") or {}
+    if not refs:
+        raise NotRun("the panel did not build")
+    names = (
+        "retry_button", "import_button", "review_button",
+        "cancel_button", "resume_button", "open_batch_button",
+    )
+    missing = [name for name in names if refs.get(name) is None]
+    if missing:
+        raise AssertionError("the Jobs page did not hand back: {}".format(missing))
+    return {name: refs[name] for name in names}
+
+
+def every_jobs_button_wears_mapdex_chrome():
+    """No control on this page may fall back to QGIS's own button style.
+
+    Three did. `review_button` carried no object name at all, and Cancel was a
+    bare QToolButton, so the two controls that take a person out of the task
+    were the two that did not look like the rest of the panel.
+    """
+    unstyled = [
+        name for name, widget in _jobs_buttons().items()
+        if not str(widget.objectName() or "").startswith("mapdex")
+    ]
+    if unstyled:
+        raise AssertionError("no Mapdex object name on: {}".format(unstyled))
+    return "6 Jobs controls, all styled by object name"
+
+
+def exactly_one_filled_button_on_the_jobs_page():
+    """The tier system means one thing on screen is filled. Prove it stays one."""
+    filled = [
+        name for name, widget in _jobs_buttons().items()
+        if widget.objectName() == "mapdexPrimaryButton"
+    ]
+    if filled != ["import_button"]:
+        raise AssertionError("primary tier claimed by: {}".format(filled))
+    return "only 'Add result to QGIS' is filled"
+
+
+def _drive_batch(items, counts=None, status="running"):
+    plugin = need_plugin()
+    if plugin.item_list is None:
+        raise NotRun("this build has no batch item list")
+    resolved = counts or {
+        "total": len(items),
+        "succeeded": sum(1 for i in items if i["state"] == "succeeded"),
+        "needs_review": sum(1 for i in items if i["state"] == "needs_review"),
+        "failed": sum(1 for i in items if i["state"] == "failed"),
+    }
+    plugin.api.token = "verify-session"
+    plugin.batch_id = "batch_verify"
+    plugin._last_batch = {"id": "batch_verify", "status": status,
+                          "counts": resolved, "items": items}
+    plugin._refresh_ui()
+    return plugin
+
+
+def _item_rows(plugin):
+    from qgis.PyQt.QtWidgets import QFrame as _QFrame
+
+    return [
+        widget for widget in descendants(plugin.item_list, _QFrame)
+        if widget.objectName() == "mapdexJobItemRow"
+    ]
+
+
+def the_batch_lists_its_sheets_attention_first():
+    """Four sheets, four rows, and the one that failed is at the top.
+
+    The ordering is decided in `job_items` and tested there without Qt. What
+    this proves is the half that module cannot: that the rows were actually
+    mounted, in that order, on a real panel.
+    """
+    plugin = _drive_batch([
+        {"index": 0, "file_id": "f0", "state": "succeeded", "run_id": "run_0"},
+        {"index": 1, "file_id": "f1", "state": "running", "run_id": "run_1"},
+        {"index": 2, "file_id": "f2", "state": "failed", "run_id": "run_2",
+         "error": {"code": "GEOREFERENCE_REQUIRED", "message": "This scan has no placement."}},
+        {"index": 3, "file_id": "f3", "state": "needs_review", "run_id": "run_3"},
+    ])
+    rows = _item_rows(plugin)
+    if len(rows) != 4:
+        raise AssertionError("expected 4 rows, mounted {}".format(len(rows)))
+    order = [str(row.property("itemState")) for row in rows]
+    if order != ["failed", "needs_review", "running", "succeeded"]:
+        raise AssertionError("rows mounted in the wrong order: {}".format(order))
+    if not plugin.item_list.isVisibleTo(plugin.dock):
+        raise AssertionError("the list was built but left hidden")
+    return "4 rows: " + ", ".join(order)
+
+
+def a_failed_sheet_says_why_on_its_own_row():
+    plugin = _drive_batch([
+        {"index": 0, "file_id": "f0", "state": "failed", "run_id": "run_0",
+         "error": {"code": "GEOREFERENCE_REQUIRED", "message": "This scan has no placement."}},
+        {"index": 1, "file_id": "f1", "state": "succeeded", "run_id": "run_1"},
+    ])
+    texts = [label.text() for label in descendants(plugin.item_list, QLabel)]
+    if not any("no placement" in text for text in texts):
+        raise AssertionError("the failure reason never reached the row: {}".format(texts))
+    return "the reason is on the row, not behind a trip to the browser"
+
+
+def the_sheet_name_the_user_chose_is_the_row_title():
+    plugin = need_plugin()
+    plugin._batch_file_names = {"f0": "CA_Cannell Peak_100592.tiff"}
+    _drive_batch([{"index": 0, "file_id": "f0", "state": "failed", "run_id": "run_0"},
+                  {"index": 1, "file_id": "f1", "state": "failed", "run_id": "run_1"}])
+    # The label elides for the dock width, so the whole name lives on the
+    # tooltip; checking the painted text would measure the font, not the wiring.
+    tips = [label.toolTip() for label in descendants(plugin.item_list, QLabel)]
+    plugin._batch_file_names = {}
+    if "CA_Cannell Peak_100592.tiff" not in tips:
+        raise AssertionError("the chosen file name never reached the row: {}".format(tips))
+    return "rows are titled by the file the user picked"
+
+
+def one_running_sheet_gets_no_list():
+    """A single row reading "Running" under a bar that says so is noise.
+
+    The list earns its space when there is more than one sheet, or when one
+    sheet needs a person.
+    """
+    plugin = _drive_batch([{"index": 0, "file_id": "f0", "state": "running", "run_id": "run_0"}])
+    rows = _item_rows(plugin)
+    if rows:
+        raise AssertionError("mounted {} row(s) for a single running sheet".format(len(rows)))
+    return "no list for one sheet in flight"
+
+
+def one_failed_sheet_does_get_a_list():
+    plugin = _drive_batch(
+        [{"index": 0, "file_id": "f0", "state": "failed", "run_id": "run_0",
+          "error": {"message": "This scan has no placement."}}],
+        status="completed",
+    )
+    if len(_item_rows(plugin)) != 1:
+        raise AssertionError("a single failed sheet was not listed")
+    return "one sheet, listed, because it needs a person"
+
+
+def a_finished_sheet_offers_exactly_one_action():
+    from qgis.PyQt.QtWidgets import QToolButton as _QToolButton
+
+    plugin = _drive_batch([
+        {"index": 0, "file_id": "f0", "state": "succeeded", "run_id": "run_0"},
+        {"index": 1, "file_id": "f1", "state": "running", "run_id": "run_1"},
+    ])
+    actions = [
+        button.text() for button in descendants(plugin.item_list, _QToolButton)
+        if button.objectName() == "mapdexJobItemAction"
+    ]
+    # One button, on the finished sheet. The one still running offers nothing,
+    # because a control that cannot act yet is one a person learns to distrust.
+    if actions != ["Add"]:
+        raise AssertionError("row actions were {}".format(actions))
+    return "one action, on the sheet that has a result"
+
+
+def opening_the_task_needs_a_real_batch():
+    """The panel shows itself a placeholder batch while the upload is in flight.
+
+    Offering "Open task in Mapdex" against it sends the user to a task the
+    server has never heard of.
+    """
+    plugin = need_plugin()
+    if plugin.open_batch_button is None:
+        raise NotRun("this build has no open-task control")
+    plugin.api.token = "verify-session"
+    plugin.batch_id = "uploading"
+    plugin._last_batch = {"status": "created", "counts": {"total": 1}}
+    plugin._refresh_ui()
+    during_upload = plugin.open_batch_button.isVisibleTo(plugin.dock)
+    _drive_batch([{"index": 0, "file_id": "f0", "state": "failed", "run_id": "run_0"}],
+                 status="completed")
+    after = plugin.open_batch_button.isVisibleTo(plugin.dock)
+    if during_upload:
+        raise AssertionError("offered against the placeholder batch")
+    if not after:
+        raise AssertionError("not offered on a failed task, which is when it is wanted")
+    return "hidden while uploading, offered once the task is real"
+
+
+check("every Jobs button wears Mapdex chrome", every_jobs_button_wears_mapdex_chrome)
+check("exactly one filled button on the Jobs page", exactly_one_filled_button_on_the_jobs_page)
+check("the batch lists its sheets, attention first", the_batch_lists_its_sheets_attention_first)
+check("a failed sheet says why on its own row", a_failed_sheet_says_why_on_its_own_row)
+check("the sheet name the user chose titles the row", the_sheet_name_the_user_chose_is_the_row_title)
+check("one running sheet gets no list", one_running_sheet_gets_no_list)
+check("one failed sheet does get a list", one_failed_sheet_does_get_a_list)
+check("a finished sheet offers exactly one action", a_finished_sheet_offers_exactly_one_action)
+check("opening the task needs a real batch", opening_the_task_needs_a_real_batch)
+
+
 print("=" * 96)
 print("DISPATCH SWEEP — every action this build advertises to the server")
 print("-" * 96)

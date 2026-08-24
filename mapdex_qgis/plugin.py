@@ -236,6 +236,7 @@ PANEL_WIDGET_REFS = (
     "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
     "cancel_button", "retry_button", "import_button", "review_button",
+    "open_batch_button", "item_list",
     "open_project_button", "recent", "recent_box", "resume_button",
     "connect_promise", "sign_in", "tail", "body_layout",
     "first_open_prompt", "first_open_title",
@@ -775,6 +776,11 @@ class MapdexPlugin:
         # the encrypted authentication database on every layer click.
         self._assistant_runtime_cache = None
         self._last_batch: Optional[dict] = None
+        # file id -> the name the user chose in the file dialog. The server
+        # answers with ids, and an item list reading "Item 3" for a sheet the
+        # person picked by name is one they cannot match to their own work.
+        # Empty after a resume, which is honest: this session did not send it.
+        self._batch_file_names: dict = {}
         self._source_label = ""
         self._pending_is_batch = False
         self._busy = False
@@ -841,6 +847,8 @@ class MapdexPlugin:
         self.retry_button = None
         self.import_button = None
         self.review_button = None
+        self.open_batch_button = None
+        self.item_list = None
         self.recent = None
         self.recent_box = None
         self.resume_button = None
@@ -1853,6 +1861,8 @@ class MapdexPlugin:
         self.retry_button.clicked.connect(self.retry_failed)
         self.import_button.clicked.connect(self.import_results)
         self.review_button.clicked.connect(self.open_review)
+        if self.open_batch_button is not None:
+            self.open_batch_button.clicked.connect(self.open_batch_in_mapdex)
         if hasattr(self, "open_project_button") and self.open_project_button:
             self.open_project_button.clicked.connect(self.open_project)
         self.resume_button.clicked.connect(self.resume_recent)
@@ -2350,6 +2360,15 @@ class MapdexPlugin:
         self.batch_group.setVisible(connected and has_batch)
         self.cancel_button.setVisible(active)
         self.cancel_button.setEnabled(active and not self._busy)
+        # Seeing the task in the browser is available for as long as there is a
+        # task, including after it failed - that is exactly when somebody wants
+        # to look. It needs a real batch on the server, not the placeholder the
+        # panel shows itself while the upload is still in flight.
+        if self.open_batch_button is not None:
+            self.open_batch_button.setVisible(
+                connected and has_batch and self.batch_id not in ("", "uploading")
+            )
+            self.open_batch_button.setEnabled(not self._busy)
         # Retry re-sends the identical request, so it is hidden when every
         # failure was a refusal that request cannot satisfy. The route to the
         # prerequisite takes its place on the action button below.
@@ -2399,6 +2418,20 @@ class MapdexPlugin:
                 self.batch_title.setText("Processing {} of {} files".format(completed, total))
             else:
                 self.batch_title.setText("Task in progress" if active else "Latest task")
+        # The sheets. Offered for a batch of more than one, and for a single
+        # sheet only once it needs a person - one row saying "Running" under a
+        # progress bar that already says so is a line of noise, while one row
+        # naming why the sheet failed is the answer.
+        if self.item_list is not None:
+            items = (self._last_batch or {}).get("items") or []
+            worth_listing = has_batch and connected and (
+                len(items) > 1 or failed > 0 or needs_review > 0
+            )
+            self.item_list.set_items(
+                items if worth_listing else [],
+                self._batch_file_names,
+                self._job_item_action,
+            )
         if self.recent is not None and self.recent_box is not None:
             self.recent.setVisible(self.recent_box.count() > 0 and connected)
         # Which engine answers, and the reading of the open project, are both
@@ -4862,17 +4895,22 @@ class MapdexPlugin:
         self.input_box.clear()
         self.input_box.addItem("Select source…", "")
         self.input_box.addItem("Active QGIS layer", "active_layer")
-        self.input_box.addItem("Choose a file…", "file")
+        # Plural, because the dialog behind it has always been multi-select and
+        # several files have always started a real server-side batch. Naming it
+        # in the singular is why nobody found that: a capability nothing on
+        # screen mentions is one that does not exist for the person using it.
+        self.input_box.addItem("Choose files…", "file")
         target = self.input_box.findData(current)
         self.input_box.setCurrentIndex(target if target >= 0 else 0)
         self.input_box.blockSignals(False)
         self.selected_paths = []
         self._source_label = ""
         self.source_summary.setText("No source selected")
-        if kind == BatchKind.VALIDATE_DELIVER:
-            self._set_status("Use the active vector layer or choose one file.")
-        else:
-            self._set_status("Use the active raster layer or choose one file.")
+        layer_kind = "vector" if kind == BatchKind.VALIDATE_DELIVER else "raster"
+        self._set_status(
+            "Use the active {} layer, or choose files — select several to run "
+            "them as one batch.".format(layer_kind)
+        )
 
     @guarded
     def connect(self, *args):
@@ -5141,7 +5179,13 @@ class MapdexPlugin:
             if not file_id:
                 raise RuntimeError("Upload succeeded but no file id was returned.")
             file_ids.append(file_id)
-        return {"batch": self.api.start_batch(project_id, file_ids, kind), "file_ids": file_ids}
+        return {
+            "batch": self.api.start_batch(project_id, file_ids, kind),
+            "file_ids": file_ids,
+            # Paired by position with file_ids, which is the only place the two
+            # are ever together: the server never learns the local path.
+            "file_names": [os.path.basename(path) for path in paths],
+        }
 
     @guarded
     def _run_started(self, exception, response):
@@ -5153,6 +5197,7 @@ class MapdexPlugin:
         payload = response or {}
         batch = payload.get("batch") if isinstance(payload.get("batch"), dict) else payload
         file_ids = payload.get("file_ids") or []
+        self._batch_file_names = dict(zip(file_ids, payload.get("file_names") or []))
         self.batch_id = (batch or {}).get("id") or ""
         if not self.batch_id:
             self._show_error("Send to Mapdex failed", RuntimeError("No batch id returned"))
@@ -5745,6 +5790,67 @@ class MapdexPlugin:
             "Retry failed Mapdex items",
             lambda: self.api.retry_failed(project_id, self.batch_id),
             done,
+        )
+
+    def _open_workspace_path(self, path: str):
+        """Open one workspace destination in the browser.
+
+        The locale prefix is applied in one place so the three callers that
+        route a user out of QGIS cannot drift apart on it.
+        """
+        locale = QLocale.system().name().split("_")[0]
+        prefix = "" if locale == "en" else "/{}".format(locale)
+        QDesktopServices.openUrl(QUrl("{}{}{}".format(self.web_base, prefix, path)))
+
+    @guarded
+    def open_batch_in_mapdex(self, *args):
+        """Show this task in Mapdex, whatever state it is in.
+
+        Distinct from Review, which is offered only when something is waiting
+        for a decision. A task that failed is the case somebody most wants to
+        look at, and until now the panel offered no way to do it.
+        """
+        if not self.batch_id or self.batch_id == "uploading":
+            return
+        detail = self._last_batch or {}
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        self._open_workspace_path(
+            task_workspace_path(self._active_project_id(), workflow, detail)
+        )
+
+    @guarded
+    def _job_item_action(self, key: str, item: dict):
+        """Act on one sheet of the batch.
+
+        What each key means was decided in `job_items.item_action`; this only
+        carries it out. A row for a sheet whose run is unknown offers nothing,
+        so there is no branch here for a missing run id.
+        """
+        run_id = str((item or {}).get("run_id") or "")
+        project_id = self._active_project_id()
+        if key == "import":
+            if not run_id:
+                return
+            # One run, imported as it stands. `_fetch_result_files` already had
+            # this entry point for a directly-run plan, so a per-sheet import
+            # does not become a second place that decides what a result is.
+            self._task(
+                "Import Mapdex result into QGIS",
+                lambda: self._fetch_result_files(
+                    self._last_batch or {}, only_runs=(run_id,)
+                ),
+                self._results_imported,
+            )
+            return
+        # Review and Why are both "show me this sheet in Mapdex", and the
+        # destination differs by the sheet's own state, which is exactly what
+        # task_workspace_path decides from the item it is given.
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        detail = {"items": [item]} if isinstance(item, dict) else {}
+        self._open_workspace_path(
+            task_workspace_path(
+                project_id, workflow, detail, file_id=str((item or {}).get("file_id") or "")
+            )
         )
 
     @guarded
