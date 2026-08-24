@@ -3753,8 +3753,18 @@ class MapdexPlugin:
             return
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                # `deleteLater` alone leaves the widget parented to the scroll
+                # viewport until Qt returns to its outer event loop. A provider
+                # failure opens a nested modal and then immediately hands the
+                # same turn to Mapdex, producing several renders before that
+                # happens. The retired user cards kept painting at their old
+                # geometry behind the new transcript, making the whole chat
+                # look like one giant overlapping purple bubble.
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         # The opening reading is drawn as turns, ahead of the conversation, and
         # is recomputed rather than accumulated - it describes the layer that is
         # active NOW. Once the user says something it steps aside, because on a

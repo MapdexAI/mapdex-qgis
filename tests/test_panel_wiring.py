@@ -182,6 +182,14 @@ def test_connector_browser_open_is_queued_to_the_qgis_ui_thread():
     assert "QDesktopServices.openUrl" not in work
 
 
+def test_transcript_detaches_retired_widgets_before_repainting():
+    render = _method(PLUGIN, "_render_nivo_turns")
+    hide = render.index("widget.hide()")
+    detach = render.index("widget.setParent(None)", hide)
+    delete = render.index("widget.deleteLater()", detach)
+    assert hide < detach < delete
+
+
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
 
