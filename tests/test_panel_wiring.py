@@ -155,6 +155,22 @@ def test_every_compose_task_refreshes_stop_after_assignment():
         assert refresh > assignment, "{} never reveals Stop after creating its task".format(method)
 
 
+def test_connector_sign_in_is_bounded_and_user_cancellable():
+    connect = _method(PLUGIN, "connect")
+    work = _method(PLUGIN, "_connect_work")
+    finished = _method(PLUGIN, "_connect_finished")
+
+    assert "self._connect_cancel.set()" in connect
+    assert "self._connect_task = self._task(" in connect
+    assert "CONNECT_TOTAL_TIMEOUT" in work
+    assert "_connect_request_timeout" in work
+    assert "cancel_event=self._connect_cancel" in work
+    assert "timeout=300" not in work
+    assert "self._connect_task = None" in finished
+    assert 'exception.code == "cancelled"' in finished
+    assert "def set_label" in PANEL
+
+
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
 

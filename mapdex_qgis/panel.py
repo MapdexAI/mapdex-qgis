@@ -115,11 +115,11 @@ class ActionRow(QFrame):
         text = QVBoxLayout()
         text.setContentsMargins(0, 0, 0, 0)
         text.setSpacing(2)
-        title = QLabel(label)
-        title.setObjectName("mapdexRowLabel")
-        title.setWordWrap(True)
-        title.setMinimumWidth(1)
-        text.addWidget(title)
+        self._title = QLabel(label)
+        self._title.setObjectName("mapdexRowLabel")
+        self._title.setWordWrap(True)
+        self._title.setMinimumWidth(1)
+        text.addWidget(self._title)
         # Always built, even when empty, so the second line can change with the
         # row's rank. A row created without one could never gain one, which is
         # how a demoted Connect kept saying "Recommended. Free to start." to
@@ -137,6 +137,9 @@ class ActionRow(QFrame):
         a blank line where a sentence was."""
         self._detail.setText(sublabel or "")
         self._detail.setVisible(bool(sublabel))
+
+    def set_label(self, label):
+        self._title.setText(label or "")
 
     def set_tone(self, tone):
         """Re-rank the row without rebuilding it.

@@ -31,6 +31,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib import error, parse, request
@@ -196,7 +197,7 @@ class LoopbackReceiver:
         self._serving = True
         return self
 
-    def wait(self, timeout: float = 300.0) -> str:
+    def wait(self, timeout: float = 120.0, cancel_event=None) -> str:
         """Block until the browser comes back, or say plainly that it did not.
 
         The timeout is generous because a person may have to sign in, pick a
@@ -204,12 +205,17 @@ class LoopbackReceiver:
         thread waiting forever on a window somebody closed is a leak that
         outlives the plugin.
         """
-        if not self._event.wait(timeout):
-            raise ConnectorAuthError(
-                "Mapdex did not hear back from the browser. If the page is still open, "
-                "finish there and try again.",
-                "timeout",
-            )
+        deadline = time.monotonic() + max(0.0, timeout)
+        while not self._event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                raise ConnectorAuthError("The Mapdex connection was cancelled.", "cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConnectorAuthError(
+                    "Mapdex did not hear back from the browser in time. Try connecting again.",
+                    "timeout",
+                )
+            self._event.wait(min(0.2, remaining))
         if "error" in self._result:
             raise self._result["error"]
         return str(self._result.get("code") or "")
@@ -234,14 +240,18 @@ class LoopbackReceiver:
         return False
 
 
-def discover_endpoints(api_base: str, opener: Optional[Callable] = None) -> Dict[str, str]:
+def discover_endpoints(
+    api_base: str,
+    opener: Optional[Callable] = None,
+    timeout: float = 30.0,
+) -> Dict[str, str]:
     """Read the authorization server's own metadata rather than guessing paths.
 
     RFC 8414. Guessing works right up until a deployment moves an endpoint, and
     then it fails as "couldn't reach the server" with nothing naming the cause.
     """
     url = api_base.rstrip("/") + "/.well-known/oauth-authorization-server"
-    raw = _fetch(url, opener=opener)
+    raw = _fetch(url, opener=opener, timeout=timeout)
     document = json.loads(raw.decode("utf-8"))
     endpoints = {
         "authorize": str(document.get("authorization_endpoint") or ""),
@@ -257,7 +267,9 @@ def discover_endpoints(api_base: str, opener: Optional[Callable] = None) -> Dict
 
 
 def server_knows_this_client(
-    authorization_url: str, opener: Optional[Callable] = None
+    authorization_url: str,
+    opener: Optional[Callable] = None,
+    timeout: float = 15.0,
 ) -> bool:
     """Would this server accept the flow, before anybody opens a browser?
 
@@ -287,7 +299,7 @@ def server_knows_this_client(
 
     call = opener or request.build_opener(_NoRedirect).open
     try:
-        with call(authorization_url, timeout=15) as response:  # nosec B310
+        with call(authorization_url, timeout=timeout) as response:  # nosec B310
             return int(getattr(response, "status", 200) or 200) < 400
     except error.HTTPError as answer:
         # A redirect to a sign-in page is the server saying "yes, but log in
@@ -304,6 +316,7 @@ def exchange_code(
     redirect_uri: str,
     resource: str = "",
     opener: Optional[Callable] = None,
+    timeout: float = 30.0,
 ) -> Dict[str, Any]:
     """Swap the authorization code for tokens."""
     form = {
@@ -315,7 +328,7 @@ def exchange_code(
     }
     if resource:
         form["resource"] = resource
-    return _post_form(token_endpoint, form, opener=opener)
+    return _post_form(token_endpoint, form, opener=opener, timeout=timeout)
 
 
 def refresh_tokens(
@@ -341,22 +354,27 @@ def refresh_tokens(
     return _post_form(token_endpoint, form, opener=opener)
 
 
-def _post_form(url: str, form: Dict[str, str], opener: Optional[Callable] = None) -> Dict[str, Any]:
+def _post_form(
+    url: str,
+    form: Dict[str, str],
+    opener: Optional[Callable] = None,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
     body = parse.urlencode(form).encode("ascii")
     req = request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     req.add_header("Accept", "application/json")
-    raw = _fetch(req, opener=opener)
+    raw = _fetch(req, opener=opener, timeout=timeout)
     payload = json.loads(raw.decode("utf-8"))
     if not payload.get("access_token"):
         raise ConnectorAuthError("Mapdex returned no access token.", "no_token")
     return payload
 
 
-def _fetch(target, opener: Optional[Callable] = None) -> bytes:
+def _fetch(target, opener: Optional[Callable] = None, timeout: float = 30.0) -> bytes:
     call = opener or request.urlopen
     try:
-        with call(target, timeout=30) as response:  # nosec B310 - https/loopback only
+        with call(target, timeout=timeout) as response:  # nosec B310 - https/loopback only
             return response.read()
     except error.HTTPError as failure:
         # An OAuth error body is JSON with a code in it (RFC 6749 5.2), and that

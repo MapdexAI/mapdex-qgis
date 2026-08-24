@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import traceback
 from functools import partial
@@ -224,6 +225,8 @@ PLUGIN_NATIVE_ACTIONS = {
 
 DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://app.mapdex.ai"
+CONNECT_TOTAL_TIMEOUT = 120.0
+CONNECT_HTTP_TIMEOUT = 10.0
 # While a task waits for browser review the panel keeps a slow watch, so an
 # approved result still lands in QGIS without the user pressing Resume.
 REVIEW_POLL_MS = 15000
@@ -811,6 +814,8 @@ class MapdexPlugin:
         self._source_label = ""
         self._pending_is_batch = False
         self._busy = False
+        self._connect_task = None
+        self._connect_cancel = threading.Event()
         self._panel_root = None
         # Background tasks in flight; QGIS crashes if Python collects one early.
         self._tasks = []
@@ -2295,11 +2300,18 @@ class MapdexPlugin:
                 "Connected to Mapdex" if connected else ("Meet Nivo" if first else "Not connected")
             )
 
+        connecting = self._connect_task is not None
+        cancelling = connecting and self._connect_cancel.is_set()
         self.connect_button.setVisible(not connected)
-        self.connect_button.setEnabled(not self._busy)
+        self.connect_button.setEnabled(not cancelling and (connecting or not self._busy))
         self.disconnect_button.setVisible(connected)
         self.disconnect_button.setEnabled(connected and not self._busy)
         if self.connect_button is not None and hasattr(self.connect_button, "set_tone"):
+            if hasattr(self.connect_button, "set_label"):
+                self.connect_button.set_label(
+                    "Cancelling…" if cancelling
+                    else ("Cancel connection" if connecting else "Connect Mapdex")
+                )
             # Connect is the one filled action while nothing has been chosen.
             # To somebody already answering from their own model it is an
             # upgrade, not the thing to press, so it drops a rank rather than
@@ -2308,11 +2320,14 @@ class MapdexPlugin:
             # The SENTENCE drops with it. Losing the fill while keeping
             # "Recommended. Free to start." left a de-emphasised card telling
             # somebody who had already started that they should start.
-            self.connect_button.set_tone("primary" if first else "quiet")
+            self.connect_button.set_tone("primary" if first and not connecting else "quiet")
             if hasattr(self.connect_button, "set_sublabel"):
                 self.connect_button.set_sublabel(
-                    panel_state.CONNECT_PROMISE if first
-                    else panel_state.CONNECT_PROMISE_UPGRADE
+                    "Stop waiting for Mapdex and the browser."
+                    if connecting else (
+                        panel_state.CONNECT_PROMISE if first
+                        else panel_state.CONNECT_PROMISE_UPGRADE
+                    )
                 )
         for widget, shown in (
             # First open is a decision screen, not a disabled conversation.
@@ -4989,6 +5004,11 @@ class MapdexPlugin:
 
     @guarded
     def connect(self, *args):
+        if self._connect_task is not None:
+            self._connect_cancel.set()
+            self._set_status("Cancelling the Mapdex connection…")
+            self._refresh_ui()
+            return
         if not self._apply_connection_settings_from_fields():
             return
         # One status line before anything slow, then everything on the worker.
@@ -4996,8 +5016,12 @@ class MapdexPlugin:
         # but WHICH one runs takes three network round trips to decide, so that
         # decision belongs on the worker too: made here, pressing Connect sat
         # silent for seconds and read as a dead button.
+        self._connect_cancel.clear()
         self._set_status("Connecting to {}…".format(self.api.base_url))
-        self._task("Connect Mapdex", self._connect_work, self._connect_finished)
+        self._connect_task = self._task(
+            "Connect Mapdex", self._connect_work, self._connect_finished
+        )
+        self._refresh_ui()
 
     @guarded
     def disconnect(self, *args):
@@ -5095,17 +5119,21 @@ class MapdexPlugin:
         it is itself the slow part. The caller gets one answer: tokens, or a
         reason to fall back to the device grant.
         """
+        deadline = time.monotonic() + CONNECT_TOTAL_TIMEOUT
         available, why = connector_auth.loopback_available()
         if not available or connector_auth.is_headless():
             return {"fallback": why or "this machine has no browser"}
         try:
-            endpoints = connector_auth.discover_endpoints(self.api.base_url)
+            endpoints = connector_auth.discover_endpoints(
+                self.api.base_url,
+                timeout=self._connect_request_timeout(deadline),
+            )
         except connector_auth.ConnectorAuthError as failure:
             # No authorization server at this address at all. An older or
             # self-hosted Mapdex, which the device grant still serves.
             return {"fallback": str(failure)}
 
-        resource = self._connector_resource()
+        resource = self._connector_resource(self._connect_request_timeout(deadline))
         verifier = connector_auth.make_verifier()
         receiver = connector_auth.LoopbackReceiver()
         url = connector_auth.build_authorization_url(
@@ -5120,7 +5148,9 @@ class MapdexPlugin:
         # predates this work has an authorization server and no registration
         # for this client, and without the check the person is sent to an error
         # page and then waits five minutes for a redirect that never comes.
-        if not connector_auth.server_knows_this_client(url):
+        if not connector_auth.server_knows_this_client(
+            url, timeout=self._connect_request_timeout(deadline)
+        ):
             receiver.close()
             return {"fallback": "this Mapdex does not offer connector sign-in yet"}
 
@@ -5132,9 +5162,13 @@ class MapdexPlugin:
             self._announce_from_worker(
                 "Approve the connection in your browser, then return to QGIS."
             )
-            code = receiver.wait(timeout=300)
+            code = receiver.wait(
+                timeout=self._connect_remaining(deadline),
+                cancel_event=self._connect_cancel,
+            )
             return {"tokens": connector_auth.exchange_code(
-                endpoints["token"], code, verifier, receiver.redirect_uri, resource
+                endpoints["token"], code, verifier, receiver.redirect_uri, resource,
+                timeout=self._connect_request_timeout(deadline),
             )}
         finally:
             # Always. A listener left bound outlives the attempt, and the next
@@ -5145,10 +5179,35 @@ class MapdexPlugin:
         """Set the status line from the worker thread, through the main loop."""
         QTimer.singleShot(0, lambda text=message: self._set_status(text))
 
+    def _connect_remaining(self, deadline: float) -> float:
+        """Return this attempt's remaining budget, or stop it consistently."""
+        if self._connect_cancel.is_set():
+            raise connector_auth.ConnectorAuthError(
+                "The Mapdex connection was cancelled.", "cancelled"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise connector_auth.ConnectorAuthError(
+                "Mapdex did not connect within two minutes. Try connecting again.",
+                "timeout",
+            )
+        return remaining
+
+    def _connect_request_timeout(self, deadline: float) -> float:
+        """Bound each socket wait without exceeding the total attempt budget."""
+        return min(CONNECT_HTTP_TIMEOUT, self._connect_remaining(deadline))
+
     @guarded
     def _connect_finished(self, exception, outcome):
         """Either a connection, or the reason to try the other route."""
+        self._connect_task = None
         if exception:
+            if (
+                isinstance(exception, connector_auth.ConnectorAuthError)
+                and exception.code == "cancelled"
+            ):
+                self._set_status("Mapdex connection cancelled.")
+                return
             self._show_error("Mapdex connection failed", exception)
             return
         outcome = outcome or {}
@@ -5164,12 +5223,35 @@ class MapdexPlugin:
                 outcome.get("fallback") or "no loopback listener"
             )
         )
-        self._task(
-            "Mapdex device authorization", self.api.authorize_device,
-            self._authorization_created,
+        self._connect_cancel.clear()
+        self._connect_task = self._task(
+            "Mapdex device authorization",
+            self._device_authorization_work,
+            self._device_authorization_finished,
         )
+        self._refresh_ui()
 
-    def _connector_resource(self) -> str:
+    def _device_authorization_work(self):
+        # The compatibility route is still a connection attempt: it gets the
+        # same short network bound and honors a cancellation requested while
+        # urllib was waiting for the socket.
+        self._connect_remaining(time.monotonic() + CONNECT_HTTP_TIMEOUT)
+        payload = self.api.authorize_device(timeout=CONNECT_HTTP_TIMEOUT)
+        self._connect_remaining(time.monotonic() + CONNECT_HTTP_TIMEOUT)
+        return payload
+
+    @guarded
+    def _device_authorization_finished(self, exception, outcome):
+        self._connect_task = None
+        if (
+            isinstance(exception, connector_auth.ConnectorAuthError)
+            and exception.code == "cancelled"
+        ):
+            self._set_status("Mapdex connection cancelled.")
+            return
+        self._authorization_created(exception, outcome)
+
+    def _connector_resource(self, timeout: float = 180.0) -> str:
         """The resource indicator (RFC 8707): which Mapdex this token is for.
 
         The server refuses a token whose audience does not name it, so omitting
@@ -5178,7 +5260,9 @@ class MapdexPlugin:
         endpoints are.
         """
         try:
-            document = self.api.download_bytes("/.well-known/oauth-protected-resource")
+            document = self.api.download_bytes(
+                "/.well-known/oauth-protected-resource", timeout=timeout
+            )
             return str(json.loads(document.decode("utf-8")).get("resource") or "")
         except Exception:  # noqa: BLE001 - the server may not publish one
             return ""

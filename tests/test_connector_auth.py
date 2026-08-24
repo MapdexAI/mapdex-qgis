@@ -157,6 +157,15 @@ def test_waiting_for_a_browser_that_never_returns_ends_with_a_reason():
     assert caught.value.code == "timeout"
 
 
+def test_waiting_for_a_browser_can_be_cancelled_immediately():
+    cancel = threading.Event()
+    with LoopbackReceiver() as receiver:
+        cancel.set()
+        with pytest.raises(ConnectorAuthError) as caught:
+            receiver.wait(timeout=5, cancel_event=cancel)
+    assert caught.value.code == "cancelled"
+
+
 def test_two_receivers_never_share_a_state():
     first, second = LoopbackReceiver(), LoopbackReceiver()
     try:
@@ -210,6 +219,21 @@ def test_discovery_reads_the_published_endpoints_rather_than_guessing_paths():
     )
     assert endpoints["token"] == "https://api.example/oauth/token"
     assert captured[0].endswith("/.well-known/oauth-authorization-server")
+
+
+def test_discovery_honors_the_callers_network_timeout():
+    captured = []
+
+    def opener(target, timeout=None):  # noqa: ARG001
+        captured.append(timeout)
+        return _Response({
+            "authorization_endpoint": "https://api.example/oauth/authorize",
+            "token_endpoint": "https://api.example/oauth/token",
+            "issuer": "https://api.example",
+        })
+
+    discover_endpoints("https://api.example", opener=opener, timeout=1.5)
+    assert captured == [1.5]
 
 
 def test_a_metadata_document_missing_an_endpoint_is_a_named_failure():

@@ -46,6 +46,7 @@ def test_third_party_download_carries_neither_token_nor_tenant(monkeypatch):
 
     def fake_urlopen(req, timeout=0):
         captured["headers"] = {key.lower(): value for key, value in req.header_items()}
+        captured["timeout"] = timeout
         return FakeResponse()
 
     monkeypatch.setattr("mapdex_qgis.api_client._urlopen", fake_urlopen)
@@ -54,9 +55,12 @@ def test_third_party_download_carries_neither_token_nor_tenant(monkeypatch):
     assert "authorization" not in captured["headers"]
     assert "x-project-id" not in captured["headers"]
 
-    api.download_bytes("/v1/layers/layer_1/geojson", project_id="proj_1")
+    api.download_bytes(
+        "/v1/layers/layer_1/geojson", project_id="proj_1", timeout=7
+    )
     assert captured["headers"]["authorization"] == "Bearer secret-token"
     assert captured["headers"]["x-project-id"] == "proj_1"
+    assert captured["timeout"] == 7
 
 
 def test_download_refuses_plaintext_third_party_urls():

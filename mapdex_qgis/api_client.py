@@ -259,7 +259,10 @@ class MapdexAPI:
             str(message), exc.code, corr, url=url, method=method, retry_after=retry_after, code=code
         ) from exc
 
-    def _request(self, method: str, path: str, payload=None, project_id: str = ""):
+    def _request(
+        self, method: str, path: str, payload=None, project_id: str = "",
+        timeout: float = 45.0,
+    ):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = self._headers(project_id=project_id, content_type="application/json" if data is not None else None)
         if data is None:
@@ -267,7 +270,7 @@ class MapdexAPI:
         url = self.base_url + path
         req = request.Request(url, data=data, method=method, headers=headers)
         try:
-            with _urlopen(req, timeout=45) as response:
+            with _urlopen(req, timeout=timeout) as response:
                 body = response.read()
                 return json.loads(body) if body else None
         except error.HTTPError as exc:
@@ -283,7 +286,7 @@ class MapdexAPI:
                 # recursed. A server refusing every token would have frozen
                 # QGIS rather than reporting a refusal.
                 try:
-                    return self._request(method, path, payload, project_id)
+                    return self._request(method, path, payload, project_id, timeout)
                 finally:
                     self._renewing = False
             self._raise_http(method, url, exc)
@@ -323,7 +326,9 @@ class MapdexAPI:
         self.token = renewed
         return True
 
-    def download_bytes(self, path: str, project_id: str = "") -> bytes:
+    def download_bytes(
+        self, path: str, project_id: str = "", timeout: float = 180.0
+    ) -> bytes:
         """GET a relative `/v1/...` path or absolute URL and return raw bytes."""
         absolute = path.startswith("http://") or path.startswith("https://")
         url = path if absolute else self.base_url + path
@@ -342,7 +347,7 @@ class MapdexAPI:
             headers["Accept"] = "application/geo+json, application/json;q=0.9, */*;q=0.1"
         req = request.Request(url, method="GET", headers=headers)
         try:
-            with _urlopen(req, timeout=180) as response:
+            with _urlopen(req, timeout=timeout) as response:
                 return response.read()
         except error.HTTPError as exc:
             self._raise_http("GET", url, exc)
@@ -353,8 +358,11 @@ class MapdexAPI:
                 method="GET",
             ) from exc
 
-    def authorize_device(self):
-        return self._request("POST", "/v1/auth/device/authorization", {"client_name": "Mapdex for QGIS"})
+    def authorize_device(self, timeout: float = 45.0):
+        return self._request(
+            "POST", "/v1/auth/device/authorization",
+            {"client_name": "Mapdex for QGIS"}, timeout=timeout,
+        )
 
     def poll_device_token(self, device_code: str):
         return self._request("POST", "/v1/auth/device/token", {"device_code": device_code})
