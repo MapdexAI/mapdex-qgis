@@ -64,6 +64,11 @@ from .job_items import item_action, item_status, item_title, items_summary, orde
 from .qt_compat import enum_member
 
 
+# Which page Settings is. Named because three places now agree on it - the tab
+# bar, the header control, and the first-open route into the provider fields -
+# and three copies of a 3 is how they come to disagree.
+SETTINGS_PAGE = 3
+
 NIVO_AVATAR_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "assets", "assistant", "nivo.png"
 )
@@ -115,13 +120,23 @@ class ActionRow(QFrame):
         title.setWordWrap(True)
         title.setMinimumWidth(1)
         text.addWidget(title)
-        if sublabel:
-            detail = QLabel(sublabel)
-            detail.setObjectName("mapdexRowSub")
-            detail.setWordWrap(True)
-            detail.setMinimumWidth(1)
-            text.addWidget(detail)
+        # Always built, even when empty, so the second line can change with the
+        # row's rank. A row created without one could never gain one, which is
+        # how a demoted Connect kept saying "Recommended. Free to start." to
+        # somebody who had already started somewhere else.
+        self._detail = QLabel(sublabel)
+        self._detail.setObjectName("mapdexRowSub")
+        self._detail.setWordWrap(True)
+        self._detail.setMinimumWidth(1)
+        self._detail.setVisible(bool(sublabel))
+        text.addWidget(self._detail)
         row.addLayout(text, 1)
+
+    def set_sublabel(self, sublabel):
+        """Change the second line. An empty one removes it rather than leaving
+        a blank line where a sentence was."""
+        self._detail.setText(sublabel or "")
+        self._detail.setVisible(bool(sublabel))
 
     def set_tone(self, tone):
         """Re-rank the row without rebuilding it.
@@ -738,7 +753,21 @@ def build_companion_panel(workflows, endpoint_settings=True):
         QFrame#mapdexRow:hover { background: #2A2A2A; border-color: #6366F1; }
         QFrame#mapdexRowPrimary { background: #4F46E5; border: 0; }
         QFrame#mapdexRowPrimary:hover { background: #6366F1; }
-        QFrame#mapdexRowQuiet { background: transparent; border: 0; }
+        /* The demoted rank of a real choice: still a card, not a bare link.
+           It was `transparent; border: 0`, so Connect Mapdex - carrying a
+           heading, a two-line pitch and the word "Recommended" - rendered as
+           indigo text floating on the panel with no container, directly above
+           a bordered settings card. That reads as a rendering failure rather
+           than as a deliberate second rank. Losing a rank means losing the
+           FILL, not losing the object. */
+        QFrame#mapdexRowQuiet {
+            background: transparent;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+        }
+        QFrame#mapdexRowQuiet:hover {
+            background: #2A2A2A;
+            border-color: #6366F1;
+        }
         QLabel#mapdexRowLabel { color: #F7F7F5; font-size: 12px; }
         QLabel#mapdexRowSub { color: #8F96A8; font-size: 11px; }
         QLabel#mapdexRowGlyph { background: transparent; border: 0; }
@@ -982,7 +1011,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
 
     connection_panel = QFrame()
     connection_panel.setObjectName("mapdexSettingsPanel")
-    connection_panel.setVisible(False)
+    # Visible within its own page. It used to be a panel that expanded in the
+    # middle of the column, so opening it pushed everything below it down; as a
+    # page, the stack decides when it is on screen and `switch_page` owns that.
     connection_layout = QVBoxLayout(connection_panel)
     connection_layout.setContentsMargins(14, 12, 14, 14)
     connection_layout.setSpacing(8)
@@ -1083,11 +1114,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     save_settings_button = QPushButton("Save settings")
     save_settings_button.setObjectName("mapdexSecondaryButton")
     connection_layout.addWidget(save_settings_button)
-    settings_button.toggled.connect(connection_panel.setVisible)
-    # Added to the column further down, under the choice rather than above it.
-    # Opening it here pushed the two cards below a nine-field form, so picking
-    # "use my own model" answered the question by burying it: the decision the
-    # form belongs to scrolled off while the form filled the screen.
+    # The header control is now a way INTO the Settings tab rather than a
+    # disclosure that expands the column. It is wired below, once switch_page
+    # exists, because a control that moves the stack cannot be connected before
+    # the stack has been built.
     if not endpoint_settings:
         # A released build talks to the hosted Mapdex, so nobody can repoint it
         # by accident - but the assistant provider settings remain reachable.
@@ -1161,10 +1191,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # follows as the argument for them. The reading is still there and still
     # first-hand; it is no longer in front of the door.
     layout.addWidget(sign_in)
-    # The settings form belongs to the choice above it, so it opens underneath
-    # it. When nothing is connected the reader sees the two cards, presses one,
-    # and its fields appear where they were looking.
-    layout.addWidget(connection_panel)
+    # The settings form is a PAGE now, added to the stack below rather than to
+    # this column. Opening it here made the form part of the scroll everything
+    # else lived in, so pressing "use my own model" pushed the choice it
+    # belonged to off the screen while answering it.
     layout.addWidget(segment_bar)
     layout.addWidget(pages, 1)
     # First open has no conversation to fill a tall dock, so the pages stop
@@ -1431,9 +1461,23 @@ def build_companion_panel(workflows, endpoint_settings=True):
     recent_layout.addLayout(root.register_pair(recent_box, resume_button))
     jobs_layout.addWidget(recent)
     jobs_layout.addStretch(1)
+    # Settings is a page like the others rather than a panel that expands in
+    # the middle of the column. As a disclosure it pushed everything below it
+    # down by the height of a nine-field form, so opening it moved the thing the
+    # reader was looking at; and it was reachable only from a header control
+    # that named itself but not where it would appear.
+    settings_page = QWidget()
+    settings_page.setObjectName("mapdexPage")
+    settings_page_layout = QVBoxLayout(settings_page)
+    settings_page_layout.setContentsMargins(12, 12, 12, 12)
+    settings_page_layout.setSpacing(10)
+    settings_page_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
+    settings_page_layout.addWidget(connection_panel)
+    settings_page_layout.addStretch(1)
+
     # Nivo is the primary companion surface. Explicitly hide sibling pages on
     # every switch as a QGIS theme safety net against stacked-page bleed.
-    page_order = (nivo, workspace, jobs)
+    page_order = (nivo, workspace, jobs, settings_page)
     for page in page_order:
         pages.addWidget(page)
 
@@ -1448,8 +1492,15 @@ def build_companion_panel(workflows, endpoint_settings=True):
         # page while the stack shows another is worse than not moving at all.
         for index, button in enumerate(segment_buttons):
             button.setChecked(index == target)
+        # The header control and the tab are one state, not two. Left to drift,
+        # a pressed-looking Settings button beside a Nivo page is the same class
+        # of lie as a tab bar disagreeing with its stack.
+        if settings_button.isChecked() != (target == SETTINGS_PAGE):
+            settings_button.blockSignals(True)
+            settings_button.setChecked(target == SETTINGS_PAGE)
+            settings_button.blockSignals(False)
 
-    for index, title in enumerate(("Nivo AI", "Task", "Jobs")):
+    for index, title in enumerate(("Nivo AI", "Task", "Jobs", "Settings")):
         button = QToolButton()
         button.setObjectName("mapdexSegment")
         button.setText(title)
@@ -1460,6 +1511,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
         segment_layout.addWidget(button)
         if index == 0:
             button.setChecked(True)
+    # Pressing the header control goes to that page; releasing it comes back to
+    # the conversation, which is where somebody who opened settings by accident
+    # wants to end up.
+    settings_button.toggled.connect(
+        lambda checked: switch_page(SETTINGS_PAGE if checked else 0)
+    )
     switch_page(0)
     segment_layout.addStretch(1)
 
@@ -1494,6 +1551,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "own_model": own_model,
         "own_model_button": own_model_button,
         "segment_bar": segment_bar,
+        "settings_page": settings_page,
         "disconnect_button": disconnect_button,
         "workspace": workspace,
         "tabs": pages,

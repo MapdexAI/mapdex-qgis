@@ -123,6 +123,7 @@ from .nivo import (
     transition,
 )
 from .panel import (
+    SETTINGS_PAGE,
     action_row,
     allow_narrow,
     build_companion_panel,
@@ -2300,7 +2301,16 @@ class MapdexPlugin:
             # To somebody already answering from their own model it is an
             # upgrade, not the thing to press, so it drops a rank rather than
             # sitting under their composer as a permanent indigo block.
+            #
+            # The SENTENCE drops with it. Losing the fill while keeping
+            # "Recommended. Free to start." left a de-emphasised card telling
+            # somebody who had already started that they should start.
             self.connect_button.set_tone("primary" if first else "quiet")
+            if hasattr(self.connect_button, "set_sublabel"):
+                self.connect_button.set_sublabel(
+                    panel_state.CONNECT_PROMISE if first
+                    else panel_state.CONNECT_PROMISE_UPGRADE
+                )
         for widget, shown in (
             # First open is a decision screen, not a disabled conversation.
             # The connection label already states the state; repeating it in
@@ -3055,13 +3065,22 @@ class MapdexPlugin:
 
     @guarded
     def choose_own_model(self, *args):
-        """Open the settings panel on the provider fields.
+        """Go to the Settings tab, on the provider fields.
 
-        The first-open screen offers the choice; the panel that already exists
-        is where it is made. A second provider form would be two controls for
-        one decision, and they would disagree eventually.
+        The first-open screen offers the choice; the form that already exists is
+        where it is made. A second provider form would be two controls for one
+        decision, and they would disagree eventually.
+
+        It moves the STACK rather than expanding a panel in the column. As a
+        disclosure the form appeared below the choice and pushed it off the
+        screen, so pressing "use my own model" answered the question by hiding
+        it and left the reader looking at fields with no heading above them.
         """
-        if self.settings_button is not None:
+        if self.switch_page is not None:
+            self.switch_page(SETTINGS_PAGE)
+        elif self.settings_button is not None:
+            # A panel built before Settings had a page of its own. The header
+            # control still opens it, so an older layout is not stranded.
             self.settings_button.setChecked(True)
         if self.provider_box is not None:
             self.provider_box.setFocus()

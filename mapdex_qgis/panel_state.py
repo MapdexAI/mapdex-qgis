@@ -104,6 +104,13 @@ CONNECT_PROMISE = (
     "Recommended. Free to start. Ask Nivo and run verified Georeference, "
     "digitize, validate and batch workflows."
 )
+# The same action to somebody already answering from their own model. It is an
+# upgrade for them, not the thing to press, and telling them it is
+# "Recommended. Free to start." describes a decision they have already made.
+CONNECT_PROMISE_UPGRADE = (
+    "Adds verified Georeference, digitize, validate and batch workflows. "
+    "Your own model keeps answering questions."
+)
 OWN_MODEL_LABEL = "Use my own AI model"
 OWN_MODEL_PROMISE = (
     "Chat with OpenAI, Anthropic, Gemini or a local model. "

@@ -2395,6 +2395,95 @@ def opening_the_task_needs_a_real_batch():
     return "hidden while uploading, offered once the task is real"
 
 
+def settings_is_a_reachable_tab():
+    """Four tabs, and the fourth one shows the settings form.
+
+    It used to be a disclosure in the middle of the column, opened from a
+    header control that named itself but not where it would appear.
+    """
+    refs = PANEL.get("refs") or {}
+    if not refs:
+        raise NotRun("the panel did not build")
+    switch = refs.get("switch_page")
+    page = refs.get("settings_page")
+    panel_root = refs.get("column") or PANEL.get("root")
+    if switch is None or page is None:
+        raise AssertionError("the panel hands back no settings page")
+
+    switch(0)
+    if page.isVisibleTo(panel_root):
+        raise AssertionError("the settings page is showing while Nivo is selected")
+    switch(3)
+    if not page.isVisibleTo(panel_root):
+        raise AssertionError("the Settings tab does not show the settings form")
+    # And the form itself, not an empty page.
+    if refs["api_url_input"] not in descendants(page, type(refs["api_url_input"])):
+        raise AssertionError("the settings page does not contain the connection fields")
+    switch(0)
+    return "Settings is page 3 and carries the connection fields"
+
+
+def the_header_control_and_the_tab_agree():
+    """One state, not two. A pressed Settings button beside a Nivo page is the
+    same class of lie as a tab bar disagreeing with its stack."""
+    refs = PANEL.get("refs") or {}
+    switch, button = refs.get("switch_page"), refs.get("settings_button")
+    if switch is None or button is None:
+        raise NotRun("the panel did not build")
+
+    button.setChecked(True)
+    if refs["tabs"].currentIndex() != 3:
+        raise AssertionError("pressing the header control did not open the Settings tab")
+    switch(0)
+    if button.isChecked():
+        raise AssertionError("leaving the tab left the header control pressed")
+    button.setChecked(False)
+    return "the header control and the tab move together"
+
+
+def choosing_your_own_model_lands_on_the_settings_page():
+    plugin = need_plugin()
+    if plugin.switch_page is None:
+        raise NotRun("this build has no page switcher")
+    plugin.switch_page(0)
+    plugin.choose_own_model()
+    if plugin.tabs.currentIndex() != 3:
+        raise AssertionError(
+            "it landed on page {} instead of Settings".format(plugin.tabs.currentIndex())
+        )
+    if not plugin.provider_box.hasFocus():
+        # Reported, not failed: focus needs an active window, which an
+        # offscreen run may not have. The page it landed on is the claim.
+        note("own model focuses the provider field", "no focus offscreen; the page is right")
+    plugin.switch_page(0)
+    return "it opens the Settings tab on the provider fields"
+
+
+def the_demoted_connect_row_keeps_a_container():
+    """Reported as "the background is broken": Connect Mapdex rendered as
+    indigo text on the panel with no container, above a bordered card, while
+    still saying "Recommended"."""
+    refs = PANEL.get("refs") or {}
+    connect = refs.get("connect_button")
+    if connect is None or not hasattr(connect, "set_tone"):
+        raise NotRun("this build has no rankable connect row")
+    connect.set_tone("quiet")
+    name = connect.objectName()
+    connect.set_tone("primary")
+    if name != "mapdexRowQuiet":
+        raise AssertionError("the demoted row is {}".format(name))
+    quiet = PANEL["root"].styleSheet()
+    block = quiet[quiet.index("\n        QFrame#mapdexRowQuiet {"):]
+    block = block[: block.index("}")]
+    if "border: 1px solid" not in block:
+        raise AssertionError("the demoted rank has no container")
+    return "losing a rank loses the fill, not the object"
+
+
+check("Settings is a reachable tab", settings_is_a_reachable_tab)
+check("the header control and the tab agree", the_header_control_and_the_tab_agree)
+check("choosing your own model lands on Settings", choosing_your_own_model_lands_on_the_settings_page)
+check("the demoted Connect row keeps a container", the_demoted_connect_row_keeps_a_container)
 check("every Jobs button wears Mapdex chrome", every_jobs_button_wears_mapdex_chrome)
 check("exactly one filled button on the Jobs page", exactly_one_filled_button_on_the_jobs_page)
 check("the batch lists its sheets, attention first", the_batch_lists_its_sheets_attention_first)
