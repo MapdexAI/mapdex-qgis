@@ -256,6 +256,47 @@ def discover_endpoints(api_base: str, opener: Optional[Callable] = None) -> Dict
     return endpoints
 
 
+def server_knows_this_client(
+    authorization_url: str, opener: Optional[Callable] = None
+) -> bool:
+    """Would this server accept the flow, before anybody opens a browser?
+
+    A plugin is distributed and a server is deployed, so the two are routinely
+    different ages. A Mapdex that predates the connector work has an
+    authorization server (assistants connect to it) and no registration for
+    THIS client, and without this check the person is sent to a browser that
+    shows an error page and then waits five minutes for a redirect that will
+    never come.
+
+    The probe is the real authorization request, issued as a plain GET with
+    redirects not followed. That is not a trick: `BeginAuthorization` is pure
+    validation and creates nothing - no code, no consent, no state - so asking
+    it twice costs one request and changes nothing. A server that would run the
+    flow answers with the consent page or a redirect to sign-in; one that does
+    not know the client refuses with a 4xx before any of that.
+
+    Unreachable is reported as "yes". The caller is about to make the same
+    request for real and will get a better error from it than this probe can
+    invent, and answering "no" here would silently downgrade a working server
+    to the fallback flow on one dropped packet.
+    """
+
+    class _NoRedirect(request.HTTPRedirectHandler):
+        def redirect_request(self, *_args, **_kwargs):
+            return None
+
+    call = opener or request.build_opener(_NoRedirect).open
+    try:
+        with call(authorization_url, timeout=15) as response:  # nosec B310
+            return int(getattr(response, "status", 200) or 200) < 400
+    except error.HTTPError as answer:
+        # A redirect to a sign-in page is the server saying "yes, but log in
+        # first", which is exactly the case the browser handles.
+        return answer.code < 400 or answer.code in (301, 302, 303, 307, 308)
+    except error.URLError:
+        return True
+
+
 def exchange_code(
     token_endpoint: str,
     code: str,

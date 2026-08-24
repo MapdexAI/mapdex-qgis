@@ -5051,33 +5051,50 @@ class MapdexPlugin:
         if not available or connector_auth.is_headless():
             self._connector_fallback_reason = why or "this machine has no browser"
             return False
+        try:
+            endpoints = connector_auth.discover_endpoints(self.api.base_url)
+        except connector_auth.ConnectorAuthError as failure:
+            # No authorization server at this address at all. An older or
+            # self-hosted Mapdex, which the device grant still serves.
+            self._connector_fallback_reason = str(failure)
+            return False
+
+        verifier = connector_auth.make_verifier()
+        receiver = connector_auth.LoopbackReceiver()
+        url = connector_auth.build_authorization_url(
+            endpoints["authorize"],
+            receiver.redirect_uri,
+            receiver.state,
+            connector_auth.challenge_for(verifier),
+            self._connector_resource(),
+        )
+        # Asked BEFORE a browser opens. A plugin is distributed and a server is
+        # deployed, so the two are routinely different ages: a Mapdex that
+        # predates this work has an authorization server and no registration
+        # for this client, and without the check the person is sent to an error
+        # page and then waits five minutes for a redirect that never comes.
+        if not connector_auth.server_knows_this_client(url):
+            receiver.close()
+            self._connector_fallback_reason = "this Mapdex does not offer connector sign-in yet"
+            return False
+        receiver.start()
+
+        resource = self._connector_resource()
 
         def work():
-            endpoints = connector_auth.discover_endpoints(self.api.base_url)
-            verifier = connector_auth.make_verifier()
-            receiver = connector_auth.LoopbackReceiver().start()
             try:
-                url = connector_auth.build_authorization_url(
-                    endpoints["authorize"],
-                    receiver.redirect_uri,
-                    receiver.state,
-                    connector_auth.challenge_for(verifier),
-                    self._connector_resource(),
-                )
                 # Opened from the worker thread through the main loop, because
                 # QDesktopServices touches the GUI and QGIS is not amused
                 # otherwise.
                 QTimer.singleShot(0, lambda target=url: QDesktopServices.openUrl(QUrl(target)))
                 code = receiver.wait(timeout=300)
-                payload = connector_auth.exchange_code(
-                    endpoints["token"], code, verifier, receiver.redirect_uri,
-                    self._connector_resource(),
+                return connector_auth.exchange_code(
+                    endpoints["token"], code, verifier, receiver.redirect_uri, resource
                 )
             finally:
                 # Always. A listener left bound outlives the attempt and the
                 # next one cannot explain why its port is taken.
                 receiver.close()
-            return payload
 
         self._set_status("Approve the connection in your browser, then return to QGIS.")
         self._task("Connect Mapdex", work, self._connector_authorized)

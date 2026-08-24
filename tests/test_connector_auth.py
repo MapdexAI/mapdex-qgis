@@ -329,3 +329,65 @@ def test_the_capability_probe_answers_and_releases_its_socket():
     thread.start()
     assert finished.wait(timeout=5), "the loopback probe blocked"
     assert answer["ok"] is True
+
+
+# --------------------------------------------------------------------------
+# The pre-flight. A plugin is distributed and a server is deployed, so the two
+# are routinely different ages.
+# --------------------------------------------------------------------------
+
+def _probe_answering(status):
+    def opener(url, timeout=None):  # noqa: ARG001
+        if status >= 400:
+            raise urllib.error.HTTPError(url, status, "refused", {}, None)
+
+        class Answer:
+            def __init__(self):
+                self.status = status
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *_exc):
+                return False
+
+        return Answer()
+    return opener
+
+
+def test_a_server_that_renders_consent_is_ready_for_the_flow():
+    from mapdex_qgis.connector_auth import server_knows_this_client
+
+    assert server_knows_this_client("https://api.example/oauth/authorize?x=1",
+                                    opener=_probe_answering(200)) is True
+
+
+def test_a_redirect_to_sign_in_still_counts_as_ready():
+    # The server saying "yes, but log in first" - which is exactly what the
+    # browser is for. Treating it as a refusal would downgrade every signed-out
+    # person to the fallback flow.
+    from mapdex_qgis.connector_auth import server_knows_this_client
+
+    assert server_knows_this_client("https://api.example/oauth/authorize",
+                                    opener=_probe_answering(302)) is True
+
+
+def test_a_server_that_does_not_know_this_client_is_reported_before_a_browser_opens():
+    # The whole reason the probe exists. Without it the person is sent to an
+    # error page and then waits five minutes for a redirect that never comes.
+    from mapdex_qgis.connector_auth import server_knows_this_client
+
+    for status in (400, 401, 404, 500):
+        assert server_knows_this_client("https://api.example/oauth/authorize",
+                                        opener=_probe_answering(status)) is False, status
+
+
+def test_an_unreachable_server_is_not_downgraded_by_one_dropped_packet():
+    # The caller is about to make the same request for real and will produce a
+    # better error than this probe can invent.
+    from mapdex_qgis.connector_auth import server_knows_this_client
+
+    def opener(url, timeout=None):  # noqa: ARG001
+        raise urllib.error.URLError("connection reset")
+
+    assert server_knows_this_client("https://api.example/oauth/authorize", opener=opener) is True
