@@ -190,13 +190,18 @@ def test_transcript_detaches_retired_widgets_before_repainting():
     assert hide < detach < delete
 
 
-def test_connection_storage_prompt_explains_the_qgis_password_boundary():
+def test_connection_storage_is_explicit_and_explains_the_qgis_password_boundary():
     offer = _method(PLUGIN, "_offer_secure_connection_storage")
-    assert "Stay connected to Mapdex?" in offer
-    assert "not asking for your Mapdex password" in offer
-    assert "until you close QGIS" in offer
+    assert "Stay connected after restarting QGIS?" in offer
+    assert "not your Mapdex password" in offer
+    assert '"Keep me connected"' in offer
+    assert '"This session only"' in offer
+    assert "dialog.setDefaultButton(session_button)" in offer
+    assert "dialog.setEscapeButton(session_button)" in offer
     adopt = _method(PLUGIN, "_adopt_connector_session")
+    assert "self.token_store.save_session(" in adopt
     assert "allow_unlock=True" in adopt
+    assert "self.token_store is not None and self.token_store.save_session" not in adopt
 
 
 def test_the_panel_has_somewhere_to_put_the_runtime_line():

@@ -5336,8 +5336,7 @@ class MapdexPlugin:
         self._set_status(
             "Connected to Mapdex."
             if self._connection_persisted
-            else "Connected for this QGIS session. Unlock the QGIS Authentication "
-                 "Database to keep the connection after restart."
+            else "Connected for this QGIS session."
         )
         self._refresh_ui()
         self._load_projects()
@@ -5354,37 +5353,39 @@ class MapdexPlugin:
         self._refresh_token = str(payload.get("refresh_token") or self._refresh_token)
         self._token_expires_at = connector_auth.expiry_from(payload, time.time())
         self._connection_kind = "connector"
-        self._connection_persisted = self.token_store is not None and self.token_store.save_session(
-            self.api.token, self._refresh_token, self._token_expires_at
-        )
-        if not self._connection_persisted:
-            self._connection_persisted = self._offer_secure_connection_storage(
-                lambda: self.token_store.save_session(
-                    self.api.token,
-                    self._refresh_token,
-                    self._token_expires_at,
-                    allow_unlock=True,
-                )
+        self._connection_persisted = self._offer_secure_connection_storage(
+            lambda: self.token_store.save_session(
+                self.api.token,
+                self._refresh_token,
+                self._token_expires_at,
+                allow_unlock=True,
             )
+        )
 
     def _offer_secure_connection_storage(self, save) -> bool:
-        """Offer one explicit QGIS-vault unlock instead of surprising the user."""
+        """Make persistence an explicit choice before QGIS may show its vault."""
         if self.token_store is None:
             return False
-        yes = enum_member(QMessageBox, "StandardButton", "Yes")
-        no = enum_member(QMessageBox, "StandardButton", "No")
-        answer = QMessageBox.question(
-            self.iface.mainWindow(),
-            "Stay connected to Mapdex?",
-            "To keep Mapdex connected after QGIS closes, QGIS needs to unlock its "
-            "secure credential store. The next password window belongs to QGIS — it "
-            "is not asking for your Mapdex password.\n\n"
-            "Choose Yes to stay connected on this device, or No to use Mapdex only "
-            "until you close QGIS.",
-            yes | no,
-            yes,
+        dialog = QMessageBox(self.iface.mainWindow())
+        dialog.setWindowTitle("Mapdex connection")
+        dialog.setText("Stay connected after restarting QGIS?")
+        dialog.setInformativeText(
+            "QGIS can securely remember this Mapdex connection on this device.\n\n"
+            "If its secure credential store is locked, QGIS may ask for a vault "
+            "password. This is a QGIS security feature, not your Mapdex password."
         )
-        if answer != yes:
+        keep_button = dialog.addButton(
+            "Keep me connected",
+            enum_member(QMessageBox, "ButtonRole", "AcceptRole"),
+        )
+        session_button = dialog.addButton(
+            "This session only",
+            enum_member(QMessageBox, "ButtonRole", "RejectRole"),
+        )
+        dialog.setDefaultButton(session_button)
+        dialog.setEscapeButton(session_button)
+        dialog.exec()
+        if dialog.clickedButton() is not keep_button:
             return False
         try:
             return bool(save())
@@ -5474,20 +5475,15 @@ class MapdexPlugin:
         self.api.token = token
         self.project_id = str((response or {}).get("project_id") or self.project_id or "")
         settings = QSettings()
-        persisted = self.token_store is not None and self.token_store.save(self.api.token)
-        if not persisted:
-            persisted = self._offer_secure_connection_storage(
-                lambda: self.token_store.save(self.api.token, allow_unlock=True)
-            )
+        persisted = self._offer_secure_connection_storage(
+            lambda: self.token_store.save(self.api.token, allow_unlock=True)
+        )
         if self.project_id:
             settings.setValue("mapdex/project_id", self.project_id)
         if persisted:
             self._set_status("Connected securely to Mapdex.")
         else:
-            self._set_status(
-                "Connected for this QGIS session. Unlock the QGIS Authentication Database "
-                "to keep the connection after restart."
-            )
+            self._set_status("Connected for this QGIS session.")
         self._refresh_ui()
         self._load_projects()
 
