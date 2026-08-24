@@ -141,27 +141,16 @@ _DONE_PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{heading} · Mapdex for QGIS</title>
+<title>{heading}</title>
 <style>
-*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;
-font:15px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-color:#f5f4f8;background:#0d1015;padding:24px}}main{{width:min(100%,480px);padding:32px;
-border:1px solid #2a303a;border-radius:18px;background:#151920;
-box-shadow:0 24px 70px rgba(0,0,0,.35)}}.brand{{display:flex;align-items:center;
-gap:10px;color:#b8bec9;font-weight:600;margin-bottom:34px}}.mark{{display:grid;
-place-items:center;width:32px;height:32px;border-radius:9px;background:#222833;
-color:#8177ff}}.status{{display:grid;place-items:center;width:52px;height:52px;
-border-radius:50%;background:{status_bg};color:{status_color};font-size:25px;
-font-weight:700;margin-bottom:22px}}h1{{font-size:25px;line-height:1.2;margin:0 0 10px}}
-p{{margin:0;color:#b8bec9}}.hint{{margin-top:26px;padding-top:20px;
-border-top:1px solid #2a303a;color:#858d9b;font-size:13px}}
+body{{margin:0;padding:64px 32px;font:15px/1.5 -apple-system,BlinkMacSystemFont,
+"Segoe UI",sans-serif;color:#f2f2f2;background:#111318}}main{{max-width:520px}}
+h1{{font-size:20px;line-height:1.3;font-weight:600;margin:0 0 8px}}
+p{{margin:0;color:#a9adb7}}
 </style>
 </head>
 <body><main>
-<div class="brand"><span class="mark">M</span><span>Mapdex for QGIS</span></div>
-<div class="status" aria-hidden="true">{status_icon}</div>
 <h1>{heading}</h1><p>{detail}</p>
-<p class="hint">This tab no longer needs to stay open.</p>
 </main></body></html>"""
 
 
@@ -184,19 +173,14 @@ class LoopbackReceiver:
             def do_GET(self):  # noqa: N802 - http.server virtual name
                 heading = "Connection complete"
                 detail = "Return to QGIS — Mapdex will finish setting up your workspace."
-                status_icon, status_bg, status_color = "✓", "#203a32", "#73dfa9"
                 try:
                     receiver._result["code"] = parse_callback(self.path, receiver.state)
                 except ConnectorAuthError as failure:
                     receiver._result["error"] = failure
                     heading, detail = "Connection not completed", str(failure)
-                    status_icon, status_bg, status_color = "!", "#42262a", "#ff9b9b"
                 body = _DONE_PAGE.format(
                     heading=html.escape(heading),
                     detail=html.escape(detail),
-                    status_icon=status_icon,
-                    status_bg=status_bg,
-                    status_color=status_color,
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
