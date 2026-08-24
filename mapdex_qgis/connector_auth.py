@@ -45,7 +45,7 @@ CLIENT_ID = "mapdex-qgis"
 # What the plugin asks for. Offline access is not optional: without a refresh
 # token an hour of work is the whole session, and being sent back to a browser
 # mid-task is worse than the device grant this replaces.
-SCOPES = ("runs:read", "runs:write", "offline_access")
+SCOPES = ("runs:read", "runs:write", "projects:read", "offline_access")
 
 
 class ConnectorAuthError(Exception):

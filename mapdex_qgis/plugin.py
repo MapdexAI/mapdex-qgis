@@ -5455,10 +5455,7 @@ class MapdexPlugin:
             if index >= 0:
                 self.project_box.setCurrentIndex(index)
         if self.project_box.count() == 0:
-            self._set_status(
-                "Connected, but no projects were returned. "
-                "If the API requires admin scope for /v1/projects, use the project_id from the token."
-            )
+            self._set_status("Connected, but this workspace has no available projects.")
         else:
             self._set_status("Connected. Choose a project and send work.")
 
