@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.12.4
+version=0.13.0
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,20 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.12.4
+changelog=0.13.0
+    - QGIS now connects through the browser-approved Mapdex connector flow and
+      returns to the plugin without exposing or retyping credentials.
+    - Device approval opens on app.mapdex.ai, keeps the linked code immutable,
+      and makes the account and consent steps explicit before access is granted.
+    - Nivo onboarding now presents one clear provider choice at a time, keeps
+      the chat at full available height, and separates starter prompts from the
+      conversation instead of mixing them into assistant replies.
+    - New chat, history, stop, Settings and Open project controls use consistent
+      icon-led actions and preserve their behavior across narrow and wide docks.
+    - Development packages expose localhost API and web endpoints for testing.
+      Production packages hide endpoint controls and stay pinned to hosted
+      Mapdex services.
+    0.12.4
     - Fixes for what the plugin repository's own scan found on 0.12.3, none of
       which changes what the plugin does.
     - Flat Qt5 enum names in three files would each have raised an error on
