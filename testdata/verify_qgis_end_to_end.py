@@ -731,7 +731,7 @@ def render_panel(state, width=1540, height=1200):
         print("    {:>5}  {}".format(hint, name))
 
     watched = (
-        "connection_label", "status", "settings_button", "first_open_title",
+        "connection_label", "status", "first_open_title",
         "first_open_prompt", "connect_button", "own_model", "tail",
         "save_settings_button", "provider_box", "api_key_input",
         "segment_bar", "tabs", "nivo_reply", "nivo_context", "nivo_runtime",
@@ -838,10 +838,10 @@ if os.environ.get("MAPDEX_RENDER"):
     # opened a nine-field form, and the two cards it belongs to were pushed
     # below it. Rendered separately because the fields are hidden until asked
     # for, so the first-open shot cannot show where they land.
-    PLUGIN.settings_button.setChecked(True)
+    PLUGIN.switch_page(3)
     for _width in (1540, 420):
         render_panel("settings-open", _width)
-    PLUGIN.settings_button.setChecked(False)
+    PLUGIN.switch_page(0)
     # The first screen after connecting is a separate visual state: normal
     # conversation chrome plus the local reading, but no user turns yet. It is
     # where duplicate Nivo labels and a detached capability action previously
@@ -2423,22 +2423,30 @@ def settings_is_a_reachable_tab():
     return "Settings is page 3 and carries the connection fields"
 
 
-def the_header_control_and_the_tab_agree():
-    """One state, not two. A pressed Settings button beside a Nivo page is the
-    same class of lie as a tab bar disagreeing with its stack."""
-    refs = PANEL.get("refs") or {}
-    switch, button = refs.get("switch_page"), refs.get("settings_button")
-    if switch is None or button is None:
-        raise NotRun("the panel did not build")
+def settings_has_exactly_one_way_in():
+    """The tab, and nothing else.
 
-    button.setChecked(True)
-    if refs["tabs"].currentIndex() != 3:
-        raise AssertionError("pressing the header control did not open the Settings tab")
-    switch(0)
-    if button.isChecked():
-        raise AssertionError("leaving the tab left the header control pressed")
-    button.setChecked(False)
-    return "the header control and the tab move together"
+    It used to also be a header control that expanded a panel in the column.
+    Two controls for one destination is one more than this panel needs, and the
+    header one was the worse of the two: it named itself but not where it would
+    appear.
+    """
+    refs = PANEL.get("refs") or {}
+    if not refs:
+        raise NotRun("the panel did not build")
+    if "settings_button" in refs:
+        raise AssertionError("the header Settings control is back")
+    from qgis.PyQt.QtWidgets import QToolButton as _QToolButton
+
+    labels = [
+        button.text() for button in descendants(PANEL["root"], _QToolButton)
+        if button.text() == "Settings"
+    ]
+    # One: the tab. Two would mean the header control came back under another
+    # name, which is the thing being removed rather than renamed.
+    if len(labels) != 1:
+        raise AssertionError("{} controls are labelled Settings".format(len(labels)))
+    return "one way into Settings, and it is the tab"
 
 
 def choosing_your_own_model_lands_on_the_settings_page():
@@ -2481,7 +2489,7 @@ def the_demoted_connect_row_keeps_a_container():
 
 
 check("Settings is a reachable tab", settings_is_a_reachable_tab)
-check("the header control and the tab agree", the_header_control_and_the_tab_agree)
+check("Settings has exactly one way in", settings_has_exactly_one_way_in)
 check("choosing your own model lands on Settings", choosing_your_own_model_lands_on_the_settings_page)
 check("the demoted Connect row keeps a container", the_demoted_connect_row_keeps_a_container)
 check("every Jobs button wears Mapdex chrome", every_jobs_button_wears_mapdex_chrome)

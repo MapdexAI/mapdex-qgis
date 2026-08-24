@@ -76,6 +76,46 @@ def test_choosing_your_own_model_lands_on_the_settings_page():
     )
 
 
+def test_the_onboarding_route_to_settings_reveals_the_stack_it_moves():
+    # Reported: pressing "use my own model" at first open did nothing at all.
+    # The tab bar and the page stack are hidden while nothing has been chosen -
+    # Task and Jobs cannot do anything yet - so switching the stack to Settings
+    # was a move nobody could see.
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert "(self.tabs, not first or self._onboarding_settings)" in plugin
+    assert "(self.segment_bar, not first or self._onboarding_settings)" in plugin
+    # And the forced reset to the conversation has to respect it, or the very
+    # next repaint undoes the move.
+    assert "if first and not self._onboarding_settings and self.switch_page" in plugin
+
+
+def test_connecting_does_no_network_work_on_the_click_handler():
+    # Reported after a disconnect: Connect Mapdex did nothing. It had grown
+    # three network round trips - discovery, the resource document, the
+    # pre-flight - before the first status line, so it sat silent for seconds
+    # and read as a dead button. Everything slow belongs on the worker.
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    start = plugin.index("    def connect(self, *args):")
+    body = plugin[start : plugin.index("\n    def ", start + 1)]
+    for slow in ("discover_endpoints", "server_knows_this_client",
+                 "loopback_available", "_connector_resource"):
+        assert slow not in body, "{} still runs on the click handler".format(slow)
+    assert "_set_status(" in body, "the click gives no immediate feedback"
+    assert "self._task(" in body
+
+
+def test_the_header_settings_control_is_gone():
+    # Two controls for one destination, and the header one named itself but not
+    # where it would appear.
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert "settings_button = QToolButton()" not in panel
+    assert '"settings_button": settings_button' not in panel
+    assert "self.settings_button" not in plugin
+    # The one that stayed is a different widget: Save settings, inside the form.
+    assert "save_settings_button" in panel
+
+
 def test_a_demoted_connect_row_keeps_a_container_and_changes_its_sentence():
     # Reported as "the background is broken": Connect Mapdex rendered as indigo
     # text floating on the panel with no container, directly above a bordered

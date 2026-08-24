@@ -229,10 +229,14 @@ def test_first_open_is_only_the_two_provider_choices():
     """
     body = _method(PLUGIN, "_refresh_ui")
     assert "(self.status, not first)" in body, body
-    assert "(self.tabs, not first)" in body, body
+    assert "(self.tabs, not first or self._onboarding_settings)" in body, body
     assert "(self.nivo_new_button, not first)" in body, body
     assert "(self.nivo_history_button, not first)" in body, body
-    assert "(self.settings_button, not first)" in body, body
+    # There is no header Settings control to hide: it became a tab.
+    assert "self.settings_button" not in body, body
+    # And the tab bar comes back the moment the reader asks for Settings,
+    # or the second onboarding route moves a stack nobody can see.
+    assert "not first or self._onboarding_settings" in body, body
 
 
 def test_empty_chat_is_one_owned_welcome_card():
@@ -249,7 +253,11 @@ def test_empty_chat_is_one_owned_welcome_card():
 def test_the_second_option_routes_to_the_settings_that_already_exist():
     """A second provider form would be two controls for one decision."""
     body = _method(PLUGIN, "choose_own_model")
-    assert "settings_button" in body and "provider_box" in body, body
+    assert "switch_page(SETTINGS_PAGE)" in body and "provider_box" in body, body
+    # The flag before the refresh is the whole reason this arrives anywhere:
+    # while onboarding the stack is hidden, so moving it was a no-op and
+    # pressing the option did nothing at all.
+    assert body.index("_onboarding_settings = True") < body.index("_refresh_ui()"), body
 
 
 # -- disconnect ends the session, all of it ---------------------------------

@@ -939,17 +939,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connection_label = QLabel("Not connected")
     connection_label.setWordWrap(True)
     connection_label.setStyleSheet("font-weight: 600;")
-    settings_button = QToolButton()
-    settings_button.setObjectName("mapdexSettingsButton")
-    # Short label: paired with the connection state on one row, the long form
-    # squeezed the state text into two lines at the dock's normal width.
-    settings_button.setText("Settings")
-    settings_button.setToolTip("Connection settings (API and web addresses)")
-    settings_button.setObjectName("mapdexHeaderButton")
-    settings_button.setCheckable(True)
-    settings_button.setToolButtonStyle(
-        enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
-    )
+    # There is no header Settings control. It became a tab, and two controls
+    # for one destination is one more than this panel needs - the header one
+    # being the worse of the two, since it named itself but not where it would
+    # appear.
     # Disconnect belongs with the connection state it acts on, immediately left
     # of Settings, rather than stranded at the bottom of the panel under
     # unrelated controls. The two sit in one widget so the responsive pair
@@ -1001,7 +994,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         control.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
         header_actions_row.addWidget(control)
     header_actions_row.addWidget(disconnect_button)
-    header_actions_row.addWidget(settings_button)
     layout.addLayout(root.register_pair(connection_label, header_actions))
 
     status = QLabel("Connect Mapdex to start a task.")
@@ -1114,15 +1106,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     save_settings_button = QPushButton("Save settings")
     save_settings_button.setObjectName("mapdexSecondaryButton")
     connection_layout.addWidget(save_settings_button)
-    # The header control is now a way INTO the Settings tab rather than a
-    # disclosure that expands the column. It is wired below, once switch_page
-    # exists, because a control that moves the stack cannot be connected before
-    # the stack has been built.
     if not endpoint_settings:
         # A released build talks to the hosted Mapdex, so nobody can repoint it
         # by accident - but the assistant provider settings remain reachable.
         endpoint_frame.setVisible(False)
-        settings_button.setToolTip("Nivo assistant settings")
 
     # Connect stays a full-width primary action: it is the one thing to do when
     # nothing is connected yet. Disconnect now lives in the header row above.
@@ -1492,13 +1479,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         # page while the stack shows another is worse than not moving at all.
         for index, button in enumerate(segment_buttons):
             button.setChecked(index == target)
-        # The header control and the tab are one state, not two. Left to drift,
-        # a pressed-looking Settings button beside a Nivo page is the same class
-        # of lie as a tab bar disagreeing with its stack.
-        if settings_button.isChecked() != (target == SETTINGS_PAGE):
-            settings_button.blockSignals(True)
-            settings_button.setChecked(target == SETTINGS_PAGE)
-            settings_button.blockSignals(False)
 
     for index, title in enumerate(("Nivo AI", "Task", "Jobs", "Settings")):
         button = QToolButton()
@@ -1511,12 +1491,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         segment_layout.addWidget(button)
         if index == 0:
             button.setChecked(True)
-    # Pressing the header control goes to that page; releasing it comes back to
-    # the conversation, which is where somebody who opened settings by accident
-    # wants to end up.
-    settings_button.toggled.connect(
-        lambda checked: switch_page(SETTINGS_PAGE if checked else 0)
-    )
     switch_page(0)
     segment_layout.addStretch(1)
 
@@ -1533,7 +1507,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "api_url_input": api_url_input,
         "web_url_input": web_url_input,
         "save_settings_button": save_settings_button,
-        "settings_button": settings_button,
         "provider_box": provider_box,
         "model_input": model_input,
         "base_url_input": base_url_input,

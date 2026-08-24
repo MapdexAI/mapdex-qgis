@@ -233,7 +233,7 @@ REVIEW_POLL_MS = 15000
 # callback that outlives the panel meets None instead of a destroyed object.
 PANEL_WIDGET_REFS = (
     "status", "connection_label", "api_url_input", "web_url_input",
-    "save_settings_button", "settings_button", "connect_button",
+    "save_settings_button", "connect_button",
     "disconnect_button", "workspace",
     "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
     "project_box", "workflow_box", "input_box", "source_summary", "run_button",
@@ -761,7 +761,11 @@ class MapdexPlugin:
         # it; assuming it persisted is how somebody restarts QGIS and finds
         # themselves signed out with no explanation.
         self._connection_persisted = bool(persisted_token)
-        self._connector_fallback_reason = ""
+        # Has the reader opened Settings from the first-open choice? While
+        # onboarding, the tab bar and the page stack are hidden, so this is what
+        # lets the second route actually arrive somewhere. Not persisted: it
+        # describes this sitting at the panel, not the install.
+        self._onboarding_settings = False
         # Never continue using the historical plaintext setting. Existing users
         # reconnect once and receive encrypted QGIS Authentication DB storage.
         settings.remove(LEGACY_TOKEN_SETTING)
@@ -837,7 +841,6 @@ class MapdexPlugin:
         self.api_url_input = None
         self.web_url_input = None
         self.save_settings_button = None
-        self.settings_button = None
         self.connect_button = None
         self.connect_promise = None
         self.sign_in = None
@@ -2332,18 +2335,26 @@ class MapdexPlugin:
             (self.tail, first),
             # One page and no tab bar while nothing has been chosen: Task and
             # Jobs are Mapdex session surfaces and cannot do anything yet.
-            (self.segment_bar, not first),
-            (self.tabs, not first),
+            #
+            # Unless the reader has asked for Settings. Onboarding's second
+            # route ends on that page, and while the stack is hidden, moving to
+            # it is a no-op - pressing "use my own model" did nothing at all,
+            # which is how it was reported. Task and Jobs come with it and say
+            # they are locked, which they already knew how to do.
+            (self.segment_bar, not first or self._onboarding_settings),
+            (self.tabs, not first or self._onboarding_settings),
             # Conversation management and generic settings are normal-session
             # controls. Onboarding has exactly two routes; each route opens
             # what it needs without a third competing way into configuration.
             (self.nivo_new_button, not first),
             (self.nivo_history_button, not first),
-            (self.settings_button, not first),
         ):
             if widget is not None:
                 widget.setVisible(shown)
-        if first and self.switch_page is not None:
+        if first and not self._onboarding_settings and self.switch_page is not None:
+            # Forced back to the conversation while onboarding, EXCEPT when the
+            # reader opened Settings from the choice above. Without the
+            # exception this refresh undoes that move on the very next repaint.
             self.switch_page(0)
         if self.body_layout is not None and self.tabs is not None:
             self.body_layout.setStretchFactor(self.tabs, 0 if first else 1)
@@ -3071,17 +3082,18 @@ class MapdexPlugin:
         where it is made. A second provider form would be two controls for one
         decision, and they would disagree eventually.
 
-        It moves the STACK rather than expanding a panel in the column. As a
-        disclosure the form appeared below the choice and pushed it off the
-        screen, so pressing "use my own model" answered the question by hiding
-        it and left the reader looking at fields with no heading above them.
+        The flag is what makes this work DURING onboarding. The tab bar and the
+        page stack are hidden while nothing has been chosen - Task and Jobs
+        cannot do anything yet - so moving the stack to Settings was a move
+        nobody could see, and pressing this did nothing at all. Setting it
+        before the refresh is the whole fix: `_refresh_ui` decides both the
+        visibility and whether to force the page back to the conversation, and
+        it has to read the flag in the same pass.
         """
+        self._onboarding_settings = True
+        self._refresh_ui()
         if self.switch_page is not None:
             self.switch_page(SETTINGS_PAGE)
-        elif self.settings_button is not None:
-            # A panel built before Settings had a page of its own. The header
-            # control still opens it, so an older layout is not stranded.
-            self.settings_button.setChecked(True)
         if self.provider_box is not None:
             self.provider_box.setFocus()
         self._set_status(
@@ -4961,23 +4973,13 @@ class MapdexPlugin:
     def connect(self, *args):
         if not self._apply_connection_settings_from_fields():
             return
-        # The connector flow first, and the device grant only where it cannot
-        # run. Both end at the same consent screen in the same browser; the
-        # difference is that the connector flow's token is confined to the
-        # workspace surface and appears in the person's connections list, where
-        # they can withdraw it.
-        if self._connect_as_connector():
-            return
-        # Naming the reason matters here: "connecting with a code" alone reads
-        # as an arbitrary second flow, and the person cannot tell whether
-        # something is wrong with their machine or with Mapdex.
-        self._set_status(
-            "Connecting with a code, because this machine cannot receive the "
-            "browser's reply directly ({}).".format(
-                self._connector_fallback_reason or "no loopback listener"
-            )
-        )
-        self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
+        # One status line before anything slow, then everything on the worker.
+        # The connector flow is preferred and the device grant is the fallback,
+        # but WHICH one runs takes three network round trips to decide, so that
+        # decision belongs on the worker too: made here, pressing Connect sat
+        # silent for seconds and read as a dead button.
+        self._set_status("Connecting to {}…".format(self.api.base_url))
+        self._task("Connect Mapdex", self._connect_work, self._connect_finished)
 
     @guarded
     def disconnect(self, *args):
@@ -5062,26 +5064,30 @@ class MapdexPlugin:
     # product: it is offered only when the first flow genuinely cannot run, and
     # the person is told which one they are on.
 
-    def _connect_as_connector(self) -> bool:
-        """Run the browser flow. Returns False when this machine cannot.
+    def _connect_work(self):
+        """The whole connection attempt, on the worker thread.
 
-        Everything blocking happens on the worker thread through `_task`; what
-        stays here is the decision about whether the flow is possible at all,
-        asked BEFORE a browser opens. Discovering it halfway through wastes the
-        person's trip and leaves an authorization pending on the server.
+        Every part of this reaches the network - discovery, the resource
+        document, the pre-flight, then the browser round trip - and it used to
+        run in the click handler. Three round trips before the first status
+        line meant pressing Connect did nothing visible for several seconds,
+        which is exactly how it was reported: it does not work.
+
+        The route is decided HERE rather than by the caller, because deciding
+        it is itself the slow part. The caller gets one answer: tokens, or a
+        reason to fall back to the device grant.
         """
         available, why = connector_auth.loopback_available()
         if not available or connector_auth.is_headless():
-            self._connector_fallback_reason = why or "this machine has no browser"
-            return False
+            return {"fallback": why or "this machine has no browser"}
         try:
             endpoints = connector_auth.discover_endpoints(self.api.base_url)
         except connector_auth.ConnectorAuthError as failure:
             # No authorization server at this address at all. An older or
             # self-hosted Mapdex, which the device grant still serves.
-            self._connector_fallback_reason = str(failure)
-            return False
+            return {"fallback": str(failure)}
 
+        resource = self._connector_resource()
         verifier = connector_auth.make_verifier()
         receiver = connector_auth.LoopbackReceiver()
         url = connector_auth.build_authorization_url(
@@ -5089,7 +5095,7 @@ class MapdexPlugin:
             receiver.redirect_uri,
             receiver.state,
             connector_auth.challenge_for(verifier),
-            self._connector_resource(),
+            resource,
         )
         # Asked BEFORE a browser opens. A plugin is distributed and a server is
         # deployed, so the two are routinely different ages: a Mapdex that
@@ -5098,30 +5104,52 @@ class MapdexPlugin:
         # page and then waits five minutes for a redirect that never comes.
         if not connector_auth.server_knows_this_client(url):
             receiver.close()
-            self._connector_fallback_reason = "this Mapdex does not offer connector sign-in yet"
-            return False
+            return {"fallback": "this Mapdex does not offer connector sign-in yet"}
+
         receiver.start()
+        try:
+            # Through the main loop: QDesktopServices touches the GUI, and QGIS
+            # is not amused by that from a worker thread.
+            QTimer.singleShot(0, lambda target=url: QDesktopServices.openUrl(QUrl(target)))
+            self._announce_from_worker(
+                "Approve the connection in your browser, then return to QGIS."
+            )
+            code = receiver.wait(timeout=300)
+            return {"tokens": connector_auth.exchange_code(
+                endpoints["token"], code, verifier, receiver.redirect_uri, resource
+            )}
+        finally:
+            # Always. A listener left bound outlives the attempt, and the next
+            # one cannot explain why its port is taken.
+            receiver.close()
 
-        resource = self._connector_resource()
+    def _announce_from_worker(self, message: str):
+        """Set the status line from the worker thread, through the main loop."""
+        QTimer.singleShot(0, lambda text=message: self._set_status(text))
 
-        def work():
-            try:
-                # Opened from the worker thread through the main loop, because
-                # QDesktopServices touches the GUI and QGIS is not amused
-                # otherwise.
-                QTimer.singleShot(0, lambda target=url: QDesktopServices.openUrl(QUrl(target)))
-                code = receiver.wait(timeout=300)
-                return connector_auth.exchange_code(
-                    endpoints["token"], code, verifier, receiver.redirect_uri, resource
-                )
-            finally:
-                # Always. A listener left bound outlives the attempt and the
-                # next one cannot explain why its port is taken.
-                receiver.close()
-
-        self._set_status("Approve the connection in your browser, then return to QGIS.")
-        self._task("Connect Mapdex", work, self._connector_authorized)
-        return True
+    @guarded
+    def _connect_finished(self, exception, outcome):
+        """Either a connection, or the reason to try the other route."""
+        if exception:
+            self._show_error("Mapdex connection failed", exception)
+            return
+        outcome = outcome or {}
+        if outcome.get("tokens"):
+            self._connector_authorized(None, outcome["tokens"])
+            return
+        # Naming the reason matters: "connecting with a code" alone reads as an
+        # arbitrary second flow, and the person cannot tell whether something is
+        # wrong with their machine or with Mapdex.
+        self._set_status(
+            "Connecting with a code, because this machine cannot receive the "
+            "browser's reply directly ({}).".format(
+                outcome.get("fallback") or "no loopback listener"
+            )
+        )
+        self._task(
+            "Mapdex device authorization", self.api.authorize_device,
+            self._authorization_created,
+        )
 
     def _connector_resource(self) -> str:
         """The resource indicator (RFC 8707): which Mapdex this token is for.
