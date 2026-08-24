@@ -2325,9 +2325,13 @@ class MapdexPlugin:
             # Only on first open: afterwards the settings panel owns the
             # provider choice and repeating it here is a second control for one
             # decision.
-            (self.first_open_prompt, first),
-            (self.first_open_title, first),
-            (self.own_model, first),
+            # Once the own-model route is chosen, the choice has been made.
+            # Keep Connect Mapdex as the single account alternative above the
+            # settings form, but remove the onboarding title, instruction and
+            # the button that would only reopen the page already on screen.
+            (self.first_open_prompt, first and not self._onboarding_settings),
+            (self.first_open_title, first and not self._onboarding_settings),
+            (self.own_model, first and not self._onboarding_settings),
             # Nothing can be asked yet, and a disabled field above the choice
             # is dead weight where the eye lands last.
             (self.composer, not first),
@@ -3706,6 +3710,33 @@ class MapdexPlugin:
         # of view and leave an apparently empty transcript above the composer.
         # Real conversation turns still follow the newest message.
         has_conversation = any(not turn.get("opening") for turn in self._nivo_turns)
+        surface_layout = self.nivo_reply.parentWidget().layout()
+        if surface_layout is not None:
+            surface_layout.setStretch(1, 1 if has_conversation else 0)
+            surface_layout.setStretch(4, 0 if has_conversation else 1)
+        # Discovery is a compact card, not an empty chat viewport. Letting the
+        # scroll area retain its expanding conversation policy stretched one
+        # measured sentence across hundreds of empty pixels. It also left the
+        # previous transient status (for example "Zoomed to the layer") below
+        # the card, where it looked like a second Nivo reply.
+        if has_conversation:
+            self.nivo_reply.setMinimumHeight(170)
+            self.nivo_reply.setMaximumHeight(16777215)
+            self.nivo_reply.setSizePolicy(
+                enum_member(QSizePolicy, "Policy", "Expanding"),
+                enum_member(QSizePolicy, "Policy", "Expanding"),
+            )
+        else:
+            wanted = transcript.sizeHint().height() + 12
+            exact = min(max(wanted, 140), 360)
+            self.nivo_reply.setMinimumHeight(exact)
+            self.nivo_reply.setMaximumHeight(exact)
+            self.nivo_reply.setSizePolicy(
+                enum_member(QSizePolicy, "Policy", "Expanding"),
+                enum_member(QSizePolicy, "Policy", "Preferred"),
+            )
+        if self.nivo_status is not None:
+            self.nivo_status.setVisible(has_conversation or self._busy)
         bar.setValue(bar.maximum() if has_conversation else bar.minimum())
 
     def _turn_widget(self, turn):

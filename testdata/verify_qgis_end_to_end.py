@@ -838,7 +838,7 @@ if os.environ.get("MAPDEX_RENDER"):
     # opened a nine-field form, and the two cards it belongs to were pushed
     # below it. Rendered separately because the fields are hidden until asked
     # for, so the first-open shot cannot show where they land.
-    PLUGIN.switch_page(3)
+    PLUGIN.choose_own_model()
     for _width in (1540, 420):
         render_panel("settings-open", _width)
     PLUGIN.switch_page(0)

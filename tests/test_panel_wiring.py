@@ -239,6 +239,14 @@ def test_first_open_is_only_the_two_provider_choices():
     assert "not first or self._onboarding_settings" in body, body
 
 
+def test_own_model_choice_disappears_while_its_settings_are_open():
+    body = _method(PLUGIN, "_refresh_ui")
+    hidden_after_choice = "first and not self._onboarding_settings"
+
+    assert body.count(hidden_after_choice) >= 3, body
+    assert "self.connect_button.setVisible(not connected)" in body, body
+
+
 def test_empty_chat_is_one_owned_welcome_card():
     """The fixed Nivo header owns the sender; the reading owns its action."""
     opening = _method(PLUGIN, "opening_turns")
@@ -248,6 +256,25 @@ def test_empty_chat_is_one_owned_welcome_card():
     assert 'See what Nivo can do' in opening, opening
     assert 'mapdexOpeningTurn' in turn, turn
     assert 'if not turn.get("opening")' in turn, turn
+
+
+def test_idle_nivo_is_compact_and_does_not_repeat_stale_status():
+    body = _method(PLUGIN, "_render_nivo_turns")
+
+    assert "exact = min(max(wanted, 140), 360)" in body, body
+    assert "self.nivo_reply.setMaximumHeight(exact)" in body, body
+    assert "surface_layout.setStretch(1, 1 if has_conversation else 0)" in body, body
+    assert "surface_layout.setStretch(4, 0 if has_conversation else 1)" in body, body
+    assert 'enum_member(QSizePolicy, "Policy", "Preferred")' in body, body
+    assert "self.nivo_status.setVisible(has_conversation or self._busy)" in body, body
+
+
+def test_the_composer_cannot_grow_into_the_empty_chat_space():
+    creation = PANEL.index("composer = QFrame()")
+    layout = PANEL.index("composer_row = QHBoxLayout(composer)", creation)
+    block = PANEL[creation:layout]
+
+    assert 'enum_member(QSizePolicy, "Policy", "Fixed")' in block, block
 
 
 def test_the_second_option_routes_to_the_settings_that_already_exist():

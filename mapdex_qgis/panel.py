@@ -1351,6 +1351,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     nivo_stop_button.setEnabled(False)
     composer = QFrame()
     composer.setObjectName("mapdexComposer")
+    composer.setSizePolicy(
+        enum_member(QSizePolicy, "Policy", "Expanding"),
+        enum_member(QSizePolicy, "Policy", "Fixed"),
+    )
     composer_row = QHBoxLayout(composer)
     composer_row.setContentsMargins(4, 3, 4, 3)
     composer_row.setSpacing(4)
@@ -1361,6 +1365,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     surface_layout.addWidget(nivo_reply, 1)
     surface_layout.addWidget(nivo_status)
     surface_layout.addWidget(composer)
+    # Idle discovery uses this stretch to stay gathered at the top. During a
+    # real conversation `_render_nivo_turns` gives the stretch back to the
+    # transcript, so the composer remains pinned to the bottom as expected.
+    surface_layout.addStretch(0)
     nivo_layout.addWidget(nivo_surface, 1)
 
     jobs = QWidget()
