@@ -168,6 +168,18 @@ def test_a_locked_auth_database_never_prompts_during_connection():
     assert AUTH_CONFIG_SETTING not in settings.values
 
 
+def test_an_explicit_unlock_choice_may_persist_the_connection():
+    settings = FakeSettings()
+    manager = LockedAuthManager()
+    store = SecureTokenStore(settings, manager, FakeConfig)
+
+    assert store.save_session(
+        "access-1", "refresh-1", 1234.5, allow_unlock=True
+    )
+    assert manager.store_attempted
+    assert settings.values[AUTH_CONFIG_SETTING] == "auth_1"
+
+
 def test_a_locked_auth_database_is_not_opened_while_loading_or_clearing():
     settings = FakeSettings()
     settings.values[AUTH_CONFIG_SETTING] = "auth_existing"

@@ -190,6 +190,15 @@ def test_transcript_detaches_retired_widgets_before_repainting():
     assert hide < detach < delete
 
 
+def test_connection_storage_prompt_explains_the_qgis_password_boundary():
+    offer = _method(PLUGIN, "_offer_secure_connection_storage")
+    assert "Stay connected to Mapdex?" in offer
+    assert "not asking for your Mapdex password" in offer
+    assert "until you close QGIS" in offer
+    adopt = _method(PLUGIN, "_adopt_connector_session")
+    assert "allow_unlock=True" in adopt
+
+
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
 
