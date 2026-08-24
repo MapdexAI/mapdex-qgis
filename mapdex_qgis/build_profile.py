@@ -14,7 +14,9 @@ from __future__ import annotations
 CHANNEL = "development"
 
 PRODUCTION_API = "https://api.mapdex.ai"
-PRODUCTION_WEB = "https://mapdex.ai"
+PRODUCTION_WEB = "https://app.mapdex.ai"
+DEVELOPMENT_API = "http://127.0.0.1:8080"
+DEVELOPMENT_WEB = "http://127.0.0.1:3000"
 
 ALLOW_CUSTOM_ENDPOINT_SETTING = "mapdex/allow_custom_endpoint"
 
@@ -40,6 +42,12 @@ def resolve_endpoints(stored_api: str, stored_web: str, unlocked: bool):
     session belongs to the deployment that issued it.
     """
     if unlocked:
-        return (stored_api or PRODUCTION_API, stored_web or PRODUCTION_WEB, False)
+        # A source/default package is a development build. It should work with
+        # the local stack without making the tester replace two hosted URLs on
+        # every clean QGIS profile. A deliberately unlocked production build
+        # remains hosted by default; support opted into editing, not localhost.
+        default_api = PRODUCTION_API if is_production() else DEVELOPMENT_API
+        default_web = PRODUCTION_WEB if is_production() else DEVELOPMENT_WEB
+        return (stored_api or default_api, stored_web or default_web, False)
     stale = bool(stored_api) and stored_api.strip().rstrip("/") != PRODUCTION_API
     return (PRODUCTION_API, PRODUCTION_WEB, stale)

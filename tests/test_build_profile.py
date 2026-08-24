@@ -4,11 +4,15 @@ import sys
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PANEL = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from mapdex_qgis import build_profile
 from mapdex_qgis.build_profile import (
+    DEVELOPMENT_API,
+    DEVELOPMENT_WEB,
     PRODUCTION_API,
     PRODUCTION_WEB,
     endpoints_unlocked,
@@ -25,6 +29,19 @@ def test_a_development_build_may_point_anywhere():
     assert endpoints_unlocked("") is True
     api, web, drop = resolve_endpoints("http://127.0.0.1:8080", "http://127.0.0.1:3000", True)
     assert (api, web, drop) == ("http://127.0.0.1:8080", "http://127.0.0.1:3000", False)
+
+
+def test_a_clean_development_build_defaults_to_the_local_stack():
+    api, web, drop = resolve_endpoints("", "", True)
+    assert (api, web, drop) == (DEVELOPMENT_API, DEVELOPMENT_WEB, False)
+
+
+def test_endpoint_fields_follow_the_build_profile():
+    assert "endpoint_settings=self._endpoints_unlocked" in PLUGIN
+    assert "if not endpoint_settings:" in PANEL
+    assert "endpoint_frame.setVisible(False)" in PANEL
+    assert '("http://127.0.0.1:8080", "https://api.mapdex.ai")' in PANEL
+    assert '("http://127.0.0.1:3000", "https://app.mapdex.ai")' in PANEL
 
 
 def test_a_pinned_build_ignores_a_stored_development_endpoint():
@@ -46,6 +63,8 @@ def test_support_can_unlock_a_released_build_deliberately(monkeypatch):
     assert endpoints_unlocked("false") is False
     assert endpoints_unlocked("true") is True
     assert endpoints_unlocked("1") is True
+    api, web, drop = resolve_endpoints("", "", True)
+    assert (api, web, drop) == (PRODUCTION_API, PRODUCTION_WEB, False)
 
 
 def test_release_package_is_stamped_production(tmp_path):

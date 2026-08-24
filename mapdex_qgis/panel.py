@@ -1032,9 +1032,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     api_url_input.setEditable(True)
     web_url_input = _elastic(_ArrowComboBox())
     web_url_input.setEditable(True)
-    for value in ("https://api.mapdex.ai", "http://127.0.0.1:8080"):
+    for value in ("http://127.0.0.1:8080", "https://api.mapdex.ai"):
         api_url_input.addItem(value)
-    for value in ("https://mapdex.ai", "http://127.0.0.1:3000"):
+    for value in ("http://127.0.0.1:3000", "https://app.mapdex.ai"):
         web_url_input.addItem(value)
     connection_form.addRow("API", api_url_input)
     connection_form.addRow("Web", web_url_input)
