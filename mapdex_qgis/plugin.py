@@ -129,6 +129,7 @@ from .panel import (
     build_thread_history_dialog,
 )
 from . import branding
+from . import connector_auth
 from . import first_look
 from . import panel_state
 from ._vendor.nivo.processing import (
@@ -743,7 +744,23 @@ class MapdexPlugin:
         self.dock = None
         settings = QSettings()
         self.token_store = qgis_token_store(settings)
-        persisted_token = self.token_store.load() if self.token_store is not None else ""
+        # The stored session, which for a connector is three things that must
+        # travel together: the access token, the refresh token that replaces it,
+        # and when it stops working. An older device-grant install reports its
+        # bearer token here with no refresh token, which is exactly true of it.
+        stored_session = (
+            self.token_store.load_session() if self.token_store is not None else {}
+        )
+        persisted_token = str(stored_session.get("access_token") or "")
+        self._refresh_token = str(stored_session.get("refresh_token") or "")
+        self._token_expires_at = float(stored_session.get("expires_at") or 0.0)
+        self._connection_kind = str(stored_session.get("kind") or "device")
+        # Whether the credential survived to the authentication database. A
+        # session-only connection is a real state and the person is told about
+        # it; assuming it persisted is how somebody restarts QGIS and finds
+        # themselves signed out with no explanation.
+        self._connection_persisted = bool(persisted_token)
+        self._connector_fallback_reason = ""
         # Never continue using the historical plaintext setting. Existing users
         # reconnect once and receive encrypted QGIS Authentication DB storage.
         settings.remove(LEGACY_TOKEN_SETTING)
@@ -766,6 +783,11 @@ class MapdexPlugin:
             settings.setValue("mapdex/base_url", api_base)
             settings.setValue("mapdex/web_base", web_base)
         self.api = MapdexAPI(api_base, persisted_token)
+        # A connector access token lives an hour and a QGIS session does not.
+        # Reactive rather than scheduled: the server's own 401 is the only
+        # authority on whether a token still works, because a locally computed
+        # expiry cannot know that somebody pressed Disconnect in the browser.
+        self.api.on_token_expired = self._renew_connector_token
         self.web_base = web_base.rstrip("/")
         self.device_code = ""
         self.batch_id = ""
@@ -4916,7 +4938,22 @@ class MapdexPlugin:
     def connect(self, *args):
         if not self._apply_connection_settings_from_fields():
             return
-        self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
+        # The connector flow first, and the device grant only where it cannot
+        # run. Both end at the same consent screen in the same browser; the
+        # difference is that the connector flow's token is confined to the
+        # workspace surface and appears in the person's connections list, where
+        # they can withdraw it.
+        if self._connect_as_connector():
+            return
+        # Naming the reason matters here: "connecting with a code" alone reads
+        # as an arbitrary second flow, and the person cannot tell whether
+        # something is wrong with their machine or with Mapdex.
+        self._set_status(
+            "Connecting with a code, because this machine cannot receive the "
+            "browser's reply directly ({}).".format(
+                self._connector_fallback_reason or "no loopback listener"
+            )
+        )
         self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
 
     @guarded
@@ -4987,6 +5024,141 @@ class MapdexPlugin:
         # from the user's own provider, is what read as a defect.
         self._set_status(panel_state.disconnect_notice(self.assistant_runtime()))
         self._refresh_ui()
+
+    # ── Connecting as a connector ────────────────────────────────────────────
+    #
+    # QGIS used to authenticate with a device grant and receive a full Mapdex
+    # session token: it reached every route a signed-in person reaches, and it
+    # appeared on no screen the person could revoke it from. Now it runs the
+    # same authorization-code flow with PKCE that every other connector runs,
+    # and the token that comes back is confined to the workspace surface and
+    # listed under Settings -> Connectors beside the assistants.
+    #
+    # The device grant stays as a fallback for a machine that cannot receive a
+    # loopback redirect. That is honest degradation rather than a second
+    # product: it is offered only when the first flow genuinely cannot run, and
+    # the person is told which one they are on.
+
+    def _connect_as_connector(self) -> bool:
+        """Run the browser flow. Returns False when this machine cannot.
+
+        Everything blocking happens on the worker thread through `_task`; what
+        stays here is the decision about whether the flow is possible at all,
+        asked BEFORE a browser opens. Discovering it halfway through wastes the
+        person's trip and leaves an authorization pending on the server.
+        """
+        available, why = connector_auth.loopback_available()
+        if not available or connector_auth.is_headless():
+            self._connector_fallback_reason = why or "this machine has no browser"
+            return False
+
+        def work():
+            endpoints = connector_auth.discover_endpoints(self.api.base_url)
+            verifier = connector_auth.make_verifier()
+            receiver = connector_auth.LoopbackReceiver().start()
+            try:
+                url = connector_auth.build_authorization_url(
+                    endpoints["authorize"],
+                    receiver.redirect_uri,
+                    receiver.state,
+                    connector_auth.challenge_for(verifier),
+                    self._connector_resource(),
+                )
+                # Opened from the worker thread through the main loop, because
+                # QDesktopServices touches the GUI and QGIS is not amused
+                # otherwise.
+                QTimer.singleShot(0, lambda target=url: QDesktopServices.openUrl(QUrl(target)))
+                code = receiver.wait(timeout=300)
+                payload = connector_auth.exchange_code(
+                    endpoints["token"], code, verifier, receiver.redirect_uri,
+                    self._connector_resource(),
+                )
+            finally:
+                # Always. A listener left bound outlives the attempt and the
+                # next one cannot explain why its port is taken.
+                receiver.close()
+            return payload
+
+        self._set_status("Approve the connection in your browser, then return to QGIS.")
+        self._task("Connect Mapdex", work, self._connector_authorized)
+        return True
+
+    def _connector_resource(self) -> str:
+        """The resource indicator (RFC 8707): which Mapdex this token is for.
+
+        The server refuses a token whose audience does not name it, so omitting
+        this produces a token that authenticates nowhere. It is read from the
+        published metadata rather than assembled, for the same reason the
+        endpoints are.
+        """
+        try:
+            document = self.api.download_bytes("/.well-known/oauth-protected-resource")
+            return str(json.loads(document.decode("utf-8")).get("resource") or "")
+        except Exception:  # noqa: BLE001 - the server may not publish one
+            return ""
+
+    @guarded
+    def _connector_authorized(self, exception, payload):
+        if exception:
+            self._show_error("Mapdex connection failed", exception)
+            return
+        payload = payload or {}
+        token = str(payload.get("access_token") or "")
+        if not token:
+            self._show_error("Mapdex connection failed", RuntimeError("No access token returned"))
+            return
+        self._adopt_connector_session(payload)
+        self._set_status(
+            "Connected to Mapdex."
+            if self._connection_persisted
+            else "Connected for this QGIS session. Unlock the QGIS Authentication "
+                 "Database to keep the connection after restart."
+        )
+        self._refresh_ui()
+        self._load_projects()
+
+    def _adopt_connector_session(self, payload: dict) -> None:
+        """Take a token response and make it the live session.
+
+        Stored as one unit. The server ROTATES refresh tokens - the one that
+        comes back replaces the one that was sent, and re-presenting the old one
+        revokes the whole chain as a theft signal - so writing the access token
+        without the refresh token would end the connection at the next renewal.
+        """
+        self.api.token = str(payload.get("access_token") or "")
+        self._refresh_token = str(payload.get("refresh_token") or self._refresh_token)
+        self._token_expires_at = connector_auth.expiry_from(payload, time.time())
+        self._connection_kind = "connector"
+        self._connection_persisted = self.token_store is not None and self.token_store.save_session(
+            self.api.token, self._refresh_token, self._token_expires_at
+        )
+
+    def _renew_connector_token(self) -> str:
+        """Trade the refresh token for a new access token, or give up cleanly.
+
+        Called by the API client when a request is refused, and by nothing else.
+        Returning "" means the original refusal reaches the person, which is the
+        correct outcome for a connection that was disconnected in the browser:
+        there is nothing to renew and they need to connect again.
+        """
+        if not self._refresh_token:
+            return ""
+        try:
+            endpoints = connector_auth.discover_endpoints(self.api.base_url)
+            payload = connector_auth.refresh_tokens(
+                endpoints["token"], self._refresh_token, self._connector_resource()
+            )
+        except connector_auth.ConnectorAuthError as failure:
+            # `invalid_grant` is the server saying this grant is finished -
+            # disconnected, revoked, or a rotated token presented twice. Holding
+            # on to it would mean retrying a credential that can never work, so
+            # it is dropped and the person is asked to connect again.
+            if failure.code == "invalid_grant":
+                self._refresh_token = ""
+                self._connection_kind = "device"
+            return ""
+        self._adopt_connector_session(payload)
+        return self.api.token
 
     @guarded
     def _authorization_created(self, exception, response):

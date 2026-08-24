@@ -4,7 +4,7 @@ import json
 import mimetypes
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib import error, parse, request
 
 from .build_profile import is_production
@@ -162,6 +162,21 @@ class MapdexAPI:
     def __init__(self, base_url: str, token: str = ""):  # nosec B107
         self.base_url = normalize_api_base(base_url)
         self.token = token
+        # Called when a request is refused for want of a valid token, and only
+        # then. It returns the new access token, or "" if the connection cannot
+        # be renewed - in which case the refusal is reported to the user as it
+        # always was.
+        #
+        # A connector access token lives an hour and QGIS sessions do not, so
+        # without this every long day of work ends in a browser trip. Reactive
+        # rather than scheduled on purpose: a timer that refreshes on its own
+        # keeps a connection alive in a QGIS somebody left open for a week, and
+        # the server's own answer is the only authority on whether a token still
+        # works - a locally computed expiry cannot know about a disconnect.
+        self.on_token_expired: Optional[Callable[[], str]] = None
+        # Guards against a refresh loop. One retry per request: if the renewed
+        # token is refused too, the connection is genuinely gone.
+        self._renewing = False
 
     def _headers(
         self,
@@ -256,6 +271,21 @@ class MapdexAPI:
                 body = response.read()
                 return json.loads(body) if body else None
         except error.HTTPError as exc:
+            if exc.code == 401 and self._renew_token():
+                # One retry, with the renewed token. The body is rebuilt rather
+                # than reused because `data` is a consumed stream on some
+                # transports, and a silently empty retry body is worse than the
+                # 401 it replaced.
+                #
+                # The guard stays SET across the retry. Clearing it first was
+                # the first version and it disabled the guard completely: the
+                # retry's own 401 found the flag down, renewed again, and
+                # recursed. A server refusing every token would have frozen
+                # QGIS rather than reporting a refusal.
+                try:
+                    return self._request(method, path, payload, project_id)
+                finally:
+                    self._renewing = False
             self._raise_http(method, url, exc)
         except error.URLError as exc:
             raise MapdexAPIError(
@@ -263,6 +293,35 @@ class MapdexAPI:
                 url=url,
                 method=method,
             ) from exc
+
+    def _renew_token(self) -> bool:
+        """Ask the owner for a fresh access token, once.
+
+        Returns False when there is no renewal path, when one is already in
+        flight, or when it produced nothing - and every one of those means the
+        original 401 is reported to the person, which is the honest outcome.
+        A connection that was disconnected in the browser lands here, and it
+        must end as "sign in again" rather than as a silent retry loop.
+        """
+        if self._renewing or self.on_token_expired is None:
+            return False
+        self._renewing = True
+        try:
+            renewed = self.on_token_expired() or ""
+        except Exception:  # noqa: BLE001 - a failed renewal is a failed request, not a crash
+            renewed = ""
+        finally:
+            # A failed renewal clears the flag here, or the client would never
+            # try again for the rest of the QGIS session - so somebody who
+            # reconnects in the browser would have to restart QGIS. A
+            # SUCCESSFUL one leaves it set: the caller clears it once its single
+            # retry has finished, which is what makes the guard a guard.
+            if not renewed:
+                self._renewing = False
+        if not renewed:
+            return False
+        self.token = renewed
+        return True
 
     def download_bytes(self, path: str, project_id: str = "") -> bytes:
         """GET a relative `/v1/...` path or absolute URL and return raw bytes."""
