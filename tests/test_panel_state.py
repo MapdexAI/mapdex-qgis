@@ -21,6 +21,11 @@ from mapdex_qgis import panel_state  # noqa: E402
 BYOK = {"runtime": "byok", "provider": "openai"}
 LOCAL = {"runtime": "byok", "provider": "ollama"}
 HOSTED = {"runtime": "hosted", "provider": "mapdex"}
+MISSING_ANTHROPIC_KEY = {
+    "runtime": "unavailable",
+    "provider": "anthropic",
+    "reason": "provider_credential_missing",
+}
 
 
 # -- the reported case -------------------------------------------------------
@@ -74,6 +79,17 @@ def test_a_connected_session_with_no_project_is_blocked_for_its_own_reason():
         "a connected user was told to connect"
     )
     assert panel_state.assistant_engine(HOSTED, True, "proj_1")["can_ask"] is True
+
+
+def test_a_selected_provider_without_a_key_never_falls_back_to_mapdex():
+    engine = panel_state.assistant_engine(
+        MISSING_ANTHROPIC_KEY, connected=True, project_id="proj_1"
+    )
+    assert engine["can_ask"] is False
+    assert engine["engine"] == "none"
+    assert "Anthropic" in engine["line"]
+    assert "no key" in engine["line"].lower()
+    assert "Mapdex (hosted)" in engine["blocked_reason"]
 
 
 def test_a_blocked_line_states_its_own_reason():

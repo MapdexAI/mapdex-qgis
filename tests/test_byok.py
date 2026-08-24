@@ -107,7 +107,11 @@ def test_a_configured_key_sends_the_turn_to_the_users_provider():
     assert is_byok(resolve_runtime(KEYED_SETTINGS))
     assert is_byok(resolve_runtime({"provider": "ollama", "base_url": "http://127.0.0.1:11434"}))
     assert not is_byok(resolve_runtime({}))
-    assert not is_byok(resolve_runtime({"provider": "openai"}))  # a provider with no key is not BYOK
+    missing = resolve_runtime({"provider": "openai"})
+    assert not is_byok(missing)
+    assert missing["runtime"] == "unavailable"
+    assert missing["reason"] == "provider_credential_missing"
+    assert not missing["sends_context_to_host"]
 
 
 def test_a_byok_turn_does_not_require_a_mapdex_account():

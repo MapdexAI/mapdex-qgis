@@ -2093,7 +2093,7 @@ class MapdexPlugin:
             return
         provider = self.provider_box.currentData() or ""
         needs_endpoint = provider in {"openai_compatible", "ollama"}
-        self.base_url_input.setEnabled(bool(provider))
+        self.base_url_input.setEnabled(needs_endpoint)
         self.api_key_input.setEnabled(bool(provider) and provider != "ollama")
         self.model_input.setEnabled(bool(provider))
         # Name the model a blank field actually resolves to. `build_provider`
@@ -3174,6 +3174,12 @@ class MapdexPlugin:
         # execute on this machine, so requiring an account for it is what would
         # make the feature unreachable for exactly the people it is offered to.
         runtime = self.assistant_runtime()
+        engine = panel_state.assistant_engine(
+            runtime, bool(self.api.token), self.project_id
+        )
+        if not engine["can_ask"]:
+            self._set_status(engine["blocked_reason"])
+            return
         if needs_mapdex_account(runtime) and (not self.api.token or not self.project_id):
             # The same sentence the header already shows, from the same place,
             # so the reason a press did nothing matches the reason on screen.

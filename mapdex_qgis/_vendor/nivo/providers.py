@@ -69,7 +69,9 @@ def resolve_runtime(settings: Mapping[str, Any]) -> dict[str, Any]:
     The rule, in one place:
 
     * a configured provider key wins outright -> ``byok``, direct to the vendor;
-    * otherwise, if the plan allows assistant use -> ``hosted`` via the host;
+    * a selected provider with no usable credential -> ``unavailable``;
+    * otherwise, if no provider was selected and the plan allows assistant use
+      -> ``hosted`` via the host;
     * otherwise the user is told what to do rather than silently failing.
 
     ``plan_allows_hosted`` is server-reported. When it is unknown we assume the
@@ -87,6 +89,13 @@ def resolve_runtime(settings: Mapping[str, Any]) -> dict[str, Any]:
             "runtime": RUNTIME_BYOK,
             "provider": provider,
             "reason": "user_key" if has_key else "local_endpoint",
+            "sends_context_to_host": False,
+        }
+    if provider:
+        return {
+            "runtime": "unavailable",
+            "provider": provider,
+            "reason": "provider_credential_missing",
             "sends_context_to_host": False,
         }
     if plan_allows is False:

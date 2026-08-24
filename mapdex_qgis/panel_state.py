@@ -154,6 +154,20 @@ def assistant_engine(
     reason naming every route out of the state rather than only the one we
     would prefer the user took.
     """
+    runtime = runtime or {}
+    if (
+        str(runtime.get("runtime") or "") == "unavailable"
+        and str(runtime.get("reason") or "") == "provider_credential_missing"
+    ):
+        provider = str(runtime.get("provider") or "")
+        label = _MENU_LABELS.get(provider, provider or "Your model provider")
+        blocked = "Add an API key for {}, or choose Mapdex (hosted) in Settings.".format(label)
+        return {
+            "engine": "none",
+            "line": "{} is selected, but no key is available. {}".format(label, blocked),
+            "can_ask": False,
+            "blocked_reason": blocked,
+        }
     if is_byok(runtime):
         name = engine_name(str((runtime or {}).get("provider") or ""))
         tail = (

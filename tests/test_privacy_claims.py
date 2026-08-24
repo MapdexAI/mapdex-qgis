@@ -41,6 +41,7 @@ PACKAGE = ROOT / "mapdex_qgis"
 sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.credentials import describe_privacy  # noqa: E402
+from mapdex_qgis._vendor.nivo.providers import resolve_runtime  # noqa: E402
 
 # Surfaces a user reads and has no way to verify. A false sentence here is the
 # product lying to somebody about where their data went.
@@ -217,6 +218,13 @@ def test_the_hosted_sentence_is_never_ambiguous():
     assert not _claims_in(sentence), (
         "the hosted sentence reads like a bypass claim: {!r}".format(sentence)
     )
+
+
+def test_a_selected_provider_without_a_key_promises_no_hosted_fallback():
+    runtime = resolve_runtime({"provider": "anthropic", "hosted_provider_name": "mapdex"})
+    assert runtime["runtime"] == "unavailable"
+    assert runtime["sends_context_to_host"] is False
+    assert "sent to Mapdex" not in describe_privacy(runtime)
 
 
 def test_the_design_docs_are_exempt_on_purpose():
