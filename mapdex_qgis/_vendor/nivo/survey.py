@@ -218,12 +218,12 @@ def forward(lat: float, lon: float, azimuth_deg: float, distance_m: float,
                       (1 - f) * math.sqrt(sin_alpha * sin_alpha + tmp * tmp))
     lam = math.atan2(sin_sigma * sin_alpha1, cos_u1 * cos_sigma - sin_u1 * sin_sigma * cos_alpha1)
     c = f / 16 * cos_sq_alpha * (4 + f * (4 - 3 * cos_sq_alpha))
-    l = lam - (1 - c) * f * sin_alpha * (
+    longitude_delta = lam - (1 - c) * f * sin_alpha * (
         sigma + c * sin_sigma * (cos2_sigma_m + c * cos_sigma * (-1 + 2 * cos2_sigma_m ** 2)))
 
     return {
         "lat": math.degrees(lat2),
-        "lon": normalize_longitude(lon + math.degrees(l)),
+        "lon": normalize_longitude(lon + math.degrees(longitude_delta)),
         "back_azimuth_deg": normalize_azimuth(math.degrees(math.atan2(sin_alpha, -tmp))),
         "ellipsoid": ellipsoid.name,
     }

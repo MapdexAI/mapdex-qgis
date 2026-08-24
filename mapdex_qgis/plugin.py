@@ -5240,7 +5240,7 @@ class MapdexPlugin:
             # on to it would mean retrying a credential that can never work, so
             # it is dropped and the person is asked to connect again.
             if failure.code == "invalid_grant":
-                self._refresh_token = ""
+                self._refresh_token = str()
                 self._connection_kind = "device"
             return ""
         self._adopt_connector_session(payload)

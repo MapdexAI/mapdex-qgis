@@ -1,5 +1,6 @@
 """The OAuth connector flow QGIS uses, and the checks with a consequence."""
 
+import io
 import json
 import threading
 import urllib.error
@@ -269,6 +270,19 @@ def test_an_oauth_error_body_is_reported_by_its_code_not_as_http_400():
         refresh_tokens("https://api.example/oauth/token", "rt", opener=opener)
     assert caught.value.code == "invalid_grant"
     assert "disconnected" in str(caught.value)
+
+
+def test_a_non_json_oauth_error_uses_the_http_status_fallback():
+    def opener(target, timeout=None):  # noqa: ARG001
+        raise urllib.error.HTTPError(
+            "https://api.example/oauth/token", 502, "Bad Gateway", {},
+            io.BytesIO(b"<html>proxy failure</html>"),
+        )
+
+    with pytest.raises(ConnectorAuthError) as caught:
+        refresh_tokens("https://api.example/oauth/token", "rt", opener=opener)
+    assert caught.value.code == ""
+    assert "502" in str(caught.value)
 
 
 def test_an_unreachable_server_says_so_rather_than_raising_a_url_error():

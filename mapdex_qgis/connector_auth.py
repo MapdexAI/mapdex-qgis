@@ -362,13 +362,16 @@ def _fetch(target, opener: Optional[Callable] = None) -> bytes:
         # An OAuth error body is JSON with a code in it (RFC 6749 5.2), and that
         # code is the actionable part. Reporting only "HTTP 400" leaves a person
         # unable to tell a declined consent from a misconfigured server.
-        detail, code = "", ""
+        document: Dict[str, Any] = {}
         try:
             document = json.loads(failure.read().decode("utf-8"))
-            code = str(document.get("error") or "")
-            detail = str(document.get("error_description") or "")
-        except Exception:  # noqa: BLE001 - a non-JSON error body is still an error
-            pass
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError):
+            # Proxies and older servers can return HTML or an empty body. The
+            # HTTP status fallback below still explains the refusal without
+            # hiding unrelated runtime failures behind a blanket exception.
+            document = {}
+        code = str(document.get("error") or "")
+        detail = str(document.get("error_description") or "")
         raise ConnectorAuthError(
             detail or "Mapdex refused the connection ({}).".format(failure.code), code
         ) from failure
