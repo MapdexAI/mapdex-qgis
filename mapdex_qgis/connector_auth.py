@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -135,16 +136,33 @@ def parse_callback(path: str, expected_state: str) -> str:
     return code
 
 
-# What the browser tab shows after the redirect. Kept deliberately plain: it is
-# the last thing between the person and going back to QGIS, and a page that
-# tries to be a product is a page they read instead of switching windows.
 _DONE_PAGE = """<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>Mapdex</title>
-<body style="font:14px -apple-system,Segoe UI,sans-serif;padding:48px;color:#12100b;background:#efece3">
-<h1 style="font-size:18px;font-weight:600;margin:0 0 8px">{heading}</h1>
-<p style="margin:0;color:#8a857a">{detail}</p>
-</body>"""
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{heading} · Mapdex for QGIS</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;
+font:15px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+color:#f5f4f8;background:#0d1015;padding:24px}}main{{width:min(100%,480px);padding:32px;
+border:1px solid #2a303a;border-radius:18px;background:#151920;
+box-shadow:0 24px 70px rgba(0,0,0,.35)}}.brand{{display:flex;align-items:center;
+gap:10px;color:#b8bec9;font-weight:600;margin-bottom:34px}}.mark{{display:grid;
+place-items:center;width:32px;height:32px;border-radius:9px;background:#222833;
+color:#8177ff}}.status{{display:grid;place-items:center;width:52px;height:52px;
+border-radius:50%;background:{status_bg};color:{status_color};font-size:25px;
+font-weight:700;margin-bottom:22px}}h1{{font-size:25px;line-height:1.2;margin:0 0 10px}}
+p{{margin:0;color:#b8bec9}}.hint{{margin-top:26px;padding-top:20px;
+border-top:1px solid #2a303a;color:#858d9b;font-size:13px}}
+</style>
+</head>
+<body><main>
+<div class="brand"><span class="mark">M</span><span>Mapdex for QGIS</span></div>
+<div class="status" aria-hidden="true">{status_icon}</div>
+<h1>{heading}</h1><p>{detail}</p>
+<p class="hint">This tab no longer needs to stay open.</p>
+</main></body></html>"""
 
 
 class LoopbackReceiver:
@@ -164,13 +182,22 @@ class LoopbackReceiver:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 - http.server virtual name
-                heading, detail = "Connected", "You can close this tab and return to QGIS."
+                heading = "Connection complete"
+                detail = "Return to QGIS — Mapdex will finish setting up your workspace."
+                status_icon, status_bg, status_color = "✓", "#203a32", "#73dfa9"
                 try:
                     receiver._result["code"] = parse_callback(self.path, receiver.state)
                 except ConnectorAuthError as failure:
                     receiver._result["error"] = failure
-                    heading, detail = "Not connected", str(failure)
-                body = _DONE_PAGE.format(heading=heading, detail=detail).encode("utf-8")
+                    heading, detail = "Connection not completed", str(failure)
+                    status_icon, status_bg, status_color = "!", "#42262a", "#ff9b9b"
+                body = _DONE_PAGE.format(
+                    heading=html.escape(heading),
+                    detail=html.escape(detail),
+                    status_icon=status_icon,
+                    status_bg=status_bg,
+                    status_color=status_color,
+                ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))

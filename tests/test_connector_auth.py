@@ -131,6 +131,9 @@ def test_the_receiver_hands_back_the_code_the_browser_delivered():
         thread.join(timeout=5)
     # The person still has to be told to go back to QGIS.
     assert "QGIS" in answer["body"]
+    assert "Connection complete" in answer["body"]
+    assert "Mapdex for QGIS" in answer["body"]
+    assert 'name="viewport"' in answer["body"]
 
 
 def test_the_receiver_refuses_a_callback_from_another_flow():

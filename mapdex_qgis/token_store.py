@@ -22,7 +22,33 @@ class SecureTokenStore:
         self._auth_manager = auth_manager
         self._config_factory = config_factory
 
+    def is_available(self) -> bool:
+        """Whether QGIS secure storage is already unlocked and usable.
+
+        `storeAuthenticationConfig` opens QGIS's global master-password dialog
+        when the database is locked. That dialog looks like Mapdex is asking
+        for a credential and interrupts an otherwise completed browser sign-in.
+        Mapdex must never trigger it implicitly; an unavailable store means a
+        session-only connection, as documented by the plugin UI.
+        """
+        try:
+            if (
+                hasattr(self._auth_manager, "masterPasswordIsSet")
+                and not self._auth_manager.masterPasswordIsSet()
+            ):
+                return False
+            if (
+                hasattr(self._auth_manager, "isDisabled")
+                and self._auth_manager.isDisabled()
+            ):
+                return False
+        except Exception:
+            return False
+        return True
+
     def load(self) -> str:
+        if not self.is_available():
+            return ""
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         if not config_id:
             return ""
@@ -32,7 +58,7 @@ class SecureTokenStore:
         return str(config.config("password", "") or "")
 
     def save(self, token: str) -> bool:
-        if not token:
+        if not token or not self.is_available():
             return False
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         config = self._config_factory()
@@ -77,6 +103,8 @@ class SecureTokenStore:
         accepting it, and there is nothing to refresh it with. That person is
         not signed out by upgrading; they reconnect when it lapses.
         """
+        if not self.is_available():
+            return {}
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         if not config_id:
             return {}
@@ -110,7 +138,7 @@ class SecureTokenStore:
         the refresh token would not merely lose a convenience - the next
         refresh would present a revoked token and end the connection.
         """
-        if not access_token:
+        if not access_token or not self.is_available():
             return False
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
         config = self._config_factory()
@@ -140,7 +168,7 @@ class SecureTokenStore:
 
     def clear(self) -> None:
         config_id = str(self._settings.value(AUTH_CONFIG_SETTING, "") or "")
-        if config_id:
+        if config_id and self.is_available():
             self._auth_manager.removeAuthenticationConfig(config_id)
         self._settings.remove(AUTH_CONFIG_SETTING)
         self._settings.remove(LEGACY_TOKEN_SETTING)

@@ -70,6 +70,19 @@ class FakeAuthManager:
         return True
 
 
+class LockedAuthManager(FakeAuthManager):
+    def __init__(self):
+        super().__init__()
+        self.store_attempted = False
+
+    def masterPasswordIsSet(self):
+        return False
+
+    def storeAuthenticationConfig(self, config):
+        self.store_attempted = True
+        return super().storeAuthenticationConfig(config)
+
+
 def test_token_is_kept_in_auth_database_not_qsettings():
     settings = FakeSettings()
     manager = FakeAuthManager()
@@ -143,6 +156,29 @@ def test_an_older_device_install_is_not_signed_out_by_the_upgrade():
 def test_no_stored_session_reads_as_nothing_rather_than_an_empty_token():
     store = SecureTokenStore(FakeSettings(), FakeAuthManager(), FakeConfig)
     assert store.load_session() == {}
+
+
+def test_a_locked_auth_database_never_prompts_during_connection():
+    settings = FakeSettings()
+    manager = LockedAuthManager()
+    store = SecureTokenStore(settings, manager, FakeConfig)
+
+    assert not store.save_session("access-1", "refresh-1", 1234.5)
+    assert not manager.store_attempted
+    assert AUTH_CONFIG_SETTING not in settings.values
+
+
+def test_a_locked_auth_database_is_not_opened_while_loading_or_clearing():
+    settings = FakeSettings()
+    settings.values[AUTH_CONFIG_SETTING] = "auth_existing"
+    manager = LockedAuthManager()
+    manager.saved["auth_existing"] = {"password": "secret"}
+    store = SecureTokenStore(settings, manager, FakeConfig)
+
+    assert store.load_session() == {}
+    store.clear()
+    assert manager.saved["auth_existing"]["password"] == "secret"
+    assert AUTH_CONFIG_SETTING not in settings.values
 
 
 def test_a_corrupt_expiry_does_not_take_the_session_down():
