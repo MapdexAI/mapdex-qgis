@@ -9,7 +9,16 @@ import traceback
 from functools import partial
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
+from qgis.PyQt.QtCore import (
+    QObject,
+    Qt,
+    QLocale,
+    QSettings,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
     QDockWidget,
@@ -741,6 +750,33 @@ class _WorkTask(QgsTask):
             return False
 
 
+class _ConnectorUiBridge(QObject):
+    """Queue connector UI work onto the thread that constructed the plugin.
+
+    A zero-delay QTimer created from a QgsTask worker belongs to that worker.
+    QgsTask workers do not run a Qt event loop, so its callback never fires —
+    exactly why the authorization URL was built but the browser never opened.
+    A queued signal to this main-thread QObject crosses that boundary reliably.
+    """
+
+    open_url = pyqtSignal(str)
+    show_status = pyqtSignal(str)
+
+    def __init__(self, status_callback: Callable[[str], None]):
+        super().__init__()
+        self._status_callback = status_callback
+        self.open_url.connect(self._open_url)
+        self.show_status.connect(self._show_status)
+
+    @pyqtSlot(str)
+    def _open_url(self, target: str) -> None:
+        QDesktopServices.openUrl(QUrl(target))
+
+    @pyqtSlot(str)
+    def _show_status(self, message: str) -> None:
+        self._status_callback(message)
+
+
 class MapdexPlugin:
     def __init__(self, iface):
         self.iface = iface
@@ -816,6 +852,9 @@ class MapdexPlugin:
         self._busy = False
         self._connect_task = None
         self._connect_cancel = threading.Event()
+        # Constructed on the QGIS UI thread; worker signals therefore arrive
+        # here as queued main-thread calls.
+        self._connector_ui = _ConnectorUiBridge(self._set_status)
         self._panel_root = None
         # Background tasks in flight; QGIS crashes if Python collects one early.
         self._tasks = []
@@ -5158,7 +5197,7 @@ class MapdexPlugin:
         try:
             # Through the main loop: QDesktopServices touches the GUI, and QGIS
             # is not amused by that from a worker thread.
-            QTimer.singleShot(0, lambda target=url: QDesktopServices.openUrl(QUrl(target)))
+            self._connector_ui.open_url.emit(url)
             self._announce_from_worker(
                 "Approve the connection in your browser, then return to QGIS."
             )
@@ -5177,7 +5216,7 @@ class MapdexPlugin:
 
     def _announce_from_worker(self, message: str):
         """Set the status line from the worker thread, through the main loop."""
-        QTimer.singleShot(0, lambda text=message: self._set_status(text))
+        self._connector_ui.show_status.emit(message)
 
     def _connect_remaining(self, deadline: float) -> float:
         """Return this attempt's remaining budget, or stop it consistently."""

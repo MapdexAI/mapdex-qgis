@@ -171,6 +171,17 @@ def test_connector_sign_in_is_bounded_and_user_cancellable():
     assert "def set_label" in PANEL
 
 
+def test_connector_browser_open_is_queued_to_the_qgis_ui_thread():
+    work = _method(PLUGIN, "_connect_work")
+    announce = _method(PLUGIN, "_announce_from_worker")
+
+    assert "_ConnectorUiBridge(QObject)" in PLUGIN
+    assert "self._connector_ui.open_url.emit(url)" in work
+    assert "self._connector_ui.show_status.emit(message)" in announce
+    assert "QTimer.singleShot" not in work
+    assert "QDesktopServices.openUrl" not in work
+
+
 def test_the_panel_has_somewhere_to_put_the_runtime_line():
     assert '"nivo_runtime": nivo_runtime' in PANEL
 

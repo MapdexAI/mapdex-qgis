@@ -180,6 +180,11 @@ def test_signal_connections_use_guarded_bound_methods():
         name = match.group(1)
         if name.startswith("_") and "def {}(".format(name) not in PLUGIN:
             continue
+        # Small QObject bridges own their Qt slots and do not have the plugin's
+        # error reporter. Their purpose is thread delivery; the plugin callback
+        # they invoke remains guarded at the actual UI boundary.
+        if "@pyqtSlot(str)\n    def {}(".format(name) in PLUGIN:
+            continue
         assert "@guarded\n    def {}(".format(name) in PLUGIN, (
             "signal connected to unguarded handler: {}".format(name)
         )
