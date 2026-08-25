@@ -23,6 +23,11 @@ GENERIC_QGIS_PROCESSING_CAPABILITIES = frozenset({
     "processing.run@1", "qgis:processing_operation@1", "qgis:action",
 })
 SUPPORTED_QGIS_PROCESSING_OPERATIONS = frozenset(PROCESSING_OPERATION_CATALOG)
+CANONICAL_QGIS_PROCESSING_ACTIONS = frozenset(
+    "{}.{}@1".format(domain, operation)
+    for domain in QGIS_PROCESSING_CAPABILITY_DOMAINS
+    for operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS
+)
 
 
 def _processing_operation_for_capability(capability: str) -> str:
