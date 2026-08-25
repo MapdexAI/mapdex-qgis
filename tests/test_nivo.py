@@ -6,7 +6,7 @@ sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.nivo import (
     ALLOWED_ACTIONS,
-    NAMED_GEOPROCESSING_CAPABILITIES,
+    SUPPORTED_QGIS_PROCESSING_OPERATIONS,
     allowed_actions,
     companion_context,
     confirmation_action_problem,
@@ -169,11 +169,27 @@ def test_confirmation_recovers_named_buffer_capability_from_live_trace():
 
 
 def test_confirmation_recovers_every_named_geoprocessing_capability():
+    capabilities = {
+        "geoprocessing.{}@1".format(operation): operation
+        for operation in (
+            "buffer", "clip", "intersection", "union", "difference",
+            "dissolve", "merge", "centroid", "convex_hull", "reproject",
+            "spatial_join", "simplify", "repair", "validate", "split",
+            "zonal_statistics",
+        )
+    }
+    capabilities.update({
+        "terrain.{}@1".format(operation): operation
+        for operation in (
+            "slope", "aspect", "hillshade", "ruggedness", "roughness",
+            "flow_accumulation", "watershed", "viewshed", "contours",
+        )
+    })
     two_layer = {
         "clip", "intersection", "union", "difference", "merge",
         "spatial_join", "split", "zonal_statistics",
     }
-    for capability, operation in NAMED_GEOPROCESSING_CAPABILITIES.items():
+    for capability, operation in capabilities.items():
         params = {"input_layer": "layer_source"}
         if operation in two_layer:
             params["target_layer"] = "layer_overlay"
@@ -183,6 +199,8 @@ def test_confirmation_recovers_every_named_geoprocessing_capability():
             params["tolerance"] = 10
         if operation == "reproject":
             params["target_crs"] = "EPSG:4326"
+        if operation == "contours":
+            params["interval"] = 100
         response = {
             "trace": {"turn_id": "turn_all", "steps": [{
                 "id": "turn_all.{}".format(operation),
@@ -196,6 +214,36 @@ def test_confirmation_recovers_every_named_geoprocessing_capability():
         actions = confirmation_actions(response)
 
         assert len(actions) == 1, capability
+        assert actions[0]["params"]["operation"] == operation
+
+
+def test_generic_processing_bridge_covers_the_complete_local_catalog():
+    two_layer = {
+        "clip", "intersection", "union", "difference", "merge",
+        "select_by_location", "nearest_neighbor", "split",
+        "zonal_statistics", "spatial_join",
+    }
+    for operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS:
+        params = {"operation": operation, "input_layer": "layer_source"}
+        if operation in two_layer:
+            params["target_layer"] = "layer_overlay"
+        if operation == "reproject":
+            params["target_crs"] = "EPSG:4326"
+        if operation == "contours":
+            params["interval"] = 100
+        response = {
+            "trace": {"turn_id": "turn_catalog", "steps": [{
+                "id": "turn_catalog.{}".format(operation),
+                "capability": "processing.run@1",
+                "surface": "client",
+                "risk": "consequential",
+                "params": params,
+            }]},
+        }
+
+        actions = confirmation_actions(response)
+
+        assert len(actions) == 1, operation
         assert actions[0]["params"]["operation"] == operation
 
 

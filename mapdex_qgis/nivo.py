@@ -9,16 +9,31 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ._vendor.nivo.processing import NAMED_GEOPROCESSING_OPERATIONS, safe_processing_params
+from ._vendor.nivo.processing import (
+    PROCESSING_OPERATION_CATALOG,
+    safe_processing_params,
+)
 
 COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64
 MAX_TEXT = 256
 
-NAMED_GEOPROCESSING_CAPABILITIES = {
-    "geoprocessing.{}@1".format(operation): operation
-    for operation in NAMED_GEOPROCESSING_OPERATIONS
-}
+QGIS_PROCESSING_CAPABILITY_DOMAINS = frozenset({"geoprocessing", "terrain"})
+GENERIC_QGIS_PROCESSING_CAPABILITIES = frozenset({
+    "processing.run@1", "qgis:processing_operation@1", "qgis:action",
+})
+SUPPORTED_QGIS_PROCESSING_OPERATIONS = frozenset(PROCESSING_OPERATION_CATALOG)
+
+
+def _processing_operation_for_capability(capability: str) -> str:
+    """Resolve a canonical capability through the closed local tool catalog."""
+    stem, separator, version = capability.partition("@")
+    domain, dot, operation = stem.partition(".")
+    if separator != "@" or version != "1" or dot != ".":
+        return ""
+    if domain not in QGIS_PROCESSING_CAPABILITY_DOMAINS:
+        return ""
+    return operation if operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS else ""
 
 TURN_STATES = frozenset({
     "idle", "composing", "clarification_required", "action_ready",
@@ -368,8 +383,8 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # params were recorded from the validated Processing action. Newer
         # traces carry the precise capability id.
         capability = _text(step.get("capability"), 128)
-        if capability not in {"qgis:processing_operation@1", "qgis:action"} \
-                and capability not in NAMED_GEOPROCESSING_CAPABILITIES:
+        named_operation = _processing_operation_for_capability(capability)
+        if capability not in GENERIC_QGIS_PROCESSING_CAPABILITIES and not named_operation:
             continue
         # surface/risk were added after the first trace transport. When either
         # field is present it must prove this is the client consequential path;
@@ -378,7 +393,9 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # stable target and the normal local confirmation dialog.
         if step.get("surface") not in {None, "", "client"}:
             continue
-        if step.get("risk") not in {None, "", "consequential"}:
+        allowed_risks = {None, "", "safe", "consequential"} \
+            if named_operation else {None, "", "consequential"}
+        if step.get("risk") not in allowed_risks:
             continue
         params = step.get("params")
         if not isinstance(params, dict):
@@ -387,9 +404,10 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # Named geoprocessing capabilities are the current server contract.
         # Normalize their operation before applying the same closed local
         # Processing catalogue and parameter validation as the legacy bridge.
-        named_operation = NAMED_GEOPROCESSING_CAPABILITIES.get(capability)
         supplied_operation = _text(params.get("operation"), 64)
         if named_operation and supplied_operation and supplied_operation != named_operation:
+            continue
+        if not named_operation and supplied_operation not in SUPPORTED_QGIS_PROCESSING_OPERATIONS:
             continue
         if named_operation:
             params = dict(params)
@@ -443,7 +461,8 @@ def confirmation_action_problem(response: dict[str, Any]) -> str:
         isinstance(step, dict)
         and (
             step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
-            or step.get("capability") in NAMED_GEOPROCESSING_CAPABILITIES
+            or bool(_processing_operation_for_capability(_text(step.get("capability"), 128)))
+            or step.get("capability") == "processing.run@1"
         )
         for step in steps
     ):
