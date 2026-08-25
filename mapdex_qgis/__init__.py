@@ -20,5 +20,25 @@ from . import mapdex_capabilities  # noqa: F401  - imported for its registration
 
 
 def classFactory(iface):
+    """Build the plugin from the files that are installed now.
+
+    QGIS replaces plugin files in-place when a ZIP update is installed, but it
+    can leave already imported package submodules in ``sys.modules`` for the
+    rest of the desktop session.  That produced a particularly confusing
+    half-upgrade: the new panel and connection gate came from ``plugin.py``,
+    while the old ``nivo.py`` action parser silently discarded Processing
+    confirmations.  Reload the small policy module before importing the plugin
+    class so an in-session update is atomic from the user's point of view.
+    """
+    import importlib
+    import sys
+
+    nivo_name = "{}.nivo".format(__name__)
+    plugin_name = "{}.plugin".format(__name__)
+    if nivo_name in sys.modules:
+        importlib.reload(sys.modules[nivo_name])
+    if plugin_name in sys.modules:
+        importlib.reload(sys.modules[plugin_name])
+
     from .plugin import MapdexPlugin
     return MapdexPlugin(iface)
