@@ -271,6 +271,7 @@ def test_local_processing_fallback_recovers_the_live_centroid_sentence():
 
     assert action["target"] == "layer_chile"
     assert action["params"] == {"operation": "centroid"}
+    assert "undo_token" not in action
 
 
 def test_local_processing_fallback_maps_numeric_parameters_by_operation():

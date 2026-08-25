@@ -103,11 +103,7 @@ def local_processing_action(message: str, target: str) -> dict[str, Any]:
         "target": target,
         "params": safe,
         "summary": "Nivo prepared a QGIS Processing operation for confirmation.",
-        "correlation_id": "",
         "undo": True,
-        "undo_token": "",
-        "confirmation_id": "",
-        "idempotency_key": "",
     }
 
 TURN_STATES = frozenset({
