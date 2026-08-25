@@ -190,18 +190,11 @@ def test_transcript_detaches_retired_widgets_before_repainting():
     assert hide < detach < delete
 
 
-def test_connection_storage_choice_never_requests_a_qgis_vault_unlock():
-    choice = _method(PLUGIN, "_choose_connection_persistence")
-    assert '"Stay connected after restarting QGIS?"' in choice
-    assert '"Keep me connected"' in choice
-    assert '"This session only"' in choice
-    assert "keep_button.setEnabled(storage_ready)" in choice
-    assert "not open a password window" in choice
-    assert "dialog.setDefaultButton(session_button)" in choice
+def test_connection_storage_never_requests_a_qgis_vault_unlock():
     adopt = _method(PLUGIN, "_adopt_connector_session")
-    assert "self._choose_connection_persistence()" in adopt
     assert "self.token_store.save_session(" in adopt
     assert "allow_unlock" not in adopt
+    assert "_choose_connection_persistence" not in PLUGIN
 
 
 def test_the_panel_has_somewhere_to_put_the_runtime_line():

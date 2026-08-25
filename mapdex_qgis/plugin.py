@@ -5354,44 +5354,13 @@ class MapdexPlugin:
         self._token_expires_at = connector_auth.expiry_from(payload, time.time())
         self._connection_kind = "connector"
         self._connection_persisted = bool(
-            self._choose_connection_persistence()
-            and self.token_store
+            self.token_store
             and self.token_store.save_session(
                 self.api.token,
                 self._refresh_token,
                 self._token_expires_at,
             )
         )
-
-    def _choose_connection_persistence(self) -> bool:
-        """Ask how long to connect without ever unlocking QGIS implicitly."""
-        storage_ready = bool(self.token_store and self.token_store.is_available())
-        dialog = QMessageBox(self.iface.mainWindow())
-        dialog.setWindowTitle("Mapdex connection")
-        dialog.setText("Stay connected after restarting QGIS?")
-        if storage_ready:
-            dialog.setInformativeText(
-                "Mapdex can store this connection in QGIS secure storage."
-            )
-        else:
-            dialog.setInformativeText(
-                "QGIS secure storage is currently locked or unavailable. Mapdex will "
-                "not open a password window. Unlock it from QGIS settings first if you "
-                "want to stay connected after restarting."
-            )
-        keep_button = dialog.addButton(
-            "Keep me connected",
-            enum_member(QMessageBox, "ButtonRole", "AcceptRole"),
-        )
-        session_button = dialog.addButton(
-            "This session only",
-            enum_member(QMessageBox, "ButtonRole", "RejectRole"),
-        )
-        keep_button.setEnabled(storage_ready)
-        dialog.setDefaultButton(session_button)
-        dialog.setEscapeButton(session_button)
-        dialog.exec()
-        return storage_ready and dialog.clickedButton() is keep_button
 
     def _renew_connector_token(self) -> str:
         """Trade the refresh token for a new access token, or give up cleanly.
@@ -5472,9 +5441,7 @@ class MapdexPlugin:
         self.project_id = str((response or {}).get("project_id") or self.project_id or "")
         settings = QSettings()
         persisted = bool(
-            self._choose_connection_persistence()
-            and self.token_store
-            and self.token_store.save(self.api.token)
+            self.token_store and self.token_store.save(self.api.token)
         )
         if self.project_id:
             settings.setValue("mapdex/project_id", self.project_id)
