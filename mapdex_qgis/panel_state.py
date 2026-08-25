@@ -89,17 +89,18 @@ JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their
 # Mapdex or your own model is a billing and privacy decision, and the person
 # reading it does not know what either would do for them.
 #
-# First open is a focused provider decision. A normal Nivo reading, runtime
+# First open is a focused connection gate. A normal Nivo reading, runtime
 # notice and prepared turns belong to the conversation after a provider can
 # answer; showing them here made onboarding and chat look like one broken
 # transcript. Keep the value proposition short enough to survive a 420 px dock.
 FIRST_OPEN_TITLE = "Your map-aware assistant, inside QGIS"
-FIRST_OPEN_PROMPT = "Choose how you want to start:"
+FIRST_OPEN_PROMPT = (
+    "Connect Mapdex to use Nivo in QGIS. You can choose Mapdex, your own "
+    "provider or a local model after connecting."
+)
 
-# The two are not equals and are not drawn as equals. "Use your key" would be
-# the wrong words for a GIS technician - hard rule 22 keeps developer jargon
-# off the end-user screen - so it says what it is, and names the providers so
-# it is recognisable.
+# The connection action states the product value; model routing is a Settings
+# decision after identity, project and capability context exist.
 CONNECT_PROMISE = (
     "Recommended. Free to start. Ask Nivo and run verified Georeference, "
     "digitize, validate and batch workflows."
@@ -107,26 +108,18 @@ CONNECT_PROMISE = (
 # The same action to somebody already answering from their own model. It is an
 # upgrade for them, not the thing to press, and telling them it is
 # "Recommended. Free to start." describes a decision they have already made.
-CONNECT_PROMISE_UPGRADE = (
-    "Adds verified Georeference, digitize, validate and batch workflows. "
-    "Your own model keeps answering questions."
-)
-OWN_MODEL_LABEL = "Use my own AI model"
-OWN_MODEL_PROMISE = (
-    "Chat with OpenAI, Anthropic, Gemini or a local model. "
-    "Mapdex workflows and cloud results stay unavailable."
-)
+CONNECT_PROMISE_UPGRADE = CONNECT_PROMISE
 
 
-def is_first_open(connected: bool, has_provider: bool) -> bool:
-    """Has this install chosen where Nivo thinks yet?
+def is_first_open(connected: bool, has_provider: bool = False) -> bool:
+    """Whether the connection gate owns the panel.
 
     DERIVED, never a stored "has seen onboarding" flag. A flag goes stale, and
     once spent it cannot come back - a defect class this repository has already
     paid for. Disconnect and remove the key and you genuinely are a new user
     again, which is the honest answer rather than a convenient one.
     """
-    return not connected and not has_provider
+    return not connected
 
 
 def engine_name(provider: str) -> str:
@@ -155,6 +148,14 @@ def assistant_engine(
     would prefer the user took.
     """
     runtime = runtime or {}
+    if not connected:
+        blocked = "Connect Mapdex to ask Nivo. You can choose your model provider after connecting."
+        return {
+            "engine": "none",
+            "line": "Not connected. " + blocked,
+            "can_ask": False,
+            "blocked_reason": blocked,
+        }
     if (
         str(runtime.get("runtime") or "") == "unavailable"
         and str(runtime.get("reason") or "") == "provider_credential_missing"
@@ -181,14 +182,6 @@ def assistant_engine(
             "line": "Answering with {}. {}".format(name, tail),
             "can_ask": True,
             "blocked_reason": "",
-        }
-    if not connected:
-        blocked = "Connect Mapdex to ask Nivo, or set your own model provider under Settings."
-        return {
-            "engine": "none",
-            "line": "Not connected. " + blocked,
-            "can_ask": False,
-            "blocked_reason": blocked,
         }
     if not str(project_id or ""):
         # The line carries the blockage too. It has to be sufficient on its own:
@@ -237,11 +230,4 @@ def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     "Disconnected." full stop, above an assistant that keeps answering, is the
     sentence that made a working design look like a leak.
     """
-    if is_byok(runtime):
-        return (
-            "Disconnected from Mapdex. Nivo keeps answering with {}; remove that key "
-            "under Settings to stop it too.".format(
-                engine_name(str((runtime or {}).get("provider") or ""))
-            )
-        )
     return "Disconnected. Connect again to ask Nivo and to start tasks."

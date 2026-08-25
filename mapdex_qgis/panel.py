@@ -38,8 +38,6 @@ from .panel_state import (
     FIRST_OPEN_PROMPT,
     FIRST_OPEN_TITLE,
     JOBS_LOCKED_NOTICE,
-    OWN_MODEL_LABEL,
-    OWN_MODEL_PROMISE,
     PROVIDER_CHOICES,
     TASK_LOCKED_NOTICE,
 )
@@ -1127,21 +1125,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     first_open_prompt = QLabel(FIRST_OPEN_PROMPT)
     first_open_prompt.setObjectName("mapdexPromise")
     first_open_prompt.setWordWrap(True)
-    own_model_button = action_row(OWN_MODEL_LABEL, OWN_MODEL_PROMISE)
-    own_model_promise = QLabel("")
-    own_model_promise.setObjectName("mapdexPromise")
-    own_model_promise.setVisible(False)
-    own_model = QWidget()
-    own_model_layout = QVBoxLayout(own_model)
-    own_model_layout.setContentsMargins(0, 0, 0, 0)
-    own_model_layout.setSpacing(0)
-    own_model_layout.addWidget(own_model_button)
-
-    # The choice, and it is placed AFTER the pages below so the reading in the
-    # Nivo transcript has already said something true about the open file
-    # before the panel asks anybody to pick a side. Showing the choice alone
-    # would be a wall in front of a product nobody has seen yet, and it asks a
-    # billing-and-privacy question the reader cannot answer at that moment.
+    # The single connection gate sits above the hidden session pages.
     sign_in = QWidget()
     sign_in_layout = QVBoxLayout(sign_in)
     sign_in_layout.setContentsMargins(0, 8, 0, 0)
@@ -1149,7 +1133,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
     sign_in_layout.addWidget(first_open_prompt)
     sign_in_layout.addWidget(connect_button)
     sign_in_layout.addWidget(connect_promise)
-    sign_in_layout.addWidget(own_model)
 
     # Deliberately avoid QTabWidget: QGIS' themed tab pane allowed sibling
     # page widgets to bleed into the active page on narrow docks. This compact
@@ -1172,14 +1155,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     layout.addWidget(first_open_title)
     # The choice comes BEFORE the transcript, and that reverses an earlier
     # decision on purpose. The reasoning was that a reading of the open project
-    # should say something true before the panel asks anyone to pick a side;
+    # should say something true before the panel asks anyone to connect;
     # what shipped was the choice at y=602 on a first-open screen whose title
     # ended at y=119, with 234 px of empty transcript between them, so the one
     # decision a stranger has to make was the last thing they found.
     #
-    # Nivo introduces itself, offers the two ways it can think, and the reading
-    # follows as the argument for them. The reading is still there and still
-    # first-hand; it is no longer in front of the door.
+    # Nivo introduces itself and the connection action follows immediately.
     layout.addWidget(sign_in)
     # The settings form is a PAGE now, added to the stack below rather than to
     # this column. Opening it here made the form part of the scroll everything
@@ -1528,8 +1509,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "body_layout": layout,
         "first_open_prompt": first_open_prompt,
         "first_open_title": first_open_title,
-        "own_model": own_model,
-        "own_model_button": own_model_button,
         "segment_bar": segment_bar,
         "settings_page": settings_page,
         "disconnect_button": disconnect_button,

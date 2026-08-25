@@ -114,22 +114,17 @@ def test_a_configured_key_sends_the_turn_to_the_users_provider():
     assert not missing["sends_context_to_host"]
 
 
-def test_a_byok_turn_does_not_require_a_mapdex_account():
-    # The gate that has to move. A user asking their own model about their own
-    # layers has nothing to authenticate to Mapdex for.
-    assert not needs_mapdex_account(resolve_runtime(KEYED_SETTINGS))
-    assert not needs_mapdex_account(resolve_runtime({"provider": "ollama", "base_url": "http://localhost:11434"}))
-    # The hosted turn IS a Mapdex call, so it still does.
+def test_every_runtime_requires_the_mapdex_connection_gate():
+    assert needs_mapdex_account(resolve_runtime(KEYED_SETTINGS))
+    assert needs_mapdex_account(resolve_runtime({"provider": "ollama", "base_url": "http://localhost:11434"}))
     assert needs_mapdex_account(resolve_runtime({}))
     assert needs_mapdex_account(resolve_runtime({"plan_allows_hosted": False}))
 
 
-def test_the_plugin_gates_on_the_runtime_rather_than_on_the_token():
-    """The account check in ask_nivo must be conditional, and BYOK must branch."""
+def test_the_plugin_gates_every_runtime_and_still_routes_connected_byok():
     body = ast.unparse(_method("ask_nivo"))
     assert "needs_mapdex_account(runtime)" in body, (
-        "ask_nivo still demands a Mapdex session unconditionally, so a BYOK user cannot reach "
-        "their own provider - the exact gap this feature exists to close."
+        "ask_nivo no longer enforces the shared connection gate"
     )
     assert "is_byok(runtime)" in body and "_start_byok_turn" in body, (
         "ask_nivo resolves the runtime and does not branch on it"

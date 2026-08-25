@@ -286,6 +286,8 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
 def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
     """Return confirmation-required actions that are safe to present and apply."""
     raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if (not isinstance(raw, list) or not raw) and isinstance(response, dict):
+        raw = _processing_actions_from_trace(response)
     if not isinstance(raw, list):
         return []
     result = []
@@ -308,7 +310,11 @@ def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
         action_id = _text(action.get("action_id"), 128)
         confirmation_id = _text(action.get("confirmation_id"), 128)
         idempotency_key = _text(action.get("idempotency_key"), 128)
-        if not action_id or not confirmation_id or not idempotency_key:
+        # Older hosted compose deployments did not attach the two server-side
+        # bookkeeping tokens. Neither token selects or executes the local
+        # algorithm: the closed kind, bounded params, stable target and action
+        # id above remain the execution safety boundary.
+        if not action_id:
             continue
         result.append({
             "id": action_id,
@@ -323,6 +329,77 @@ def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
             "undo_token": _text(action.get("undo_token"), 128),
         })
     return result
+
+
+def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recover a transport-dropped action from the server's grounded trace.
+
+    Some deployed compose transports return the direct-action text and trace
+    but omit ``companion_actions``. The trace is still server-generated from
+    the same validated action. Recovery is deliberately narrower than normal
+    admission: only a consequential client-side Processing capability with a
+    stable target and safe params can reach the existing confirmation gate.
+    """
+    if response.get("mode") != "direct_ui_command":
+        return []
+    trace = response.get("trace")
+    steps = trace.get("steps") if isinstance(trace, dict) else None
+    if not isinstance(steps, list):
+        return []
+    recovered = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("capability") != "qgis:processing_operation@1":
+            continue
+        if step.get("surface") != "client" or step.get("risk") != "consequential":
+            continue
+        params = step.get("params")
+        if not isinstance(params, dict):
+            continue
+        target = _text(params.get("input_layer"), 128)
+        safe_params = safe_processing_params(params)
+        if not target or not safe_params:
+            continue
+        response_id = _text(response.get("id"), 96)
+        step_id = _text(step.get("id"), 96)
+        if not response_id or not step_id:
+            continue
+        recovered.append({
+            "action_id": "{}:{}".format(response_id, step_id),
+            "kind": "qgis:processing_operation@1",
+            "summary": _text(response.get("text") or response.get("message")),
+            "target": target,
+            "params": params,
+            "risk": "consequential",
+            "requires_confirmation": True,
+            "undo": True,
+        })
+    return recovered
+
+
+def confirmation_action_problem(response: dict[str, Any]) -> str:
+    """Explain why a proposed Processing action could not reach confirmation."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if not isinstance(raw, list):
+        return ""
+    for action in raw:
+        if not isinstance(action, dict) or action.get("kind") != "qgis:processing_operation@1":
+            continue
+        if action.get("requires_confirmation") is not True:
+            return "Nivo refused the Processing request because its confirmation gate was missing."
+        if not _text(action.get("target"), 128):
+            return "Nivo could not run Processing because the response did not identify the target layer."
+        params = action.get("params")
+        if not isinstance(params, dict):
+            return "Nivo could not run Processing because its parameters were missing."
+        if any(key not in SAFE_PARAM_KEYS["qgis:processing_operation@1"] for key in params):
+            return "Nivo refused unsafe or unsupported Processing parameters."
+        if not safe_processing_params(params):
+            return "Nivo could not validate the requested Processing operation or distance."
+        if not _text(action.get("action_id"), 128):
+            return "Nivo could not run Processing because the response had no action identifier."
+    return ""
 
 
 # --------------------------------------------------------------------------

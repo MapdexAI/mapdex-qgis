@@ -122,6 +122,7 @@ from .nivo import (
     THREAD_PROJECT_SETTING,
     allowed_actions,
     companion_context,
+    confirmation_action_problem,
     confirmation_actions,
     describe_thread,
     geometry_from_choice,
@@ -133,7 +134,6 @@ from .nivo import (
     transition,
 )
 from .panel import (
-    SETTINGS_PAGE,
     action_row,
     allow_narrow,
     build_companion_panel,
@@ -254,7 +254,7 @@ PANEL_WIDGET_REFS = (
     "open_project_button", "recent", "recent_box", "resume_button",
     "connect_promise", "sign_in", "tail", "body_layout",
     "first_open_prompt", "first_open_title",
-    "own_model", "own_model_button", "segment_bar",
+    "segment_bar",
     "tabs", "switch_page", "workspace_body", "workspace_locked", "jobs_locked",
     "assistant_key_state",
     "nivo_context", "nivo_runtime", "composer",
@@ -804,7 +804,6 @@ class MapdexPlugin:
         # onboarding, the tab bar and the page stack are hidden, so this is what
         # lets the second route actually arrive somewhere. Not persisted: it
         # describes this sitting at the panel, not the install.
-        self._onboarding_settings = False
         # Never continue using the historical plaintext setting. Existing users
         # reconnect once and receive encrypted QGIS Authentication DB storage.
         settings.remove(LEGACY_TOKEN_SETTING)
@@ -892,8 +891,6 @@ class MapdexPlugin:
         self.body_layout = None
         self.first_open_prompt = None
         self.first_open_title = None
-        self.own_model = None
-        self.own_model_button = None
         self.segment_bar = None
         self.disconnect_button = None
         self.workspace = None
@@ -1919,7 +1916,6 @@ class MapdexPlugin:
         self._load_connection_fields()
         self._load_assistant_fields()
         self.connect_button.clicked.connect(self.connect)
-        self.own_model_button.clicked.connect(self.choose_own_model)
         self.disconnect_button.clicked.connect(self.disconnect)
         self.save_settings_button.clicked.connect(self.save_connection_settings)
         self.provider_box.currentIndexChanged.connect(self._assistant_provider_changed)
@@ -2332,8 +2328,7 @@ class MapdexPlugin:
         # never a stored flag - a flag goes stale and, once spent, cannot come
         # back. The reading above it needed neither, which is what lets this
         # screen say something true before it asks for anything.
-        has_provider = self._has_provider()
-        first = panel_state.is_first_open(connected, has_provider)
+        first = panel_state.is_first_open(connected)
         if self.connection_label is not None:
             self.connection_label.setText(
                 "Connected to Mapdex" if connected else ("Meet Nivo" if first else "Not connected")
@@ -2376,16 +2371,10 @@ class MapdexPlugin:
             (self.status, not first),
             (self.sign_in, not connected),
             (self.connect_promise, not connected),
-            # Only on first open: afterwards the settings panel owns the
-            # provider choice and repeating it here is a second control for one
-            # decision.
-            # Once the own-model route is chosen, the choice has been made.
-            # Keep Connect Mapdex as the single account alternative above the
-            # settings form, but remove the onboarding title, instruction and
-            # the button that would only reopen the page already on screen.
-            (self.first_open_prompt, first and not self._onboarding_settings),
-            (self.first_open_title, first and not self._onboarding_settings),
-            (self.own_model, first and not self._onboarding_settings),
+            # Disconnected onboarding has one route. Model routing appears in
+            # Settings only after a Mapdex session exists.
+            (self.first_open_prompt, first),
+            (self.first_open_title, first),
             # Nothing can be asked yet, and a disabled field above the choice
             # is dead weight where the eye lands last.
             (self.composer, not first),
@@ -2399,17 +2388,16 @@ class MapdexPlugin:
             # it is a no-op - pressing "use my own model" did nothing at all,
             # which is how it was reported. Task and Jobs come with it and say
             # they are locked, which they already knew how to do.
-            (self.segment_bar, not first or self._onboarding_settings),
-            (self.tabs, not first or self._onboarding_settings),
-            # Conversation management and generic settings are normal-session
-            # controls. Onboarding has exactly two routes; each route opens
-            # what it needs without a third competing way into configuration.
+            (self.segment_bar, not first),
+            (self.tabs, not first),
+            # Conversation management and Settings are connected-session
+            # controls, not alternate ways around the connection gate.
             (self.nivo_new_button, not first),
             (self.nivo_history_button, not first),
         ):
             if widget is not None:
                 widget.setVisible(shown)
-        if first and not self._onboarding_settings and self.switch_page is not None:
+        if first and self.switch_page is not None:
             # Forced back to the conversation while onboarding, EXCEPT when the
             # reader opened Settings from the choice above. Without the
             # exception this refresh undoes that move on the very next repaint.
@@ -3132,33 +3120,6 @@ class MapdexPlugin:
         settings = QSettings()
         return bool(str(settings.value("mapdex/nivo/provider", "") or "").strip())
 
-    @guarded
-    def choose_own_model(self, *args):
-        """Go to the Settings tab, on the provider fields.
-
-        The first-open screen offers the choice; the form that already exists is
-        where it is made. A second provider form would be two controls for one
-        decision, and they would disagree eventually.
-
-        The flag is what makes this work DURING onboarding. The tab bar and the
-        page stack are hidden while nothing has been chosen - Task and Jobs
-        cannot do anything yet - so moving the stack to Settings was a move
-        nobody could see, and pressing this did nothing at all. Setting it
-        before the refresh is the whole fix: `_refresh_ui` decides both the
-        visibility and whether to force the page back to the conversation, and
-        it has to read the flag in the same pass.
-        """
-        self._onboarding_settings = True
-        self._refresh_ui()
-        if self.switch_page is not None:
-            self.switch_page(SETTINGS_PAGE)
-        if self.provider_box is not None:
-            self.provider_box.setFocus()
-        self._set_status(
-            "Choose a provider and paste its key, then Save settings. "
-            "Nivo answers from your own model after that."
-        )
-
     def _forget_assistant_runtime(self):
         """Drop the cached decision after the settings behind it moved."""
         self._assistant_runtime_cache = None
@@ -3168,11 +3129,9 @@ class MapdexPlugin:
         if self._nivo_compose_task is not None:
             self._set_status("Nivo is already working. Use Stop to cancel that request.")
             return
-        # One resolution, used for the gate and for the branch below. A hosted
-        # turn IS a Mapdex call, so it needs a Mapdex session; a BYOK turn
-        # reaches the user's own provider and runs only capabilities that
-        # execute on this machine, so requiring an account for it is what would
-        # make the feature unreachable for exactly the people it is offered to.
+        # One resolution, used for the gate and for the branch below. Every
+        # runtime requires a Mapdex connection; model routing is a connected
+        # Settings choice, not a second signed-out product lifecycle.
         runtime = self.assistant_runtime()
         engine = panel_state.assistant_engine(
             runtime, bool(self.api.token), self.project_id
@@ -3543,9 +3502,16 @@ class MapdexPlugin:
         for action in allowed_actions(response):
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
-        for action in confirmation_actions(response):
+        confirmations = confirmation_actions(response)
+        for action in confirmations:
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
+        if not confirmations:
+            problem = confirmation_action_problem(response)
+            if problem:
+                self._nivo_state = transition(self._nivo_state, "error")
+                self._say(problem)
+                self._set_status(problem)
         self._continue_objective(response)
         # Last, because everything above is what the turn ALREADY did and this
         # is what it is asking to do next. Offering first would put a dialog in

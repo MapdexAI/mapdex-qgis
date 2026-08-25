@@ -4,7 +4,14 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mapdex_qgis.nivo import ALLOWED_ACTIONS, allowed_actions, companion_context, confirmation_actions, transition
+from mapdex_qgis.nivo import (
+    ALLOWED_ACTIONS,
+    allowed_actions,
+    companion_context,
+    confirmation_action_problem,
+    confirmation_actions,
+    transition,
+)
 from mapdex_qgis._vendor.nivo.processing import (
     build_algorithm_parameters,
     resolve_processing_algorithm,
@@ -82,6 +89,70 @@ def test_confirmation_actions_only_accept_bounded_processing_payloads():
     ]})
     assert len(actions) == 1
     assert actions[0]["params"] == {"operation": "buffer", "distance": 25.0}
+
+
+def test_confirmation_accepts_legacy_response_without_unused_server_tokens():
+    actions = confirmation_actions({"companion_actions": [{
+        "action_id": "act_buffer",
+        "kind": "qgis:processing_operation@1",
+        "requires_confirmation": True,
+        "target": "layer_abc",
+        "params": {"operation": "buffer", "distance": 200000},
+    }]})
+    assert len(actions) == 1
+    assert actions[0]["params"]["distance"] == 200000.0
+
+
+def test_rejected_confirmation_explains_the_missing_target():
+    response = {"companion_actions": [{
+        "action_id": "act_buffer",
+        "kind": "qgis:processing_operation@1",
+        "requires_confirmation": True,
+        "params": {"operation": "buffer", "distance": 25},
+    }]}
+    assert "target layer" in confirmation_action_problem(response)
+
+
+def test_confirmation_recovers_transport_dropped_action_from_grounded_trace():
+    response = {
+        "id": "cmp_buffer",
+        "mode": "direct_ui_command",
+        "text": "Nivo prepared a QGIS Processing operation for confirmation.",
+        "trace": {"steps": [{
+            "id": "step_action",
+            "capability": "qgis:processing_operation@1",
+            "surface": "client",
+            "risk": "consequential",
+            "status": "succeeded",
+            "params": {
+                "operation": "buffer",
+                "distance": 3000,
+                "input_layer": "layer_chile",
+            },
+        }]},
+    }
+    actions = confirmation_actions(response)
+    assert len(actions) == 1
+    assert actions[0]["target"] == "layer_chile"
+    assert actions[0]["params"] == {"operation": "buffer", "distance": 3000.0}
+
+
+def test_confirmation_does_not_recover_untrusted_or_incomplete_trace():
+    base = {
+        "id": "cmp_buffer",
+        "mode": "direct_ui_command",
+        "trace": {"steps": [{
+            "id": "step_action",
+            "capability": "qgis:processing_operation@1",
+            "surface": "client",
+            "risk": "safe",
+            "params": {"operation": "buffer", "distance": 3000, "input_layer": "layer_chile"},
+        }]},
+    }
+    assert confirmation_actions(base) == []
+    base["trace"]["steps"][0]["risk"] = "consequential"
+    base["trace"]["steps"][0]["params"]["python"] = "dangerous()"
+    assert confirmation_actions(base) == []
 
 
 def test_osm_xyz_basemap_action_is_provider_allowlisted():

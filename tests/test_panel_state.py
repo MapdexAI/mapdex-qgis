@@ -30,24 +30,17 @@ MISSING_ANTHROPIC_KEY = {
 
 # -- the reported case -------------------------------------------------------
 
-def test_a_disconnected_byok_session_still_answers_and_says_so():
-    """The exact state in the bug report, now stated instead of contradicted."""
+def test_a_disconnected_byok_session_is_blocked_by_the_connection_gate():
     engine = panel_state.assistant_engine(BYOK, connected=False)
-    assert engine["can_ask"] is True, (
-        "BYOK does not need a Mapdex account and the turn will run; a panel that "
-        "disables Ask here would be lying in the other direction."
-    )
-    assert engine["engine"] == "byok"
-    assert "your own OpenAI key" in engine["line"], engine["line"]
+    assert engine["can_ask"] is False
+    assert engine["engine"] == "none"
+    assert "Connect Mapdex" in engine["blocked_reason"]
 
 
-def test_the_disconnect_notice_says_what_it_did_not_stop():
-    """"Disconnected." full stop, above a working assistant, is what read as a defect."""
+def test_disconnect_stops_nivo_even_when_a_provider_key_is_stored():
     notice = panel_state.disconnect_notice(BYOK)
-    assert "keeps answering" in notice, notice
-    assert "your own OpenAI key" in notice, notice
-    # And the way out, since the user's complaint was that they could not stop it.
-    assert "remove that key" in notice, notice
+    assert "Connect again" in notice, notice
+    assert "keeps answering" not in notice, notice
 
 
 def test_the_hosted_disconnect_notice_does_not_promise_a_working_assistant():
@@ -57,17 +50,12 @@ def test_the_hosted_disconnect_notice_does_not_promise_a_working_assistant():
 
 # -- what a blocked state must offer ----------------------------------------
 
-def test_a_blocked_hosted_turn_names_both_routes_out():
-    """Naming only the route we would prefer is how a funnel becomes a wall.
-
-    A user who has their own key and no interest in an account is entitled to
-    know that Settings is a way out of this state.
-    """
+def test_a_blocked_hosted_turn_names_the_single_connection_route():
     engine = panel_state.assistant_engine(HOSTED, connected=False)
     assert engine["can_ask"] is False
     reason = engine["blocked_reason"]
     assert "Connect Mapdex" in reason, reason
-    assert "provider" in reason and "Settings" in reason, reason
+    assert "provider" in reason and "after connecting" in reason, reason
 
 
 def test_a_connected_session_with_no_project_is_blocked_for_its_own_reason():
@@ -114,9 +102,8 @@ def test_byok_states_the_work_it_cannot_do():
     A user asking a BYOK conversation to georeference a sheet otherwise finds
     the boundary as a refusal, after spending a turn on their own key.
     """
-    for connected in (True, False):
-        line = panel_state.assistant_engine(BYOK, connected=connected)["line"]
-        assert panel_state.MAPDEX_WORK in line, (connected, line)
+    line = panel_state.assistant_engine(BYOK, connected=True)["line"]
+    assert panel_state.MAPDEX_WORK in line, line
 
 
 def test_a_connected_byok_user_is_told_how_to_switch_rather_than_to_connect():
@@ -160,10 +147,8 @@ def test_a_connected_user_never_sees_the_first_open_screen():
     assert panel_state.is_first_open(connected=True, has_provider=True) is False
 
 
-def test_a_provider_key_alone_is_also_a_choice():
-    """Somebody who pasted an OpenAI key has chosen. Asking again would be the
-    panel forgetting what it was told."""
-    assert panel_state.is_first_open(connected=False, has_provider=True) is False
+def test_a_provider_key_does_not_bypass_the_connection_gate():
+    assert panel_state.is_first_open(connected=False, has_provider=True) is True
 
 
 def test_only_a_genuinely_new_install_is_asked():
@@ -182,15 +167,9 @@ def test_the_state_is_derived_so_it_can_come_back():
     )
 
 
-def test_the_second_option_is_not_developer_jargon():
-    """Hard rule 22: the end-user screen stays free of developer concerns.
-    "Use your key" means nothing to a GIS technician, and naming the providers
-    is what makes the option recognisable."""
-    assert "key" not in panel_state.OWN_MODEL_LABEL.lower(), panel_state.OWN_MODEL_LABEL
-    for provider in ("OpenAI", "Anthropic", "Gemini"):
-        assert provider in panel_state.OWN_MODEL_PROMISE, provider
-    # And it says what it costs you, rather than selling only the upside.
-    assert "unavailable" in panel_state.OWN_MODEL_PROMISE
+def test_first_open_explains_model_choice_comes_after_connection():
+    assert "Connect Mapdex" in panel_state.FIRST_OPEN_PROMPT
+    assert "after connecting" in panel_state.FIRST_OPEN_PROMPT
 
 
 def test_connect_says_what_it_is_for_and_that_it_is_free():

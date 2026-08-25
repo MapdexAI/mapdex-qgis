@@ -56,37 +56,18 @@ def test_settings_is_a_page_and_not_a_panel_that_expands_the_column():
 
 
 def test_the_settings_page_index_has_one_owner():
-    # The tab bar, the header control and the first-open route into the
-    # provider fields all have to agree on which page Settings is, and three
-    # copies of a 3 is how they come to disagree.
+    # The tab bar owns the Settings page index. Signed-out onboarding no longer
+    # has a second route that needs to import or duplicate it.
     panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
-    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
     assert "SETTINGS_PAGE = 3" in panel
-    assert "SETTINGS_PAGE," in plugin, "plugin.py does not import the shared index"
-    assert "self.switch_page(SETTINGS_PAGE)" in plugin
+    assert "SETTINGS_PAGE" in panel
 
 
-def test_choosing_your_own_model_lands_on_the_settings_page():
+def test_disconnected_onboarding_has_no_provider_settings_route():
     plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
-    start = plugin.index("def choose_own_model")
-    body = plugin[start : plugin.index("\n    def ", start + 1)]
-    assert "switch_page(SETTINGS_PAGE)" in body
-    assert "provider_box.setFocus()" in body, (
-        "it arrives at the page without putting the caret in the first field"
-    )
-
-
-def test_the_onboarding_route_to_settings_reveals_the_stack_it_moves():
-    # Reported: pressing "use my own model" at first open did nothing at all.
-    # The tab bar and the page stack are hidden while nothing has been chosen -
-    # Task and Jobs cannot do anything yet - so switching the stack to Settings
-    # was a move nobody could see.
-    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
-    assert "(self.tabs, not first or self._onboarding_settings)" in plugin
-    assert "(self.segment_bar, not first or self._onboarding_settings)" in plugin
-    # And the forced reset to the conversation has to respect it, or the very
-    # next repaint undoes the move.
-    assert "if first and not self._onboarding_settings and self.switch_page" in plugin
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    assert "_onboarding_settings" not in plugin
+    assert "Use my own AI model" not in panel
 
 
 def test_connecting_does_no_network_work_on_the_click_handler():

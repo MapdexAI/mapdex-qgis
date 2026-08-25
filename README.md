@@ -80,8 +80,8 @@ an unexpected parameter is rejected rather than ignored.
 
 ## Use your own model key (optional)
 
-The assistant runs through Mapdex on your plan — nothing to configure. Or point
-it at your own provider from *Settings* in the panel:
+Connect Mapdex first, then use the hosted assistant on your plan — nothing else
+to configure — or point Nivo at your own provider from *Settings* in the panel:
 
 | Provider | Needs |
 | --- | --- |
@@ -94,11 +94,11 @@ read back into the interface, and are redacted from every error message. If the
 authentication database is locked the key is kept for the session only rather
 than being written as plaintext.
 
-With a key configured, the turn goes **directly to that provider** and does not
-pass through Mapdex servers, so it needs no Mapdex account: you can ask your own
-model about your own layers signed out of Mapdex entirely. With Ollama the whole
-conversation stays on your machine. The settings panel states which of the two
-paths is in force, so the answer is never inferred from this document.
+With a key configured, model inference goes **directly to that provider** and
+does not pass through Mapdex servers. A Mapdex connection is still required to
+enter Nivo: it owns identity, project context, capability negotiation and the
+action lifecycle. With Ollama, model traffic stays on your machine after that
+connection gate. The settings panel states which model path is in force.
 
 **What that mode cannot do.** Georeferencing, digitization, validation, batch
 and review execute as Mapdex Runs, so a conversation that never contacts Mapdex

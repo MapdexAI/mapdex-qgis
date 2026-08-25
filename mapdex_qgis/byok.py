@@ -70,14 +70,8 @@ def is_byok(runtime: Mapping[str, Any] | None) -> bool:
 
 
 def needs_mapdex_account(runtime: Mapping[str, Any] | None) -> bool:
-    """Whether a Mapdex session is a precondition for this turn.
-
-    A BYOK turn reaches the user's own provider and may run only capabilities
-    that execute on this machine, so it needs no account: refusing it without
-    one is what made the feature unreachable for exactly the people it is
-    offered to. Every other runtime IS a Mapdex call, so the gate stays.
-    """
-    return not is_byok(runtime)
+    """Every Nivo runtime is entered through a Mapdex-connected session."""
+    return True
 
 
 def session_allowance(client: str = CLIENT_QGIS) -> frozenset:
