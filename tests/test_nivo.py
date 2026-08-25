@@ -137,6 +137,36 @@ def test_confirmation_recovers_transport_dropped_action_from_grounded_trace():
     assert actions[0]["params"] == {"operation": "buffer", "distance": 3000.0}
 
 
+def test_confirmation_recovers_named_buffer_capability_from_live_trace():
+    response = {
+        "text": "Nivo prepared a QGIS Processing operation for confirmation.",
+        "companion_actions": [{
+            "kind": "geoprocessing.buffer@1",
+            "target": "contours_1000m",
+            "params": {"distance": 2000, "operation": "buffer"},
+        }],
+        "trace": {"turn_id": "turn_live", "steps": [{
+            "id": "turn_live.s2",
+            "capability": "geoprocessing.buffer@1",
+            "surface": "client",
+            "risk": "consequential",
+            "status": "succeeded",
+            "params": {
+                "operation": "buffer",
+                "input_layer": "contours_1000m",
+                "distance": 2000,
+            },
+        }]},
+    }
+
+    actions = confirmation_actions(response)
+
+    assert len(actions) == 1
+    assert actions[0]["tool"] == "qgis:processing_operation@1"
+    assert actions[0]["target"] == "contours_1000m"
+    assert actions[0]["params"]["distance"] == 2000.0
+
+
 def test_confirmation_does_not_recover_untrusted_or_incomplete_trace():
     base = {
         "id": "cmp_buffer",

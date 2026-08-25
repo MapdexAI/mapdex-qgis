@@ -286,7 +286,17 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
 def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
     """Return confirmation-required actions that are safe to present and apply."""
     raw = response.get("companion_actions") if isinstance(response, dict) else None
-    if (not isinstance(raw, list) or not raw) and isinstance(response, dict):
+    if isinstance(response, dict) and (
+        not isinstance(raw, list)
+        or not any(
+            isinstance(action, dict)
+            and action.get("kind") == "qgis:processing_operation@1"
+            for action in raw
+        )
+    ):
+        # Current servers return named canonical actions (for example
+        # geoprocessing.buffer@1). Until this companion advertises those ids,
+        # recover their already validated client step from the grounded trace.
         raw = _processing_actions_from_trace(response)
     if not isinstance(raw, list):
         return []
@@ -351,7 +361,12 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # Older traces used the generic qgis:action fallback even though their
         # params were recorded from the validated Processing action. Newer
         # traces carry the precise capability id.
-        if step.get("capability") not in {"qgis:processing_operation@1", "qgis:action"}:
+        capability = _text(step.get("capability"), 128)
+        if capability not in {
+            "qgis:processing_operation@1",
+            "qgis:action",
+            "geoprocessing.buffer@1",
+        }:
             continue
         # surface/risk were added after the first trace transport. When either
         # field is present it must prove this is the client consequential path;
@@ -366,10 +381,18 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         if not isinstance(params, dict):
             continue
         target = _text(params.get("input_layer"), 128)
+        # Named geoprocessing capabilities are the current server contract.
+        # Normalize their operation before applying the same closed local
+        # Processing catalogue and parameter validation as the legacy bridge.
+        if capability == "geoprocessing.buffer@1" and not params.get("operation"):
+            params = dict(params)
+            params["operation"] = "buffer"
         safe_params = safe_processing_params(params)
         if not target or not safe_params:
             continue
-        response_id = _text(response.get("id"), 96)
+        # Current compose responses identify the turn inside the canonical
+        # trace envelope; older transports also repeated it as top-level id.
+        response_id = _text(response.get("id") or trace.get("turn_id"), 96)
         step_id = _text(step.get("id"), 96)
         if not response_id or not step_id:
             continue
@@ -411,7 +434,9 @@ def confirmation_action_problem(response: dict[str, Any]) -> str:
     steps = trace.get("steps") if isinstance(trace, dict) else None
     if isinstance(steps, list) and any(
         isinstance(step, dict)
-        and step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
+        and step.get("capability") in {
+            "qgis:processing_operation@1", "qgis:action", "geoprocessing.buffer@1"
+        }
         for step in steps
     ):
         return "Nivo received a Processing proposal without executable target parameters."
