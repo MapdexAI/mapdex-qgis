@@ -11,6 +11,7 @@ from mapdex_qgis.nivo import (
     companion_context,
     confirmation_action_problem,
     confirmation_actions,
+    local_processing_action,
     transition,
 )
 from mapdex_qgis._vendor.nivo.processing import (
@@ -263,6 +264,24 @@ def test_named_geoprocessing_capability_rejects_mismatched_operation():
     }
 
     assert confirmation_actions(response) == []
+
+
+def test_local_processing_fallback_recovers_the_live_centroid_sentence():
+    action = local_processing_action("Create centroids from this layer", "layer_chile")
+
+    assert action["target"] == "layer_chile"
+    assert action["params"] == {"operation": "centroid"}
+
+
+def test_local_processing_fallback_maps_numeric_parameters_by_operation():
+    assert local_processing_action("Create a 2 km buffer", "layer")["params"]["distance"] == 2000
+    assert local_processing_action("Simplify with a 100 meter tolerance", "layer")["params"]["tolerance"] == 100
+    assert local_processing_action("Generate contours every 50 metres", "layer")["params"]["interval"] == 50
+
+
+def test_local_processing_fallback_refuses_ambiguous_or_two_layer_requests():
+    assert local_processing_action("make this nicer", "layer") == {}
+    assert local_processing_action("clip this layer", "layer") == {}
 
 
 def test_confirmation_does_not_recover_untrusted_or_incomplete_trace():

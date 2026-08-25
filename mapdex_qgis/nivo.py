@@ -7,6 +7,8 @@ response from becoming executable Python by accident.
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import re
 from typing import Any
 
 from ._vendor.nivo.processing import (
@@ -39,6 +41,74 @@ def _processing_operation_for_capability(capability: str) -> str:
     if domain not in QGIS_PROCESSING_CAPABILITY_DOMAINS:
         return ""
     return operation if operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS else ""
+
+
+_LOCAL_OPERATION_ALIASES = {
+    "centroids": "centroid", "centroid": "centroid",
+    "convex hull": "convex_hull", "convex_hull": "convex_hull",
+    "dissolve": "dissolve", "merge": "merge", "repair": "repair",
+    "fix geometries": "repair", "validate": "validate",
+    "simplify": "simplify", "reproject": "reproject", "buffer": "buffer",
+    "contours": "contours", "contour": "contours", "slope": "slope",
+    "aspect": "aspect", "hillshade": "hillshade", "ruggedness": "ruggedness",
+    "roughness": "roughness", "flow accumulation": "flow_accumulation",
+    "watershed": "watershed", "viewshed": "viewshed",
+    "centroid oluştur": "centroid", "merkez noktaları": "centroid",
+    "geometriyi düzelt": "repair", "geometrileri düzelt": "repair",
+    "sadeleştir": "simplify", "yeniden projelendir": "reproject",
+    "tampon": "buffer", "eşyükselti": "contours",
+}
+
+
+def local_processing_action(message: str, target: str) -> dict[str, Any]:
+    """Recover an explicit operation name when hosted routing returns no action.
+
+    This is deliberately not a general language classifier. It recognizes only
+    canonical GIS operation names (plus a small set of direct UI translations),
+    validates them through the same closed Processing catalog, and still sends
+    the result through the normal confirmation dialog.
+    """
+    text = " ".join(str(message or "").casefold().replace("-", " ").split())
+    operation = ""
+    for alias in sorted(_LOCAL_OPERATION_ALIASES, key=len, reverse=True):
+        if re.search(r"(?<!\w){}(?!\w)".format(re.escape(alias)), text):
+            operation = _LOCAL_OPERATION_ALIASES[alias]
+            break
+    target = _text(target, 128)
+    if not operation or not target:
+        return {}
+    params: dict[str, Any] = {"operation": operation, "input_layer": target}
+    number = re.search(r"(?<!\w)(\d+(?:[.,]\d+)?)\s*(km|m|meter|metre)?\b", text)
+    if operation in {"buffer", "simplify", "contours"}:
+        if not number:
+            return {}
+        value = float(number.group(1).replace(",", "."))
+        if (number.group(2) or "m") == "km":
+            value *= 1000
+        params[{"buffer": "distance", "simplify": "tolerance", "contours": "interval"}[operation]] = value
+    if operation == "reproject":
+        epsg = re.search(r"\bepsg\s*[: ]\s*(\d{3,12})\b", text)
+        if not epsg:
+            return {}
+        params["target_crs"] = "EPSG:{}".format(epsg.group(1))
+    if operation in {"clip", "intersection", "union", "difference", "merge", "spatial_join", "split", "zonal_statistics"}:
+        return {}
+    safe = safe_processing_params(params)
+    if not safe:
+        return {}
+    digest = hashlib.sha256("{}\0{}".format(target, text).encode("utf-8")).hexdigest()[:24]
+    return {
+        "id": "local_processing_{}".format(digest),
+        "tool": "qgis:processing_operation@1",
+        "target": target,
+        "params": safe,
+        "summary": "Nivo prepared a QGIS Processing operation for confirmation.",
+        "correlation_id": "",
+        "undo": True,
+        "undo_token": "",
+        "confirmation_id": "",
+        "idempotency_key": "",
+    }
 
 TURN_STATES = frozenset({
     "idle", "composing", "clarification_required", "action_ready",

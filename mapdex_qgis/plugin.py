@@ -124,6 +124,7 @@ from .nivo import (
     companion_context,
     confirmation_action_problem,
     confirmation_actions,
+    local_processing_action,
     describe_thread,
     geometry_from_choice,
     remembered_thread,
@@ -3503,6 +3504,13 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "action")
             self._apply_nivo_action(action)
         confirmations = confirmation_actions(response)
+        if not confirmations:
+            snapshot = self._nivo_snapshot()
+            active = snapshot.get("active_layer") if isinstance(snapshot, dict) else None
+            target = active.get("id") if isinstance(active, dict) else ""
+            local_action = local_processing_action(self._nivo_objective, target)
+            if local_action:
+                confirmations = [local_action]
         for action in confirmations:
             self._nivo_state = transition(self._nivo_state, "confirm")
             self._confirm_nivo_action(action)
