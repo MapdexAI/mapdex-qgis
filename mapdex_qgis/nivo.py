@@ -340,8 +340,6 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
     admission: only a consequential client-side Processing capability with a
     stable target and safe params can reach the existing confirmation gate.
     """
-    if response.get("mode") != "direct_ui_command":
-        return []
     trace = response.get("trace")
     steps = trace.get("steps") if isinstance(trace, dict) else None
     if not isinstance(steps, list):
@@ -409,15 +407,14 @@ def confirmation_action_problem(response: dict[str, Any]) -> str:
             return "Nivo could not validate the requested Processing operation or distance."
         if not _text(action.get("action_id"), 128):
             return "Nivo could not run Processing because the response had no action identifier."
-    if response.get("mode") == "direct_ui_command":
-        trace = response.get("trace")
-        steps = trace.get("steps") if isinstance(trace, dict) else None
-        if isinstance(steps, list) and any(
-            isinstance(step, dict)
-            and step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
-            for step in steps
-        ):
-            return "Nivo received a Processing proposal without executable target parameters."
+    trace = response.get("trace")
+    steps = trace.get("steps") if isinstance(trace, dict) else None
+    if isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
+        for step in steps
+    ):
+        return "Nivo received a Processing proposal without executable target parameters."
     return ""
 
 

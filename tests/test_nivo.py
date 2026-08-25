@@ -177,6 +177,24 @@ def test_confirmation_recovers_the_legacy_generic_trace_shape():
     assert actions[0]["params"]["distance"] == 3000.0
 
 
+def test_confirmation_recovery_does_not_depend_on_the_router_mode_label():
+    for mode in ("lightweight_action", "", None):
+        response = {
+            "id": "cmp_mode",
+            "mode": mode,
+            "trace": {"steps": [{
+                "id": "step_desktop",
+                "capability": "qgis:action",
+                "params": {
+                    "operation": "buffer",
+                    "distance": 2000,
+                    "input_layer": "layer_chile",
+                },
+            }]},
+        }
+        assert len(confirmation_actions(response)) == 1, mode
+
+
 def test_osm_xyz_basemap_action_is_provider_allowlisted():
     actions = allowed_actions({"companion_actions": [
         {"action_id": "act_osm", "kind": "qgis:add_xyz_basemap@1", "params": {"provider": "osm"}},
