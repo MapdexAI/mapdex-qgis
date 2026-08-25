@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis.nivo import (
     ALLOWED_ACTIONS,
+    NAMED_GEOPROCESSING_CAPABILITIES,
     allowed_actions,
     companion_context,
     confirmation_action_problem,
@@ -165,6 +166,55 @@ def test_confirmation_recovers_named_buffer_capability_from_live_trace():
     assert actions[0]["tool"] == "qgis:processing_operation@1"
     assert actions[0]["target"] == "contours_1000m"
     assert actions[0]["params"]["distance"] == 2000.0
+
+
+def test_confirmation_recovers_every_named_geoprocessing_capability():
+    two_layer = {
+        "clip", "intersection", "union", "difference", "merge",
+        "spatial_join", "split", "zonal_statistics",
+    }
+    for capability, operation in NAMED_GEOPROCESSING_CAPABILITIES.items():
+        params = {"input_layer": "layer_source"}
+        if operation in two_layer:
+            params["target_layer"] = "layer_overlay"
+        if operation == "buffer":
+            params["distance"] = 2000
+        if operation == "simplify":
+            params["tolerance"] = 10
+        if operation == "reproject":
+            params["target_crs"] = "EPSG:4326"
+        response = {
+            "trace": {"turn_id": "turn_all", "steps": [{
+                "id": "turn_all.{}".format(operation),
+                "capability": capability,
+                "surface": "client",
+                "risk": "consequential",
+                "params": params,
+            }]},
+        }
+
+        actions = confirmation_actions(response)
+
+        assert len(actions) == 1, capability
+        assert actions[0]["params"]["operation"] == operation
+
+
+def test_named_geoprocessing_capability_rejects_mismatched_operation():
+    response = {
+        "trace": {"turn_id": "turn_confused", "steps": [{
+            "id": "turn_confused.s1",
+            "capability": "geoprocessing.buffer@1",
+            "surface": "client",
+            "risk": "consequential",
+            "params": {
+                "operation": "dissolve",
+                "input_layer": "layer_source",
+                "distance": 2000,
+            },
+        }]},
+    }
+
+    assert confirmation_actions(response) == []
 
 
 def test_confirmation_does_not_recover_untrusted_or_incomplete_trace():

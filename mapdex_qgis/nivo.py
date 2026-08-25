@@ -9,11 +9,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ._vendor.nivo.processing import safe_processing_params
+from ._vendor.nivo.processing import NAMED_GEOPROCESSING_OPERATIONS, safe_processing_params
 
 COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64
 MAX_TEXT = 256
+
+NAMED_GEOPROCESSING_CAPABILITIES = {
+    "geoprocessing.{}@1".format(operation): operation
+    for operation in NAMED_GEOPROCESSING_OPERATIONS
+}
 
 TURN_STATES = frozenset({
     "idle", "composing", "clarification_required", "action_ready",
@@ -182,7 +187,8 @@ SAFE_PARAM_KEYS = {
     # filled with the layer's own crs and reported success.
     "qgis:processing_operation@1": frozenset(
         {"operation", "distance", "segments", "predicate", "target_layer",
-         "input_layer", "field", "target_crs"}
+         "input_layer", "field", "target_crs", "tolerance", "interval",
+         "base", "z_factor", "band"}
     ),
     "qgis:add_xyz_basemap@1": frozenset({"provider"}),
     "qgis:create_layer@1": frozenset({"geometry", "crs", "name"}),
@@ -362,11 +368,8 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # params were recorded from the validated Processing action. Newer
         # traces carry the precise capability id.
         capability = _text(step.get("capability"), 128)
-        if capability not in {
-            "qgis:processing_operation@1",
-            "qgis:action",
-            "geoprocessing.buffer@1",
-        }:
+        if capability not in {"qgis:processing_operation@1", "qgis:action"} \
+                and capability not in NAMED_GEOPROCESSING_CAPABILITIES:
             continue
         # surface/risk were added after the first trace transport. When either
         # field is present it must prove this is the client consequential path;
@@ -384,9 +387,13 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
         # Named geoprocessing capabilities are the current server contract.
         # Normalize their operation before applying the same closed local
         # Processing catalogue and parameter validation as the legacy bridge.
-        if capability == "geoprocessing.buffer@1" and not params.get("operation"):
+        named_operation = NAMED_GEOPROCESSING_CAPABILITIES.get(capability)
+        supplied_operation = _text(params.get("operation"), 64)
+        if named_operation and supplied_operation and supplied_operation != named_operation:
+            continue
+        if named_operation:
             params = dict(params)
-            params["operation"] = "buffer"
+            params["operation"] = named_operation
         safe_params = safe_processing_params(params)
         if not target or not safe_params:
             continue
@@ -434,9 +441,10 @@ def confirmation_action_problem(response: dict[str, Any]) -> str:
     steps = trace.get("steps") if isinstance(trace, dict) else None
     if isinstance(steps, list) and any(
         isinstance(step, dict)
-        and step.get("capability") in {
-            "qgis:processing_operation@1", "qgis:action", "geoprocessing.buffer@1"
-        }
+        and (
+            step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
+            or step.get("capability") in NAMED_GEOPROCESSING_CAPABILITIES
+        )
         for step in steps
     ):
         return "Nivo received a Processing proposal without executable target parameters."
