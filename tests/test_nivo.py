@@ -155,6 +155,28 @@ def test_confirmation_does_not_recover_untrusted_or_incomplete_trace():
     assert confirmation_actions(base) == []
 
 
+def test_confirmation_recovers_the_legacy_generic_trace_shape():
+    response = {
+        "id": "cmp_legacy",
+        "mode": "direct_ui_command",
+        "text": "Nivo prepared a QGIS Processing operation for confirmation.",
+        "trace": {"steps": [{
+            "id": "step_desktop",
+            "capability": "qgis:action",
+            "status": "succeeded",
+            "params": {
+                "operation": "buffer",
+                "distance": 3000,
+                "input_layer": "layer_chile",
+            },
+        }]},
+    }
+    actions = confirmation_actions(response)
+    assert len(actions) == 1
+    assert actions[0]["target"] == "layer_chile"
+    assert actions[0]["params"]["distance"] == 3000.0
+
+
 def test_osm_xyz_basemap_action_is_provider_allowlisted():
     actions = allowed_actions({"companion_actions": [
         {"action_id": "act_osm", "kind": "qgis:add_xyz_basemap@1", "params": {"provider": "osm"}},

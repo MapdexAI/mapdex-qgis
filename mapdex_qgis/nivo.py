@@ -350,9 +350,19 @@ def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, A
     for step in steps:
         if not isinstance(step, dict):
             continue
-        if step.get("capability") != "qgis:processing_operation@1":
+        # Older traces used the generic qgis:action fallback even though their
+        # params were recorded from the validated Processing action. Newer
+        # traces carry the precise capability id.
+        if step.get("capability") not in {"qgis:processing_operation@1", "qgis:action"}:
             continue
-        if step.get("surface") != "client" or step.get("risk") != "consequential":
+        # surface/risk were added after the first trace transport. When either
+        # field is present it must prove this is the client consequential path;
+        # absence alone is tolerated for that older wire shape. Execution is
+        # still bounded below by the closed operation catalogue, safe params,
+        # stable target and the normal local confirmation dialog.
+        if step.get("surface") not in {None, "", "client"}:
+            continue
+        if step.get("risk") not in {None, "", "consequential"}:
             continue
         params = step.get("params")
         if not isinstance(params, dict):
@@ -399,6 +409,15 @@ def confirmation_action_problem(response: dict[str, Any]) -> str:
             return "Nivo could not validate the requested Processing operation or distance."
         if not _text(action.get("action_id"), 128):
             return "Nivo could not run Processing because the response had no action identifier."
+    if response.get("mode") == "direct_ui_command":
+        trace = response.get("trace")
+        steps = trace.get("steps") if isinstance(trace, dict) else None
+        if isinstance(steps, list) and any(
+            isinstance(step, dict)
+            and step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
+            for step in steps
+        ):
+            return "Nivo received a Processing proposal without executable target parameters."
     return ""
 
 
