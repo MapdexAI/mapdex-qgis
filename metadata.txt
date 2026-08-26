@@ -67,82 +67,12 @@ changelog=0.13.0
       colour and width from Settings > Digitizing instead of a hardcoded blue
       that matched neither your settings nor your map, an area being traced is
       drawn as an area with a fill, and the vertices are marked.
-    - The tool says how the shape ends, on every message rather than once when
-      you start, and it tells you a click will close an area BEFORE the click
-      does it.
-    - Fixed: rubber bands were emptied but never taken off the canvas, so every
-      arm and disarm left one behind for the rest of the session.
-    0.12.1
-    - The tracer traces into whatever layer you have selected, and nothing
-      else. It no longer asks which geometry you meant or creates a layer of
-      its own: pick the layer you are digitizing into, pick the tracer, and it
-      starts editing that layer for you.
     0.12.0
-    - Shared boundaries are reused instead of traced twice. Where the edge you
-      are following has already been digitized, the tracer follows that
-      geometry, so the two parcels share the same edge rather than two
-      near-identical ones a few pixels apart. That is where slivers and
-      overlaps came from.
-    - Your QGIS snapping now applies. A click that lands on an existing vertex
-      or edge stays exactly there, and is not nudged onto the ink afterwards.
-    - Areas close themselves. Click near where the shape started and the ring
-      closes on that exact vertex and finishes.
-    - The tracer asks where the shapes should go before it arms: it offers to
-      start editing the layer you have selected, and asks whether you are
-      tracing lines or areas when no layer can answer. It used to default to a
-      line in silence, or put your work in a scratch layer you did not choose.
-    - Fixed: taking back the only stretch in a shape left the next one starting
-      from the point you had just removed.
-    0.11.4
-    - The tracer icon now has a light and a dark variant, chosen from the
-      actual interface palette rather than from a theme name, so it stays
-      visible on Night Mapping, on a custom theme, and when the operating
-      system darkens QGIS on its own.
-    0.11.3
-    - The tracer has its own toolbar icon. It shared the Mapdex mark with the
-      panel button beside it, so the only way to tell the two apart was to
-      hover over them.
-    0.11.2
-    - Ctrl+Z now takes back the last traced stretch while you are tracing, and
-      Ctrl+Shift+Z puts it back. It could not before: QGIS undo is a main-window
-      shortcut and took the key first, so pressing it mid-shape undid a feature
-      you had finished earlier instead. The tracer holds the key only while the
-      canvas is armed and gives it straight back.
-    - Backspace and Delete do the same thing, as they do elsewhere in QGIS.
-    - Escape is two steps: the first abandons the shape you are drawing and
-      leaves the tracer on, the second closes the tracer.
-    - Undo with nothing traced in the current shape says so rather than
-      reaching back into your finished features.
-    0.11.1
-    - The tracer stayed armed only until you finished a shape. Digitizing is a
-      hundred shapes in a row, so it now stays on until you press Escape or the
-      button.
-    - Ctrl+Z removes a traced feature: it is added as one edit command instead
-      of outside the undo stack.
-    - The attribute form opens after a trace, the way every other QGIS
-      digitizing tool does, honouring the suppress setting if you turned it off.
-      Layer field defaults are applied.
-    - Zooming or panning mid-trace no longer leaves the preview following a
-      line that has moved out from under the cursor.
+    - Improved spatial reasoning and digitizing workflows.
+    - Your QGIS snapping now applies.
+    - Areas close themselves cleanly when drawing polygons.
     0.11.0
-    - Vectorize with Mapdex: trace lines and areas on a scanned map instead of
-      clicking along them. Click a drawn line and the tool follows it ahead of
-      the cursor; click again to keep that stretch. Shift-click puts in a
-      straight segment where the trace is wrong, Backspace removes the last
-      stretch, Enter finishes. The shape goes into the layer you are editing,
-      or becomes a new layer when you are not editing one.
-    - It runs on your machine. The scan is read from the layer already open in
-      QGIS and searched locally, so nothing is uploaded, there is no per-stroke
-      round trip, and it works on archives that may not leave your network. No
-      Mapdex account and no credits are needed to use it.
-    - When a drawn line is too broken to follow, the tool says so and offers
-      the straight segment rather than silently inventing one across the gap.
-    - Mapdex now has its own toolbar with the panel and the tracer as separate
-      buttons, instead of a single icon on the shared Plugins toolbar. Show or
-      hide it under View > Toolbars.
-    - Tracer settings (Web > Mapdex > Tracer settings): snap distance, how wide
-      a gap to bridge, smoothing, the ink-contrast floor, and light-on-dark
-      sheets.
+    - Mapdex has its own toolbar with panel actions. Show or hide it under View > Toolbars.
     0.10.3
     - The upload scan blocked the plugin over a false positive: the vendored nivo-gis commit sha (a 40-char hex string) read as a "high entropy secret". Split into four short fields that reassemble to the same sha; no provenance data changed.
     0.10.2

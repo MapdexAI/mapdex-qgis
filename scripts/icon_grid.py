@@ -4,10 +4,7 @@ An icon is designed at the size it is seen. QGIS toolbars draw at 24 px, so
 geometry is written in a 24-unit box and supersampled down from it, rather than
 drawn large and hoped down.
 
-This file exists because there are now two generators - the tracer glyph and the
-panel set - and a second copy of the palette is how the two come to disagree
-about what "dark" means. The values are the brand tokens from docs/DESIGN.md
-4.1.
+The values are the brand tokens from docs/DESIGN.md 4.1.
 """
 from PIL import Image
 

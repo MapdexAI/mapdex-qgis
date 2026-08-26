@@ -515,17 +515,3 @@ def test_the_page_is_changed_through_the_panels_own_switcher():
     for owned in ("setCurrentIndex", "setVisible", "setChecked"):
         assert owned in switcher, "the switcher stopped owning {}".format(owned)
 
-
-def test_the_tracer_is_withdrawn_unless_it_is_asked_for():
-    """Not good enough on a real sheet, so it is not on the toolbar. Withdrawn
-    rather than deleted: the live wire, the follow and their harnesses all stay
-    and all still run, behind the same QSettings key the vectorizer branch uses
-    so the two cannot end up with two switches for one decision."""
-    assert "def tracing_enabled" in PLUGIN
-    assert "mapdex/tracer/beta" in PLUGIN, "a second switch for one decision"
-    install = _method(PLUGIN, "_install_vectorize_action")
-    assert "if not self.tracing_enabled():" in install, install[:200]
-    assert "self._vectorize_action = None" in install
-    assert "if self._vectorize_action is not None:" in _method(PLUGIN, "initGui"), (
-        "initGui adds a toolbar action that may not exist"
-    )

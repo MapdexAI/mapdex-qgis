@@ -20,8 +20,7 @@ nothing else in this panel.
     python scripts/make_panel_icons.py
 
 Writes a light and a dark variant of each at 128 and 24 px. `_dark` means "for
-a dark interface", so the file whose name says dark is the light-coloured one -
-the convention icon_vectorize.png already set here.
+a dark interface", so the file whose name says dark is the light-coloured one.
 """
 import os
 import pathlib
@@ -55,8 +54,8 @@ def georeference(d, p):
 def digitize(d, p):
     """One parcel, traced over the pixels it came from.
 
-    The first attempt put the scan and the result side by side, the way the
-    tracer glyph does. Rendered at 24 px it was a heavy grey block next to a
+    The first attempt put the scan and the result side by side.
+    Rendered at 24 px it was a heavy grey block next to a
     small crooked ring, and the ring - the whole point - was the half that
     lost. So the two states are stacked instead of paired: coarse pixel squares
     behind, one clean parcel with its vertices in front. Two objects competing
