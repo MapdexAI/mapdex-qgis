@@ -348,7 +348,8 @@ def _c(identifier, domain, summary, **kwargs) -> Capability:
 
 
 # -- inspection (safe, read-only, both clients) ----------------------------
-_c("inspect.layer@1", "inspect", "Report a layer's type, CRS, extent, feature count and fields.",
+_c("inspect.layer@1", "inspect",
+   "Report a layer's type, CRS, extent, feature count and fields.",
    params=_LAYER, targets=("vector", "raster"), produces=("layer_profile",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("inspect.project@1", "inspect", "List the layers in the project with their type and CRS.",
@@ -356,12 +357,14 @@ _c("inspect.project@1", "inspect", "List the layers in the project with their ty
 _c("inspect.fields@1", "inspect", "List a layer's fields with their types and null counts.",
    params=_LAYER, targets=("vector",), produces=("field_profile",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("inspect.raster@1", "inspect", "Report raster size, bands, resolution, nodata and georeferencing state.",
+_c("inspect.raster@1", "inspect",
+   "Report raster size, bands, resolution, nodata and georeferencing state.",
    params=_LAYER, targets=("raster",), produces=("raster_profile",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
 # -- analytics (safe; the heart of the product) ----------------------------
-_c("analytics.profile@1", "analytics", "Profile a dataset: counts, field types and notable distributions.",
+_c("analytics.profile@1", "analytics",
+   "Profile a dataset: counts, field types and notable distributions.",
    params=_LAYER, targets=("vector",), produces=("analysis",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 _c("analytics.numeric@1", "analytics", "Descriptive statistics for one numeric field.",
@@ -376,7 +379,8 @@ _c("analytics.categories@1", "analytics", "Frequency breakdown of one categorica
 _c("analytics.histogram@1", "analytics", "Distribution of a numeric field as a histogram.",
    params=dict(_LAYER, **_FIELD, **{"bins": {"type": "integer", "min": 2, "max": 60, "default": 12}}),
    targets=("vector",), produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("analytics.top_n@1", "analytics", "Rank features by a numeric field and select the top or bottom N.",
+_c("analytics.top_n@1", "analytics",
+   "Rank features by a numeric field and select the top or bottom N.",
    params=dict(_LAYER, **_FIELD, **{"limit": {"type": "integer", "min": 1, "max": 500, "default": 10},
                                     "ascending": {"type": "boolean", "default": False}}),
    targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
@@ -394,7 +398,8 @@ _c("analytics.outliers@1", "analytics", "Find unusually high or low values with 
 # rather than degraded. `packages/contracts` is the source of truth for the
 # vocabulary (RULES.md), so the desktop adopts it rather than the other way
 # round, and the drift gate no longer has to carry the divergence as accepted.
-_c("analytics.group@1", "analytics", "Aggregate a field by group: count, sum, mean, min, max or median.",
+_c("analytics.group@1", "analytics",
+   "Aggregate a field by group: count, sum, mean, min, max or median.",
    params=dict(_LAYER, **{"group_by": {"type": "string", "required": True},
                           "field": {"type": "string"},
                           "stat": {"type": "string",
@@ -425,7 +430,8 @@ _c("analytics.geometry@1", "analytics",
                                     "default": "all"}}),
    targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("analytics.compare@1", "analytics", "Compare a numeric field between two feature sets or two layers.",
+_c("analytics.compare@1", "analytics",
+   "Compare a numeric field between two feature sets or two layers.",
    params={"layer_id": {"type": "string", "required": True},
            "field": {"type": "string", "required": True},
            "other_layer_id": {"type": "string"},
@@ -446,7 +452,8 @@ _c("spatial.density@1", "spatial", "Normalise counts by polygon area to show den
            "group_field": {"type": "string"}},
    targets=("vector",), produces=("analysis", "map_effect"), reversible=True, previewable=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("spatial.relate@1", "spatial", "Select features of one layer by their spatial relationship to another.",
+_c("spatial.relate@1", "spatial",
+   "Select features of one layer by their spatial relationship to another.",
    params={"layer_id": {"type": "string", "required": True},
            "other_layer_id": {"type": "string", "required": True},
            "predicate": {"type": "string",
@@ -455,7 +462,8 @@ _c("spatial.relate@1", "spatial", "Select features of one layer by their spatial
            "use_selection": {"type": "boolean", "default": False}},
    targets=("vector",), produces=("analysis", "selection"), reversible=True, previewable=True,
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("spatial.near@1", "spatial", "Select features within a real-world distance of another layer.",
+_c("spatial.near@1", "spatial",
+   "Select features within a real-world distance of another layer.",
    params={"layer_id": {"type": "string", "required": True},
            "other_layer_id": {"type": "string", "required": True},
            "distance": {"type": "number", "required": True, "min": 0, "max": 1_000_000},
@@ -468,7 +476,8 @@ _c("spatial.near@1", "spatial", "Select features within a real-world distance of
 # a spelling - the server takes an explicit lon/lat and the desktop takes the
 # point from the current selection, because a QGIS user has clicked - and the
 # drift gate carries that difference with its reason.
-_c("spatial.nearest@1", "spatial", "Find the N nearest features to a point or to the current selection.",
+_c("spatial.nearest@1", "spatial",
+   "Find the N nearest features to a point or to the current selection.",
    params={"layer_id": {"type": "string", "required": True},
            "k": {"type": "integer", "min": 1, "max": 500, "default": 10}},
    targets=("vector",), produces=("analysis", "selection"), reversible=True,
@@ -519,7 +528,8 @@ _c("selection.clear@1", "selection", "Clear a layer's selection.", params=_LAYER
    execution=EXEC_CLIENT_UI, reversible=True, produces=("selection",))
 _c("selection.invert@1", "selection", "Invert a layer's selection.", params=_LAYER,
    execution=EXEC_CLIENT_UI, reversible=True, produces=("selection",))
-_c("selection.by_ids@1", "selection", "Select specific features by identifier - how analysis reaches the map.",
+_c("selection.by_ids@1", "selection",
+   "Select specific features by identifier - how analysis reaches the map.",
    params=dict(_LAYER, **{"feature_ids": {"type": "list", "required": True}}),
    execution=EXEC_CLIENT_UI, reversible=True, produces=("selection",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
@@ -539,7 +549,8 @@ _c("style.categorized@1", "style", "Colour a layer by the distinct values of a f
    params=dict(_LAYER, **_FIELD, **{"ramp": {"type": "string", "default": "Spectral"}}),
    execution=EXEC_CLIENT_UI, reversible=True, previewable=True, produces=("map_effect",),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("style.graduated@1", "style", "Colour a layer by numeric classes - the map form of an analysis.",
+_c("style.graduated@1", "style",
+   "Colour a layer by numeric classes - the map form of an analysis.",
    params=dict(_LAYER, **_FIELD, **{"classes": {"type": "integer", "min": 2, "max": 12, "default": 5},
                                     "method": {"type": "string",
                                                "enum": ["quantile", "equal_interval", "natural_breaks", "stddev"],
@@ -620,7 +631,8 @@ _c("postgis.diagnose@1", "postgis", "Read a PostGIS connection's catalogue: whic
    "which declare no SRID, which were never analysed, and how large each one is.",
    params={"connection_id": {"type": "string", "required": True}},
    execution=EXEC_POSTGIS, produces=("analysis",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("postgis.profile@1", "postgis", "Profile a PostGIS table: feature count, extent, SRID and validity.",
+_c("postgis.profile@1", "postgis",
+   "Profile a PostGIS table: feature count, extent, SRID and validity.",
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
            "table": {"type": "string", "required": True}},
@@ -632,7 +644,8 @@ _c("postgis.profile@1", "postgis", "Profile a PostGIS table: feature count, exte
 # registries stop agreeing about what a question takes, so a parameter added
 # here without its counterpart is caught rather than discovered by a user who
 # asked the same thing on the other surface.
-_c("postgis.analyze@1", "postgis", "Read-only statistics, categories or group-by aggregation on a PostGIS table.",
+_c("postgis.analyze@1", "postgis",
+   "Read-only statistics, categories or group-by aggregation on a PostGIS table.",
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
            "table": {"type": "string", "required": True},
@@ -655,7 +668,8 @@ _c("postgis.analyze@1", "postgis", "Read-only statistics, categories or group-by
            "bbox": {"type": "bbox"}},
    execution=EXEC_POSTGIS, produces=("analysis", "selection"),
    clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
-_c("postgis.spatial@1", "postgis", "Read-only spatial relationship counts and joins between PostGIS tables.",
+_c("postgis.spatial@1", "postgis",
+   "Read-only spatial relationship counts and joins between PostGIS tables.",
    params={"connection_id": {"type": "string", "required": True},
            "schema": {"type": "string", "required": True},
            "table": {"type": "string", "required": True},
@@ -709,7 +723,8 @@ _POINT_PAIR = {
 # The conversion REFUSES when the grid is not installed rather than returning
 # the input unchanged, which is what PROJ does on its own and reports as
 # success.
-_c("crs.geoid_height@1", "survey", "Convert between an ellipsoidal height and an orthometric one.",
+_c("crs.geoid_height@1", "survey",
+   "Convert between an ellipsoidal height and an orthometric one.",
    params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "lon": {"type": "number", "required": True, "min": -180, "max": 180},
            "height_m": {"type": "number", "required": True, "min": -500, "max": 20000},
@@ -720,12 +735,14 @@ _c("crs.geoid_height@1", "survey", "Convert between an ellipsoidal height and an
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
-_c("crs.diagnose@1", "survey", "Check whether a layer's declared reference system can hold its coordinates.",
+_c("crs.diagnose@1", "survey",
+   "Check whether a layer's declared reference system can hold its coordinates.",
    params=dict(_LAYER),
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
-_c("crs.transformations@1", "survey", "List the datum transformations between two systems, with their accuracies.",
+_c("crs.transformations@1", "survey",
+   "List the datum transformations between two systems, with their accuracies.",
    params={"source_crs": {"type": "string", "required": True},
            "target_crs": {"type": "string", "required": True}},
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
@@ -750,7 +767,8 @@ _c("coordinate.read@1", "survey", "Read a coordinate written in degrees, minutes
 # The two factors are reported apart because they are different problems: a
 # discrepancy at a zone edge is fixed by a projection and one on a mountain by
 # a height.
-_c("survey.scale_factor@1", "survey", "Grid scale, elevation factor and their combination at a point.",
+_c("survey.scale_factor@1", "survey",
+   "Grid scale, elevation factor and their combination at a point.",
    params={"lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "lon": {"type": "number", "required": True, "min": -180, "max": 180},
            "height_m": {"type": "number", "min": -500, "max": 20000, "default": 0},
@@ -762,14 +780,16 @@ _c("survey.scale_factor@1", "survey", "Grid scale, elevation factor and their co
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
-_c("survey.inverse@1", "survey", "Bearing and distance between two coordinates, on a named ellipsoid.",
+_c("survey.inverse@1", "survey",
+   "Bearing and distance between two coordinates, on a named ellipsoid.",
    params=dict(_POINT_PAIR, **_ELLIPSOID, **{
        "to_lat": {"type": "number", "required": True, "min": -90, "max": 90},
        "to_lon": {"type": "number", "required": True, "min": -180, "max": 180}}),
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
-_c("survey.forward@1", "survey", "The point at a bearing and distance from a coordinate: setting out.",
+_c("survey.forward@1", "survey",
+   "The point at a bearing and distance from a coordinate: setting out.",
    params=dict(_POINT_PAIR, **_ELLIPSOID, **{
        "azimuth_deg": {"type": "number", "required": True, "min": -360, "max": 360},
        "distance_m": {"type": "number", "required": True, "min": 0, "max": 20_000_000}}),
@@ -778,7 +798,8 @@ _c("survey.forward@1", "survey", "The point at a bearing and distance from a coo
 
 # `closed` is the whole difference between a traverse that can report a
 # misclosure and one that cannot: an open traverse has nothing to close onto.
-_c("survey.traverse@1", "survey", "Walk a traverse and report its misclosure and precision ratio.",
+_c("survey.traverse@1", "survey",
+   "Walk a traverse and report its misclosure and precision ratio.",
    params=dict(_POINT_PAIR, **_ELLIPSOID, **{
        "legs": {"type": "legs", "required": True},
        "closed": {"type": "boolean", "default": False}}),
@@ -802,7 +823,8 @@ _c("survey.intersect@1", "survey", "Fix a point from two bearings, on the ellips
 # A taped fix has TWO answers and both come back with the side of the baseline
 # they fall on. Returning one would be choosing for the surveyor, and only they
 # know which side of the line they were standing on.
-_c("survey.trilaterate@1", "survey", "Fix a point from two taped distances; both answers are returned.",
+_c("survey.trilaterate@1", "survey",
+   "Fix a point from two taped distances; both answers are returned.",
    params={"first_lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "first_lon": {"type": "number", "required": True, "min": -180, "max": 180},
            "first_distance_m": {"type": "number", "required": True, "min": 0, "max": 1_000_000},
@@ -816,7 +838,8 @@ _c("survey.trilaterate@1", "survey", "Fix a point from two taped distances; both
 # Resection carries its danger-circle margin with the answer. On that circle
 # every station observes the same two angles, so the observations name no
 # single place - and the margin is what says how close to that the fix is.
-_c("survey.resection@1", "survey", "Fix the instrument's own position from angles to three known points.",
+_c("survey.resection@1", "survey",
+   "Fix the instrument's own position from angles to three known points.",
    params={"first_lat": {"type": "number", "required": True, "min": -90, "max": 90},
            "first_lon": {"type": "number", "required": True, "min": -180, "max": 180},
            "second_lat": {"type": "number", "required": True, "min": -90, "max": 90},
@@ -840,13 +863,15 @@ _c("survey.station_offset@1", "survey", "How far along a line a point sits, and 
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
-_c("survey.closure@1", "survey", "Close a deed description and report its area and misclosure.",
+_c("survey.closure@1", "survey",
+   "Close a deed description and report its area and misclosure.",
    params=dict(_ELLIPSOID, **{"legs": {"type": "legs", "required": True}}),
    risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("analysis",), reversible=True,
    clients=(CLIENT_QGIS,))
 
 # -- QGIS Processing: consequential, confirmation required -----------------
-_c("processing.run@1", "processing", "Run an installed QGIS Processing algorithm and load its output.",
+_c("processing.run@1", "processing",
+   "Run an installed QGIS Processing algorithm and load its output.",
    params={"operation": {"type": "string", "required": True},
            "layer_id": {"type": "string", "required": True},
            "other_layer_id": {"type": "string"},
@@ -899,7 +924,8 @@ _c("geoprocessing.clip@1", "geoprocessing", "Keep only the parts of one layer th
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
-_c("geoprocessing.intersection@1", "geoprocessing", "Keep the overlapping parts of two layers, with both sets of attributes.",
+_c("geoprocessing.intersection@1", "geoprocessing",
+   "Keep the overlapping parts of two layers, with both sets of attributes.",
    params=dict(_LAYER_IN, **_OTHER_LAYER),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
@@ -916,7 +942,8 @@ _c("geoprocessing.difference@1", "geoprocessing", "Remove from one layer everyth
 
 # The field is optional and its absence is a real request rather than a missing
 # argument: no field merges the whole layer into one shape.
-_c("geoprocessing.dissolve@1", "geoprocessing", "Merge features into one shape per value of a field, or into a single shape.",
+_c("geoprocessing.dissolve@1", "geoprocessing",
+   "Merge features into one shape per value of a field, or into a single shape.",
    params=dict(_LAYER_IN, **{"field": {"type": "string"}}),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
@@ -937,24 +964,28 @@ _TERRAIN_IN = {
     "band": {"type": "integer", "min": 1, "max": 512},
 }
 
-_c("terrain.slope@1", "terrain", "How steep the ground is, in degrees, from an elevation surface.",
+_c("terrain.slope@1", "terrain",
+   "How steep the ground is, in degrees, from an elevation surface.",
    params=dict(_TERRAIN_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
-_c("terrain.aspect@1", "terrain", "Which way the ground faces, in degrees clockwise from north.",
+_c("terrain.aspect@1", "terrain",
+   "Which way the ground faces, in degrees clockwise from north.",
    params=dict(_TERRAIN_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
-_c("terrain.hillshade@1", "terrain", "A shaded-relief image of the surface, lit from one direction.",
+_c("terrain.hillshade@1", "terrain",
+   "A shaded-relief image of the surface, lit from one direction.",
    params=dict(_TERRAIN_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
 # Roughness and ruggedness are elevation differences alone, so unlike the three
 # above they carry no ratio and a grid measured in degrees does not corrupt them.
-_c("terrain.ruggedness@1", "terrain", "How broken the ground is: the mean difference from the eight neighbouring cells.",
+_c("terrain.ruggedness@1", "terrain",
+   "How broken the ground is: the mean difference from the eight neighbouring cells.",
    params=dict(_TERRAIN_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
@@ -972,18 +1003,21 @@ _c("terrain.roughness@1", "terrain", "The range of elevation within each cell's 
 # missing provider and the Workspace route round it. A capability that says
 # which thing to install is honestly conditional; one that fails as a mystery is
 # the thing worth avoiding.
-_c("terrain.flow_accumulation@1", "terrain", "How much land drains through each cell of a surface. Needs the GRASS provider.",
+_c("terrain.flow_accumulation@1", "terrain",
+   "How much land drains through each cell of a surface. Needs the GRASS provider.",
    params={"layer_id": {"type": "string"}},
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
-_c("terrain.watershed@1", "terrain", "The catchment draining to one point on a surface. Needs the GRASS provider.",
+_c("terrain.watershed@1", "terrain",
+   "The catchment draining to one point on a surface. Needs the GRASS provider.",
    params={"layer_id": {"type": "string"},
            "point": {"type": "points", "min_points": 1, "max_points": 1}},
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
-_c("terrain.viewshed@1", "terrain", "What can be seen from a point on a surface. Needs the GRASS provider.",
+_c("terrain.viewshed@1", "terrain",
+   "What can be seen from a point on a surface. Needs the GRASS provider.",
    params={"layer_id": {"type": "string"},
            "point": {"type": "points", "min_points": 1, "max_points": 1},
            "observer_height_m": {"type": "number", "min": 0, "max": 10000},
@@ -991,7 +1025,8 @@ _c("terrain.viewshed@1", "terrain", "What can be seen from a point on a surface.
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("raster",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
-_c("terrain.contours@1", "terrain", "Trace contour lines from an elevation surface at a stated height interval.",
+_c("terrain.contours@1", "terrain",
+   "Trace contour lines from an elevation surface at a stated height interval.",
    params={"layer_id": {"type": "string"},
            "interval": {"type": "number", "required": True, "min": 0.000001, "max": 1000000},
            "base": {"type": "number"},
@@ -1009,7 +1044,8 @@ _c("geoprocessing.centroid@1", "geoprocessing", "Reduce each feature to a single
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
-_c("geoprocessing.convex_hull@1", "geoprocessing", "Wrap the layer in the smallest shape that contains all of it.",
+_c("geoprocessing.convex_hull@1", "geoprocessing",
+   "Wrap the layer in the smallest shape that contains all of it.",
    params=dict(_LAYER_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
@@ -1022,7 +1058,8 @@ _c("geoprocessing.reproject@1", "geoprocessing", "Rewrite a layer in a different
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
 
-_c("geoprocessing.spatial_join@1", "geoprocessing", "Attach one layer's attributes to another by where the features sit.",
+_c("geoprocessing.spatial_join@1", "geoprocessing",
+   "Attach one layer's attributes to another by where the features sit.",
    params=dict(_LAYER_IN, **_OTHER_LAYER, **{
        "predicate": {"type": "string",
                      "enum": ["intersects", "within", "contains", "overlaps", "touches", "crosses"]}}),
@@ -1031,7 +1068,8 @@ _c("geoprocessing.spatial_join@1", "geoprocessing", "Attach one layer's attribut
 
 # The tolerance is the request: without it the algorithm's own default decides
 # how much detail a customer's boundary loses.
-_c("geoprocessing.simplify@1", "geoprocessing", "Reduce the number of vertices, keeping the shape within a tolerance.",
+_c("geoprocessing.simplify@1", "geoprocessing",
+   "Reduce the number of vertices, keeping the shape within a tolerance.",
    params=dict(_LAYER_IN, **{
        "tolerance": {"type": "number", "required": True, "min": 0, "max": 1_000_000}}),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
@@ -1040,7 +1078,8 @@ _c("geoprocessing.simplify@1", "geoprocessing", "Reduce the number of vertices, 
 # Safe because it writes a NEW layer. The amber risk class the server applies to
 # repair is about strategies that DELETE features; fixing geometry in a copy
 # removes nothing from the original.
-_c("geoprocessing.repair@1", "geoprocessing", "Fix invalid geometry into a new layer, leaving the original alone.",
+_c("geoprocessing.repair@1", "geoprocessing",
+   "Fix invalid geometry into a new layer, leaving the original alone.",
    params=dict(_LAYER_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
@@ -1048,7 +1087,8 @@ _c("geoprocessing.repair@1", "geoprocessing", "Fix invalid geometry into a new l
 # Checking is not repairing, and the two are different requests: this one
 # changes nothing and hands back the features that FAILED, which is what a
 # reviewer needs. `geoprocessing.repair@1` is the other half.
-_c("geoprocessing.validate@1", "geoprocessing", "Check geometry validity and hand back the features that fail.",
+_c("geoprocessing.validate@1", "geoprocessing",
+   "Check geometry validity and hand back the features that fail.",
    params=dict(_LAYER_IN),
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector",), clients=(CLIENT_QGIS,))
@@ -1063,7 +1103,8 @@ _c("geoprocessing.zonal_statistics@1", "geoprocessing", "Summarize a raster's va
    risk=RISK_SAFE, execution=EXEC_QGIS_PROCESSING, produces=("layer",), reversible=True,
    targets=("vector", "raster"), clients=(CLIENT_QGIS,))
 
-_c("processing.discover@1", "processing", "List the installed Processing algorithms that fit an objective.",
+_c("processing.discover@1", "processing",
+   "List the installed Processing algorithms that fit an objective.",
    params={"objective": {"type": "string", "required": True}},
    execution=EXEC_LOCAL, produces=("catalog",))
 
@@ -1077,7 +1118,8 @@ _c("processing.discover@1", "processing", "List the installed Processing algorit
 # cannot reach them even if a model names one.
 
 # -- reporting -------------------------------------------------------------
-_c("report.build@1", "report", "Build an evidence-based report from the analyses run in this session.",
+_c("report.build@1", "report",
+   "Build an evidence-based report from the analyses run in this session.",
    params={"title": {"type": "string"}},
    execution=EXEC_LOCAL, produces=("report",), clients=(CLIENT_QGIS, CLIENT_WORKSPACE))
 
@@ -1098,8 +1140,8 @@ _c("measure.distance@1", "measure", "Measure the distance between two positions.
 _c("export.layer@1", "export", "Write a layer to a file in a standard GIS format.",
    params={"layer_id": {"type": "string", "required": True},
            "target_format": {"type": "string",
-                      "enum": ["geojson", "gpkg", "shp", "csv"],
-                      "default": "gpkg"}},
+                             "enum": ["geojson", "gpkg", "shp", "csv"],
+                             "default": "gpkg"}},
    targets=("vector",), execution=EXEC_LOCAL, produces=("file",))
 
 # -- Drawing: the shape the user pointed at ----------------------------------
@@ -1142,7 +1184,8 @@ _c("draw.geometry@1", "draw",
 # `crs` is required and nothing about it is inferred. The numbers in a point
 # list cannot say which projected system they are in, and a provider told the
 # wrong one places a survey in the Gulf of Guinea without complaining.
-_c("field.import_points@1", "field", "Read a coordinate list into a layer, with an explicit reference system.",
+_c("field.import_points@1", "field",
+   "Read a coordinate list into a layer, with an explicit reference system.",
    params={"path": {"type": "string", "required": True},
            "crs": {"type": "string", "required": True},
            "easting_field": {"type": "string", "required": True},
@@ -1162,7 +1205,8 @@ _c("field.calculate@1", "field", "Add a field computed from the layer's existing
 # The layer tree IS the legend in QGIS, so this expands a layer's classes
 # rather than opening a panel. It hands the entries back as well as setting the
 # state, because "what do these colours mean" is the question underneath.
-_c("map.legend@1", "map", "Show or hide a layer's classes in the legend, and read them back.",
+_c("map.legend@1", "map",
+   "Show or hide a layer's classes in the legend, and read them back.",
    params=dict(_LAYER, **{"visible": {"type": "boolean", "default": True}}),
    execution=EXEC_CLIENT_UI, reversible=True, produces=("map_effect", "analysis"),
    clients=(CLIENT_QGIS,))

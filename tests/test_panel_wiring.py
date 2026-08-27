@@ -453,12 +453,12 @@ def test_header_controls_use_direct_svg_icons_and_combos_keep_painted_arrow():
 
 def test_opening_metadata_failure_uses_a_local_fallback_not_global_error_banner():
     body = _method(PLUGIN, "_refresh_opening")
-    assert "@guarded" not in PLUGIN[PLUGIN.rfind("\n", 0, PLUGIN.index("def _refresh_opening")):PLUGIN.index("def _refresh_opening")]
+    start = PLUGIN.index("def _refresh_opening")
+    decorators = PLUGIN[PLUGIN.rfind("\n", 0, start):start]
+    assert "@guarded" not in decorators
     assert 'log_debug("Could not build Nivo opening"' in body
     assert 'opening_turns({' in body
     assert "self._nivo_opening = opening" in body
-
-
 
 
 def test_open_project_uses_the_unlocalized_app_route():
@@ -514,4 +514,3 @@ def test_the_page_is_changed_through_the_panels_own_switcher():
     switcher = PANEL[PANEL.index("def switch_page(target):"):PANEL.index("for index, title in enumerate")]
     for owned in ("setCurrentIndex", "setVisible", "setChecked"):
         assert owned in switcher, "the switcher stopped owning {}".format(owned)
-

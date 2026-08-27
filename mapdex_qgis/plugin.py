@@ -975,8 +975,6 @@ class MapdexPlugin:
         self._ensure_dock()
         self.dock.hide()
 
-
-
     def _install_measure_action(self):
         """Let a person point at two places, rather than already know them.
 

@@ -89,6 +89,7 @@ ACTION_ICONS = {
     "send": "icon_send.png",
 }
 
+
 def mark_asset(dark_interface: bool) -> str:
     """The mark file name for the interface currently on screen."""
     return MARK_FOR_DARK_INTERFACE if dark_interface else MARK_FOR_LIGHT_INTERFACE

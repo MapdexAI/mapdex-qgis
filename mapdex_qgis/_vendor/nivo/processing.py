@@ -358,7 +358,6 @@ def normalize_crs_reference(value: Any) -> str:
     return "{}:{}".format(authority, code)
 
 
-
 def predicate_index(algorithm: Any, requested: Any) -> int | None:
     """Where this algorithm keeps the named relationship in its own options.
 

@@ -26,6 +26,9 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
+from .branding import ACTION_ICONS, surface_asset_path
+from .job_items import item_action, item_status, item_title, items_summary, order_items
+from .qt_compat import enum_member
 from .layout_rules import (
     MINIMUM_WIDTH,
     PREFERRED_HEIGHT,
@@ -57,9 +60,6 @@ class _ArrowComboBox(QComboBox):
         painter.drawLine(QPointF(x - 4.0, y - 2.0), QPointF(x, y + 2.0))
         painter.drawLine(QPointF(x, y + 2.0), QPointF(x + 4.0, y - 2.0))
         painter.end()
-from .branding import ACTION_ICONS, surface_asset_path
-from .job_items import item_action, item_status, item_title, items_summary, order_items
-from .qt_compat import enum_member
 
 
 # Which page Settings is. Named because three places now agree on it - the tab

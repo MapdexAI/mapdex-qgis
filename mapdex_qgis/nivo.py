@@ -91,7 +91,10 @@ def local_processing_action(message: str, target: str) -> dict[str, Any]:
         if not epsg:
             return {}
         params["target_crs"] = "EPSG:{}".format(epsg.group(1))
-    if operation in {"clip", "intersection", "union", "difference", "merge", "spatial_join", "split", "zonal_statistics"}:
+    if operation in {
+        "clip", "intersection", "union", "difference",
+        "merge", "spatial_join", "split", "zonal_statistics",
+    }:
         return {}
     safe = safe_processing_params(params)
     if not safe:
@@ -105,6 +108,7 @@ def local_processing_action(message: str, target: str) -> dict[str, Any]:
         "summary": "Nivo prepared a QGIS Processing operation for confirmation.",
         "undo": True,
     }
+
 
 TURN_STATES = frozenset({
     "idle", "composing", "clarification_required", "action_ready",

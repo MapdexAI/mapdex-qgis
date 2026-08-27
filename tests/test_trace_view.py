@@ -25,7 +25,10 @@ def test_a_failed_step_is_visible_as_failed():
     rows = step_rows(
         _response(
             [
-                {"index": 1, "id": "s1", "capability": "nivo:classify", "title": "Understand the request", "status": "succeeded"},
+                {
+                    "index": 1, "id": "s1", "capability": "nivo:classify",
+                    "title": "Understand the request", "status": "succeeded",
+                },
                 {
                     "index": 2,
                     "id": "s2",
@@ -126,7 +129,7 @@ def test_a_turn_cut_short_says_so_in_words():
 def test_exhausted_with_no_ceiling_is_still_reported():
     # Saying so without the arithmetic beats saying nothing, and beats
     # "step 0 of 0".
-    assert budget_notice(_response([], {"exhausted": True})) ==         "Stopped after running out of steps"
+    assert budget_notice(_response([], {"exhausted": True})) == "Stopped after running out of steps"
 
 
 def test_no_budget_reported_is_nothing_to_say():
