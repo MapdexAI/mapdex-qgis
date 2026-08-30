@@ -90,8 +90,16 @@ print("    zip contains {} entries, including the vendored contracts".format(len
 PY
 
 echo "==> running the plugin's own suite"
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD, because this suite needs no third-party
+# pytest plugin and autoload makes the run depend on whatever else happens to
+# be installed in the interpreter's environment. On the self-hosted runner that
+# environment is a SHARED ~/.local that other jobs pip-install into, and it
+# broke this check with a traceback naming neither the plugin nor its tests:
+# an `anyio` left there autoloaded its pytest plugin and died on a missing
+# `typing_extensions`. The published tree passing or failing must depend on the
+# published tree.
 set +e
-output="$(python3 -m pytest tests -q -rs 2>&1)"
+output="$(PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q -rs 2>&1)"
 status=$?
 set -e
 echo "$output" | tail -20
