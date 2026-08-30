@@ -74,6 +74,18 @@ ERROR_REGISTRY = [
         "template": "The format {format} is not supported."
     },
     {
+        "code": "SOURCE_FILE_UNREADABLE",
+        "type": "bad_request",
+        "http": 422,
+        "template": "{message}"
+    },
+    {
+        "code": "SOURCE_ANALYSIS_FAILED",
+        "type": "processing",
+        "http": 422,
+        "template": "{message}"
+    },
+    {
         "code": "UNSUPPORTED_TARGET_FORMAT",
         "type": "bad_request",
         "http": 400,
