@@ -20,7 +20,7 @@ def _proposal(**overrides):
             ],
         },
         "plan_hash": "sha256:abc",
-        "estimate": {"estimated_credits": 4,
+        "estimate": {"estimated_price_cents": 400,
                      "estimated_duration_seconds": {"min": 10, "max": 40},
                      "output_summary": ["a repaired layer"]},
     }
@@ -33,7 +33,7 @@ def test_a_proposal_with_its_hash_is_an_offer():
     assert offer is not None
     assert offer["steps"] == ["Validate geometry", "Repair shapes"]
     assert offer["plan_hash"] == "sha256:abc"
-    assert offer["credits"] == 4
+    assert offer["price_cents"] == 400
 
 
 def test_a_plan_without_its_hash_is_not_offerable():
@@ -71,29 +71,33 @@ def test_a_step_is_never_shown_as_a_tool_id():
 
 def test_an_unmeasured_cost_is_said_and_not_shown_as_free():
     offer = plan_offer(_proposal(estimate={}))
-    assert offer["credits"] is None
+    assert offer["price_cents"] is None
     assert "not estimated" in offer_prompt(offer)
 
 
 def test_a_genuinely_free_run_says_so():
     """A deterministic georeference apply costs nothing, and that is different
     from nobody having measured it."""
-    offer = plan_offer(_proposal(estimate={"estimated_credits": 0}))
-    assert offer["credits"] == 0
-    assert "no credits" in offer_prompt(offer)
+    offer = plan_offer(_proposal(estimate={"estimated_price_cents": 0}))
+    assert offer["price_cents"] == 0
+    assert "free" in offer_prompt(offer)
 
 
 def test_the_prompt_states_the_cost_and_the_work():
     text = offer_prompt(plan_offer(_proposal()))
     assert "1. Validate geometry" in text
-    assert "4 credits" in text
+    assert "$4" in text
     assert "10 to 40 seconds" in text
     assert "a repaired layer" in text
 
 
-def test_one_credit_is_singular():
-    assert "1 credit." in offer_prompt(plan_offer(
-        _proposal(estimate={"estimated_credits": 1})))
+def test_a_price_with_real_cents_keeps_them():
+    # "$2.00 a sheet" reads as a figure somebody computed; "$2" reads as a
+    # price. A price that genuinely has cents keeps them.
+    assert "$0.01." in offer_prompt(plan_offer(
+        _proposal(estimate={"estimated_price_cents": 1})))
+    assert "$18." in offer_prompt(plan_offer(
+        _proposal(estimate={"estimated_price_cents": 1800})))
 
 
 def test_nothing_that_is_not_a_response_is_an_offer():

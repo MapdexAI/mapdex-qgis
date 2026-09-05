@@ -23,7 +23,7 @@ keeps it out of an end-user surface. A step carrying no title falls back to a
 cleaned operation name rather than its raw id.
 
 An absent cost is stated as unknown, never as zero. A person deciding whether
-to spend credits on a 300-sheet archive is worse off being told it is free than
+to spend money on a 300-sheet archive is worse off being told it is free than
 being told nobody measured it.
 """
 
@@ -96,7 +96,12 @@ def plan_offer(response: Any) -> dict[str, Any] | None:
 
     estimate = response.get("estimate")
     estimate = estimate if isinstance(estimate, dict) else {}
-    credits = estimate.get("estimated_credits")
+    # CENTS, from estimated_price_cents. This read estimated_credits, a field
+    # the server stopped sending when the sheet replaced the credit - and the
+    # failure was silent in the worst direction: the dialog fell through to
+    # "not estimated for this plan" and asked somebody to approve work without
+    # telling them what it costs, which is the one thing the dialog is for.
+    price_cents = estimate.get("estimated_price_cents")
     seconds = estimate.get("estimated_duration_seconds")
     seconds = seconds if isinstance(seconds, dict) else {}
 
@@ -105,8 +110,13 @@ def plan_offer(response: Any) -> dict[str, Any] | None:
         "plan_hash": plan_hash,
         "steps": steps,
         # None means nobody measured it. Zero means free, and a free run is a
-        # real thing here: a deterministic georeference apply costs 0 credits.
-        "credits": credits if isinstance(credits, int) and not isinstance(credits, bool) else None,
+        # real thing here: converting, validating and repairing are part of the
+        # sheet they work on, so a plan of them costs nothing.
+        "price_cents": (
+            price_cents
+            if isinstance(price_cents, int) and not isinstance(price_cents, bool)
+            else None
+        ),
         "seconds_min": seconds.get("min") if isinstance(seconds.get("min"), int) else None,
         "seconds_max": seconds.get("max") if isinstance(seconds.get("max"), int) else None,
         "inputs": [_text(item, 120) for item in estimate.get("input_summary") or []
@@ -115,6 +125,17 @@ def plan_offer(response: Any) -> dict[str, Any] | None:
                     if _text(item, 120)],
         "thread_id": _text(response.get("thread_id"), 128),
     }
+
+
+def format_price(cents: int) -> str:
+    """Cents as the price a person reads.
+
+    A whole dollar amount drops its ".00", because "$2.00 a sheet" reads as a
+    figure somebody computed and "$2" reads as a price.
+    """
+    if cents % 100 == 0:
+        return "${}".format(cents // 100)
+    return "${}.{:02d}".format(cents // 100, cents % 100)
 
 
 def offer_prompt(offer: dict[str, Any]) -> str:
@@ -131,13 +152,13 @@ def offer_prompt(offer: dict[str, Any]) -> str:
     lines.extend("  {}. {}".format(index, step) for index, step in enumerate(steps, 1))
     lines.append("")
 
-    credits = offer.get("credits")
-    if credits is None:
+    price_cents = offer.get("price_cents")
+    if price_cents is None:
         lines.append("Cost: not estimated for this plan.")
-    elif credits == 0:
-        lines.append("Cost: no credits.")
+    elif price_cents == 0:
+        lines.append("Cost: free.")
     else:
-        lines.append("Cost: {} credit{}.".format(credits, "" if credits == 1 else "s"))
+        lines.append("Cost: {}.".format(format_price(price_cents)))
 
     low, high = offer.get("seconds_min"), offer.get("seconds_max")
     if isinstance(low, int) and isinstance(high, int):
@@ -163,7 +184,7 @@ def plan_run_report(run: Any) -> dict[str, Any]:
     said what it would run, and this says what happened. A run whose state the
     desktop does not recognise is reported as still running rather than as
     finished, because a poll that stops early leaves a person believing a run
-    ended when it is still spending their credits.
+    ended when it is still spending their money.
     """
     from .results import collect_layer_imports, run_state
 
