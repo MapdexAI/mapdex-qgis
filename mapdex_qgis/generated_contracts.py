@@ -317,7 +317,7 @@ ERROR_REGISTRY = [
         "code": "INSUFFICIENT_CREDITS",
         "type": "bad_request",
         "http": 402,
-        "template": "Organization has insufficient credits balance to dispatch runs."
+        "template": "The workspace balance is not enough to dispatch this run."
     },
     {
         "code": "GUEST_LIMIT_REACHED",
