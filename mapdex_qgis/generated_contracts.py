@@ -332,6 +332,12 @@ ERROR_REGISTRY = [
         "template": "The batch has {items} items, above the plan limit of {limit}."
     },
     {
+        "code": "ACCOUNT_ERASURE_BLOCKED",
+        "type": "conflict",
+        "http": 409,
+        "template": "This account is the last owner of a workspace that still has other members: {workspace}. Transfer ownership or remove the other members first, then erase the account."
+    },
+    {
         "code": "OUTPUT_NOT_MATERIALIZED",
         "type": "system",
         "http": 500,
