@@ -490,20 +490,59 @@ class MapdexAPI:
         self._put_upload(path, upload)
         return self._request("POST", f"/v1/files/{file_id}/complete", {}, project_id)
 
-    def start_batch(self, project_id: str, file_ids, kind: str):
+    def sheet_prices(self):
+        """The published pricing ladder, for the per-sheet batch estimate.
+
+        `GET /v1/plans` is deliberately unauthenticated on the server - it is
+        what an anonymous visitor reads on the pricing page - so this works
+        before a connection and the Task page can price a workflow while the
+        user is still choosing one.
+
+        The plugin does not compute a price from this. It reads the server's
+        own per-item `batch_kinds` figure and multiplies by the sheet count;
+        `packages/contracts/pricing.go` is the single source of the
+        customer-facing price and a second copy of it here is exactly the
+        two-price-lists problem that file exists to end.
+        """
+        return self._request("GET", "/v1/plans", timeout=15.0)
+
+    def credits(self):
+        """What this workspace has left to spend, in the same unit as a price.
+
+        `GET /v1/credits` answers with `credits_available`, which is the balance
+        minus the holds other runs already have out - the exact figure the
+        reservation gate enforces, so a batch checked against it cannot be
+        refused for a hold this panel could not see.
+
+        It is authenticated, so it answers only once connected. Its unit is
+        cents: a run reserves `estimated_price_cents` against the same column,
+        which is why the batch total and this number are comparable at all.
+        """
+        return self._request("GET", "/v1/credits", timeout=15.0)
+
+    def start_batch(self, project_id: str, file_ids, kind: str, options=None):
+        """Create the batch.
+
+        `options` is a `TaskOptions`, and only what differs from the server's
+        own defaults is merged in - see `task_options.payload`. The three
+        fields it can carry (`expand_pdf_pages`, `skip_completed`,
+        `max_concurrency`) have been accepted by this endpoint for as long as
+        batches have existed and were never sent from here, so a QGIS user
+        submitting a multi-page PDF archive had no way to ask for a sheet per
+        page and re-running a partly failed archive paid for the sheets that
+        had already succeeded.
+        """
         if isinstance(file_ids, str):
             file_ids = [file_ids]
         clean_kind = kind.replace("_", " ").title()
-        return self._request(
-            "POST",
-            "/v1/batches",
-            {
-                "kind": kind,
-                "name": f"[QGIS] {clean_kind}",
-                "sources": [{"file_id": file_id} for file_id in file_ids],
-            },
-            project_id,
-        )
+        body = {
+            "kind": kind,
+            "name": f"[QGIS] {clean_kind}",
+            "sources": [{"file_id": file_id} for file_id in file_ids],
+        }
+        if options is not None:
+            body.update(options.payload())
+        return self._request("POST", "/v1/batches", body, project_id)
 
     def compose(
         self,

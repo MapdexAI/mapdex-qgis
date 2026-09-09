@@ -3,17 +3,20 @@ from __future__ import annotations
 
 import os
 
-from qgis.PyQt.QtCore import QEvent, QPointF, QSize, Qt
+from qgis.PyQt.QtCore import QEvent, QPointF, QSize, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qgis.PyQt.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
     QBoxLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QProgressBar,
     QLineEdit,
@@ -36,6 +39,7 @@ from .layout_rules import (
     READING_WIDTH,
     panel_layout_mode,
 )
+from .task_options import concurrency_choices
 from .panel_state import (
     CONNECT_PROMISE,
     FIRST_OPEN_PROMPT,
@@ -358,6 +362,440 @@ class JobItemList(QWidget):
         return row
 
 
+class WorkflowCard(QToolButton):
+    """One workflow, as a card rather than a line in a menu.
+
+    A combo hides every option but one, so the four pieces of work Mapdex does
+    were a closed list a first-time user had to open to discover. Four cards
+    state the whole offer at once, which is the one thing this page has to say
+    before anything else on it makes sense.
+
+    A QToolButton because checkable + autoExclusive already implement exactly
+    the behaviour needed and Qt owns the keyboard handling; a QFrame would mean
+    reimplementing focus, Space and arrow-key traversal by hand.
+    """
+
+    # Enough for a 22 px icon, one line of label, and the padding between them.
+    CARD_HEIGHT = 74
+
+    def __init__(self, title, icon=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexWorkflowCard")
+        self.setText(title)
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        self.setToolButtonStyle(
+            enum_member(Qt, "ToolButtonStyle", "ToolButtonTextUnderIcon")
+        )
+        if icon is not None:
+            self.setIcon(icon)
+            self.setIconSize(QSize(22, 22))
+        self.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+            enum_member(QSizePolicy, "Policy", "Fixed"),
+        )
+        # The TILE is pinned, not the grid around it, and that is the whole
+        # difference between this version and two broken ones.
+        #
+        # Pinning only the minimum let the chooser be handed 141 px for a
+        # 154 px layout, and the second row painted past its own bottom edge.
+        # Pinning the CHOOSER instead moved the fault rather than fixing it: a
+        # card's real minimum grows once the panel stylesheet's padding applies,
+        # so a height computed from CARD_HEIGHT was three pixels short and the
+        # last row's border was drawn through the section label below it. Both
+        # were invisible to every geometry assertion, because each widget
+        # reported numbers that agreed with itself.
+        #
+        # A fixed tile makes the grid's sizeHint exact arithmetic - rows times
+        # this height plus the spacing - with nothing left for a style, a cached
+        # hint or an ordering to change afterwards.
+        self.setFixedHeight(self.CARD_HEIGHT)
+        # Its own text must not set a floor under the whole panel:
+        # "Validate & deliver" is wider than a 260 px dock divided by two.
+        self.setMinimumWidth(1)
+
+
+class WorkflowChooser(QWidget):
+    """The four cards, presenting the combo API the panel already speaks.
+
+    `plugin.py` reads this through `currentData`, `currentIndex`, `count`,
+    `itemData`, `findData`, `setCurrentIndex` and `currentIndexChanged` at
+    thirteen call sites. Keeping that surface means the card grid is a
+    presentation change and nothing downstream of it had to be re-reasoned -
+    and it is not a pretence, because a chooser is what a combo was too.
+
+    Two columns, decided once at build time and never re-flowed. Four across
+    would need the grid rebuilt on resize, and moving a widget between live
+    layout cells is exactly the ownership hand-off that deleted a QComboBox
+    under PyQt6 - the hazard `register_pair` is written around. Two columns is
+    also the honest layout for the width this dock actually opens at: four
+    across a 420 px panel is 100 px a card, which is narrower than the word
+    "Georeference".
+    """
+
+    COLUMNS = 2
+
+    currentIndexChanged = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexWorkflowChooser")
+        self._cards = []
+        self._data = []
+        self._current = -1
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(6)
+        self.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Preferred"),
+            enum_member(QSizePolicy, "Policy", "Fixed"),
+        )
+
+    # -- building -----------------------------------------------------------
+
+    def addItem(self, title, data, icon=None):  # noqa: N802 - mirrors QComboBox
+        card = WorkflowCard(title, icon=icon, parent=self)
+        index = len(self._cards)
+        card.clicked.connect(lambda _checked=False, target=index: self.setCurrentIndex(target))
+        self._cards.append(card)
+        self._data.append(data)
+        # Placed once, in the cell it keeps for the life of the panel.
+        self._grid.addWidget(card, index // self.COLUMNS, index % self.COLUMNS)
+        # A HARD minimum, which is a different instrument from the size hint.
+        #
+        # Measured: with fixed 74 px tiles the grid reported sizeHint 154 and
+        # minimumSizeHint 154, and Qt still handed the widget 141 - because a
+        # size HINT is advisory and a layout short of room distributes the
+        # shortfall across it. `setMinimumHeight` is the floor Qt will not go
+        # under; the column overflows into its scroll area instead, which is
+        # what a scroll area is for.
+        rows = (len(self._cards) + self.COLUMNS - 1) // self.COLUMNS
+        spacing = self._grid.verticalSpacing()
+        if spacing < 0:  # Qt returns -1 for "inherit from the style"
+            spacing = self._grid.spacing()
+        self.setMinimumHeight(rows * WorkflowCard.CARD_HEIGHT + (rows - 1) * spacing)
+        if self._current < 0:
+            self.setCurrentIndex(0)
+        return card
+
+    # -- the combo surface ---------------------------------------------------
+
+    def count(self):
+        return len(self._cards)
+
+    def currentIndex(self):  # noqa: N802 - mirrors QComboBox
+        return self._current
+
+    def currentData(self):  # noqa: N802 - mirrors QComboBox
+        if 0 <= self._current < len(self._data):
+            return self._data[self._current]
+        return None
+
+    def itemData(self, index):  # noqa: N802 - mirrors QComboBox
+        if 0 <= index < len(self._data):
+            return self._data[index]
+        return None
+
+    def itemText(self, index):  # noqa: N802 - mirrors QComboBox
+        if 0 <= index < len(self._cards):
+            return self._cards[index].text()
+        return ""
+
+    def findData(self, data):  # noqa: N802 - mirrors QComboBox
+        for index, value in enumerate(self._data):
+            if value == data:
+                return index
+        return -1
+
+    def setCurrentIndex(self, index):  # noqa: N802 - mirrors QComboBox
+        if not 0 <= index < len(self._cards):
+            return
+        # A repeat press must not re-emit: `_workflow_changed` clears the source
+        # list, so clicking the card that is already chosen would silently throw
+        # away a selection the user had just made.
+        if index == self._current:
+            self._cards[index].setChecked(True)
+            return
+        self._current = index
+        for position, card in enumerate(self._cards):
+            card.setChecked(position == index)
+        if not self.signalsBlocked():
+            self.currentIndexChanged.emit(index)
+
+    def blockSignals(self, block):  # noqa: N802 - Qt virtual name
+        return super().blockSignals(block)
+
+
+class SourceDropZone(QFrame):
+    """Where sheets come in: dropped, chosen from disk, or ticked from QGIS.
+
+    Both routes ADD to one list rather than replacing each other, which is what
+    makes a batch expressible: a person can drop eight scans, then tick the two
+    that are already open, and press Start once.
+
+    Drops are accepted only for local files. A drag carrying a QGIS layer looks
+    like a URL too, and treating one as an upload is the "in-app drag read as an
+    upload" defect docs/UX.md §4 names on the web side.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexDropZone")
+        self.setAcceptDrops(True)
+        self.on_files = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 16, 14, 16)
+        layout.setSpacing(6)
+
+        headline = QLabel("Drop files here")
+        headline.setObjectName("mapdexDropHeadline")
+        hint = QLabel("TIFF, JPG, PNG, PDF · single or several")
+        hint.setObjectName("mapdexDropHint")
+        hint.setWordWrap(True)
+        self.hint = hint
+
+        self.choose_button = QPushButton("Choose files")
+        self.choose_button.setObjectName("mapdexPrimaryButton")
+        self.choose_button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        # A link rather than a second button: two filled controls side by side
+        # is two primaries, and the panel's whole button system says only one
+        # thing on screen is filled.
+        self.layers_button = QToolButton()
+        self.layers_button.setObjectName("mapdexDropLink")
+        self.layers_button.setText("or add from QGIS layers")
+        self.layers_button.setToolButtonStyle(
+            enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+        )
+        self.layers_button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+
+        # Centred by an alignment flag ON THE LABEL, with the label taking the
+        # full width of the box.
+        #
+        # The first version put each label between two stretches with no stretch
+        # factor of its own, to avoid the alignment flag that once starved the
+        # reading column. That is the same defect facing the other way:
+        # `allow_narrow` sets `setMinimumWidth(1)` on every wrapping label, so a
+        # label with no stretch gets its minimum - one pixel - and the hint
+        # rendered one word per line down the middle of the box. Measured on a
+        # real dock, not inferred; the first reading of it as a font artefact in
+        # the offscreen render was wrong.
+        #
+        # A stretch centres a WIDGET inside a row and a flag centres TEXT inside
+        # a widget, and this needs the second.
+        centre = enum_member(Qt, "AlignmentFlag", "AlignHCenter")
+        for label in (headline, hint):
+            label.setAlignment(centre)
+            layout.addWidget(label)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 4, 0, 0)
+        button_row.addStretch(1)
+        button_row.addWidget(self.choose_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+        link_row = QHBoxLayout()
+        link_row.setContentsMargins(0, 0, 0, 0)
+        link_row.addStretch(1)
+        link_row.addWidget(self.layers_button)
+        link_row.addStretch(1)
+        layout.addLayout(link_row)
+
+    def set_hint(self, text):
+        self.hint.setText(text)
+
+    def _paths(self, event):
+        data = event.mimeData()
+        if data is None or not data.hasUrls():
+            return []
+        paths = []
+        for url in data.urls():
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if path and os.path.isfile(path):
+                paths.append(path)
+        return paths
+
+    def _set_active(self, active):
+        self.setProperty("dropActive", bool(active))
+        # A property alone changes nothing on screen: Qt caches the computed
+        # style until it is told the selector may now match differently.
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def dragEnterEvent(self, event):  # noqa: N802 - Qt virtual name
+        if self._paths(event):
+            self._set_active(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):  # noqa: N802 - Qt virtual name
+        self._set_active(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802 - Qt virtual name
+        self._set_active(False)
+        paths = self._paths(event)
+        if not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        if callable(self.on_files):
+            self.on_files(paths)
+
+
+class SourceList(QWidget):
+    """The sheets chosen so far, one row each, each removable.
+
+    A count ("12 files selected") answers whether something is selected and
+    never which twelve, so a wrong file in a batch of twelve is unfindable
+    without starting over. Rows are the same reasoning as the batch item list
+    in Jobs: at this size the list IS the state.
+    """
+
+    # Rows are built and thrown away on every change. Past this many the list
+    # is taller than the page and the build cost stops being free, so it says
+    # what it is not showing rather than rendering three hundred widgets.
+    VISIBLE_LIMIT = 40
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexSourceList")
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self._body = None
+
+    def set_sources(self, sources, on_remove=None):
+        """Replace the whole list with a new one.
+
+        The old rows are discarded by detaching ONE container and scheduling it
+        for deletion, never by taking each row out of a live layout: a widget
+        removed from one cell and added to another is the ownership hand-off
+        that deleted a QComboBox under PyQt6, and `register_pair` is written
+        around the same hazard. Nothing here is ever re-added anywhere, so the
+        rows are destroyed rather than moved.
+        """
+        if self._body is not None:
+            previous = self._body
+            self._body = None
+            # setParent(None) takes it out of the layout; deleteLater does the
+            # C++ delete once the event loop is back. Detaching first is what
+            # stops the old list being painted under the new one.
+            previous.setParent(None)
+            previous.deleteLater()
+
+        body = QWidget(self)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(4)
+        shown = list(sources)[: self.VISIBLE_LIMIT]
+        for source in shown:
+            body_layout.addWidget(self._build_row(body, source, on_remove))
+        hidden = len(sources) - len(shown)
+        if hidden > 0:
+            overflow = QLabel("and {} more".format(hidden), body)
+            overflow.setObjectName("mapdexSourceOverflow")
+            body_layout.addWidget(overflow)
+        self._body = body
+        self._layout.addWidget(body)
+        self.setVisible(bool(sources))
+
+    def _build_row(self, parent, source, on_remove):
+        row = QFrame(parent)
+        row.setObjectName("mapdexSourceRow")
+        row.setProperty("sourceKind", source.kind)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(9, 6, 6, 6)
+        layout.setSpacing(8)
+
+        # Which route this sheet took, as a word. Not a colour and not an icon
+        # alone: the two behave differently on the way out - a file is uploaded
+        # as it is, a layer may be exported first - and that is worth saying.
+        badge = QLabel("Layer" if source.kind == "layer" else "File")
+        badge.setObjectName("mapdexSourceBadge")
+        layout.addWidget(badge, 0)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(0)
+        title = _ElidedLabel(source.label)
+        title.setObjectName("mapdexSourceName")
+        text.addWidget(title)
+        if source.detail:
+            detail = QLabel(source.detail)
+            detail.setObjectName("mapdexSourceDetail")
+            text.addWidget(detail)
+        layout.addLayout(text, 1)
+
+        if on_remove is not None:
+            remove = QToolButton()
+            remove.setObjectName("mapdexSourceRemove")
+            remove.setText("×")
+            remove.setToolTip("Remove {} from this task".format(source.label))
+            remove.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+            remove.setToolButtonStyle(
+                enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+            )
+            kind, key = source.kind, source.key
+            remove.clicked.connect(
+                lambda _checked=False, k=kind, i=key: on_remove(k, i)
+            )
+            layout.addWidget(remove, 0)
+        return row
+
+
+class OptionsDisclosure(QWidget):
+    """Options, closed by default, with what they currently say on the header.
+
+    Closed is right because the defaults are the behaviour that was already
+    shipping, so a person who never opens this gets exactly what they got
+    before. The chip is what makes closed safe: an option changed three tasks
+    ago and forgotten is otherwise invisible at the moment of pressing Start.
+    """
+
+    def __init__(self, title="Options", parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexOptions")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # The header and the panel it opens are two surfaces, so they need a gap
+        # between them; at zero the body's border sat directly under the header
+        # text and read as one clipped box.
+        layout.setSpacing(6)
+
+        self.header = QToolButton()
+        self.header.setObjectName("mapdexOptionsHeader")
+        self.header.setText(title)
+        self.header.setCheckable(True)
+        self.header.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        self.header.setToolButtonStyle(
+            enum_member(Qt, "ToolButtonStyle", "ToolButtonTextOnly")
+        )
+        self.header.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+            enum_member(QSizePolicy, "Policy", "Fixed"),
+        )
+        self.chip = QLabel("Default")
+        self.chip.setObjectName("mapdexOptionsChip")
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(6)
+        header_row.addWidget(self.header, 1)
+        header_row.addWidget(self.chip, 0)
+        layout.addLayout(header_row)
+
+        self.body = QFrame()
+        self.body.setObjectName("mapdexOptionsBody")
+        self.body.setVisible(False)
+        layout.addWidget(self.body)
+        self.header.toggled.connect(self.body.setVisible)
+
+    def set_summary(self, text):
+        self.chip.setText(text)
+
+
 def _elastic(combo):
     """Let a combo shrink with the dock instead of demanding its widest item.
 
@@ -597,6 +1035,122 @@ def build_companion_panel(workflows, endpoint_settings=True):
             background: rgba(230, 233, 242, 0.08);
         }
         QPushButton#mapdexQuietButton:disabled { color: #5A5A5A; }
+        /* ── The Task page ─────────────────────────────────────────────────
+           Title, workflow cards, the drop zone and the chosen-source rows.
+           The cards are the only place on this page with a filled state that
+           is not a button press: a chosen workflow is a standing fact, so it
+           is marked by surface and border rather than by the accent fill that
+           belongs to Start. */
+        QLabel#mapdexPageTitle {
+            color: #F7F7F5;
+            font-size: 15px;
+            font-weight: 600;
+        }
+        QLabel#mapdexPageSubtitle { color: #8F96A8; font-size: 11px; }
+        QLabel#mapdexPageFootnote { color: #6B6B6B; font-size: 10px; }
+        /* Money, so it is the panel's ink rather than its muted grey: a
+           figure a person is about to spend is not a caption. */
+        QLabel#mapdexPriceLine { color: #C9CDD8; font-size: 11px; }
+        /* A refusal is not muted body text: it is the reason the control
+           below it will not move, and it has to be read before Start is
+           pressed rather than after. Status is never colour alone here -
+           the sentence states the numbers and Start is visibly disabled. */
+        QLabel#mapdexBalanceNotice { color: #E5B567; font-size: 11px; }
+        QLabel#mapdexSourceSummary { color: #8F96A8; font-size: 11px; }
+        QToolButton#mapdexWorkflowCard {
+            padding: 9px 4px;
+            color: #C9CDD8;
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+            border-radius: 6px;
+            font-size: 11px;
+        }
+        QToolButton#mapdexWorkflowCard:hover {
+            color: #F7F7F5;
+            border-color: rgba(99, 102, 241, 0.55);
+        }
+        QToolButton#mapdexWorkflowCard:checked {
+            color: #F7F7F5;
+            background: #2A2A2A;
+            border: 1px solid #6366F1;
+        }
+        QToolButton#mapdexWorkflowCard:disabled { color: #5A5A5A; }
+        /* The drop target is the largest thing on the page, because it is what
+           the page is for and because a drop target smaller than the pointer's
+           idea of "here" is one people miss. */
+        QFrame#mapdexDropZone {
+            background: #1c1c1c;
+            border: 1px dashed rgba(230, 233, 242, 0.26);
+            border-radius: 8px;
+        }
+        QFrame#mapdexDropZone[dropActive="true"] {
+            background: #22223a;
+            border: 1px dashed #6366F1;
+        }
+        QLabel#mapdexDropHeadline { color: #F7F7F5; font-weight: 600; }
+        QLabel#mapdexDropHint { color: #8F96A8; font-size: 11px; }
+        QToolButton#mapdexDropLink {
+            color: #8F96A8;
+            background: transparent;
+            border: 0;
+            font-size: 11px;
+            text-decoration: underline;
+        }
+        QToolButton#mapdexDropLink:hover { color: #C9CDD8; }
+        QFrame#mapdexSourceRow {
+            background: #1c1c1c;
+            border: 1px solid rgba(230, 233, 242, 0.10);
+            border-radius: 6px;
+        }
+        /* A word, never a colour on its own: DESIGN.md section 8, and the two
+           kinds genuinely behave differently on the way out. */
+        QLabel#mapdexSourceBadge {
+            color: #8F96A8;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            background: transparent;
+            border: 0;
+        }
+        QLabel#mapdexSourceName { color: #F7F7F5; background: transparent; border: 0; }
+        QLabel#mapdexSourceDetail {
+            color: #8F96A8;
+            font-size: 10px;
+            background: transparent;
+            border: 0;
+        }
+        QLabel#mapdexSourceOverflow { color: #8F96A8; font-size: 10px; }
+        QToolButton#mapdexSourceRemove {
+            color: #8F96A8;
+            background: transparent;
+            border: 0;
+            font-size: 15px;
+            padding: 0 5px;
+        }
+        QToolButton#mapdexSourceRemove:hover { color: #F7F7F5; }
+        QToolButton#mapdexOptionsHeader {
+            color: #C9CDD8;
+            background: transparent;
+            border: 0;
+            font-size: 11px;
+            font-weight: 600;
+            text-align: left;
+            padding: 5px 0;
+        }
+        QToolButton#mapdexOptionsHeader:hover { color: #F7F7F5; }
+        QLabel#mapdexOptionsChip {
+            color: #8F96A8;
+            background: #212121;
+            border: 1px solid rgba(230, 233, 242, 0.14);
+            border-radius: 4px;
+            padding: 2px 7px;
+            font-size: 10px;
+        }
+        QFrame#mapdexOptionsBody {
+            background: #1c1c1c;
+            border: 1px solid rgba(230, 233, 242, 0.10);
+            border-radius: 6px;
+        }
         /* The batch item list. One row per sheet, and the row's state is a
            property so the tint follows it - the mark and the word carry the
            meaning on their own, so nothing here depends on colour. */
@@ -1201,32 +1755,128 @@ def build_companion_panel(workflows, endpoint_settings=True):
     workspace_layout.setContentsMargins(0, 0, 0, 0)
     workspace_layout.setSpacing(8)
     workspace_layout.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
-    new_task_label = _section_label("New chat")
+    # The page reads top to bottom as one sentence: this project, this
+    # workflow, over these sheets, with these options. It used to be a
+    # three-row form whose middle row was a combo of four and whose last row
+    # could name exactly one thing, so the batch this plugin has always been
+    # able to run had nowhere on screen to be expressed.
+    new_task_title = QLabel("Start a new task")
+    new_task_title.setObjectName("mapdexPageTitle")
     open_project_button = QPushButton("Open in Mapdex")
     open_project_button.setObjectName("mapdexSecondaryButton")
     open_project_button.setToolTip("Continue this project in the Mapdex workspace")
-    workspace_layout.addLayout(root.register_pair(new_task_label, open_project_button))
+    workspace_layout.addLayout(root.register_pair(new_task_title, open_project_button))
+    new_task_subtitle = QLabel("Send your data to Mapdex and process it in the cloud.")
+    new_task_subtitle.setObjectName("mapdexPageSubtitle")
+    new_task_subtitle.setWordWrap(True)
+    workspace_layout.addWidget(new_task_subtitle)
+
     form = root.register_form(QFormLayout())
     form.setFieldGrowthPolicy(enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow"))
     form.setSpacing(7)
     project_box = _elastic(_ArrowComboBox())
-    workflow_box = _elastic(_ArrowComboBox())
-    input_box = _elastic(_ArrowComboBox())
-    for title, key in workflows:
-        workflow_box.addItem(title, key)
-    input_box.addItem("Select source…", "")
-    input_box.addItem("Choose a file…", "file")
     form.addRow("Project", project_box)
-    form.addRow("Workflow", workflow_box)
-    form.addRow("Source", input_box)
     workspace_layout.addLayout(form)
-    source_summary = QLabel("No source selected")
+
+    workspace_layout.addWidget(_section_label("Workflow"))
+    workflow_box = WorkflowChooser()
+    for title, key in workflows:
+        # The icon is optional and looked up by the workflow's own id, so a new
+        # BatchKind arrives as a card with a label rather than as a blank tile
+        # or a crash.
+        asset = ACTION_ICONS.get(str(getattr(key, "value", key) or ""))
+        icon = QIcon(surface_asset_path(asset)) if asset else None
+        workflow_box.addItem(title, key, icon=icon)
+    workspace_layout.addWidget(workflow_box)
+
+    workspace_layout.addWidget(_section_label("Source"))
+    drop_zone = SourceDropZone()
+    workspace_layout.addWidget(drop_zone)
+    source_list = SourceList()
+    source_list.setVisible(False)
+    workspace_layout.addWidget(source_list)
+    source_summary = QLabel("No sources selected")
     source_summary.setWordWrap(True)
-    source_summary.setStyleSheet("color: #8F96A8; font-size: 11px;")
+    source_summary.setObjectName("mapdexSourceSummary")
     workspace_layout.addWidget(source_summary)
+
+    # Three real fields. Every one of them is read by POST /v1/batches and none
+    # of them has ever been sent from here, which is why this row exists at all
+    # rather than as a place to put a chevron.
+    options = OptionsDisclosure("Options")
+    options_layout = QVBoxLayout(options.body)
+    options_layout.setContentsMargins(12, 11, 12, 12)
+    options_layout.setSpacing(9)
+    expand_pages_check = QCheckBox("Treat every PDF page as its own sheet")
+    expand_pages_check.setToolTip(
+        "A multi-page PDF arrives as one sheet unless this is on. With it on, "
+        "each page becomes its own item with its own result and review."
+    )
+    skip_completed_check = QCheckBox("Skip sheets already completed in this project")
+    skip_completed_check.setToolTip(
+        "Re-running an archive after a partial failure otherwise runs, and "
+        "charges for, the sheets that already succeeded."
+    )
+    options_layout.addWidget(expand_pages_check)
+    options_layout.addWidget(skip_completed_check)
+    concurrency_form = root.register_form(QFormLayout())
+    concurrency_form.setFieldGrowthPolicy(
+        enum_member(QFormLayout, "FieldGrowthPolicy", "AllNonFixedFieldsGrow")
+    )
+    concurrency_box = _elastic(_ArrowComboBox())
+    for label, value in concurrency_choices():
+        concurrency_box.addItem(label, value)
+    concurrency_form.addRow("Parallel sheets", concurrency_box)
+    options_layout.addLayout(concurrency_form)
+    workspace_layout.addWidget(options)
+
+    # What this will cost, ABOVE the control that spends it. A batch of three
+    # hundred sheets is the largest single spend in the product and was
+    # dispatched with no figure anywhere on screen; the server's own comment on
+    # `batch_kinds` gives the reason it publishes one. Empty and hidden when the
+    # server has not priced the workflow - an unknown price may not be rendered
+    # as $0.
+    price_label = QLabel("")
+    price_label.setObjectName("mapdexPriceLine")
+    price_label.setWordWrap(True)
+    price_label.setVisible(False)
+    workspace_layout.addWidget(price_label)
+
+    # Why the batch will not start, and the one control that fixes it.
+    #
+    # docs/UX.md 13: "Insufficient credits: block with a clear upgrade/top-up
+    # path, never a silent failure." Blocking alone is half of that - a Start
+    # control that refuses to move with nothing beside it reads as a broken
+    # panel - so the refusal states the three numbers and the route out sits
+    # next to it rather than in a menu the reader has to go looking for.
+    balance_row = QWidget()
+    balance_layout = QHBoxLayout(balance_row)
+    balance_layout.setContentsMargins(0, 0, 0, 0)
+    balance_layout.setSpacing(8)
+    balance_notice = QLabel("")
+    balance_notice.setObjectName("mapdexBalanceNotice")
+    balance_notice.setWordWrap(True)
+    allow_narrow(balance_notice)
+    balance_notice.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignLeft"))
+    top_up_button = QPushButton("Add balance")
+    top_up_button.setObjectName("mapdexSecondaryButton")
+    balance_layout.addWidget(balance_notice, 1)
+    # Top-aligned: the refusal wraps to several lines and a button floating in
+    # the middle of them reads as belonging to whichever line it landed beside.
+    balance_layout.addWidget(
+        top_up_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+    balance_row.setVisible(False)
+    workspace_layout.addWidget(balance_row)
+
     run_button = QPushButton("Start task")
     run_button.setObjectName("mapdexPrimaryButton")
     workspace_layout.addWidget(run_button)
+    run_footnote = QLabel(
+        "Your files are processed in Mapdex. Results appear in the Jobs tab."
+    )
+    run_footnote.setObjectName("mapdexPageFootnote")
+    run_footnote.setWordWrap(True)
+    workspace_layout.addWidget(run_footnote)
 
     # Nivo is a separate, map-aware companion surface. It calls the same
     # server compose path as Studio; it is not a local chatbot or Python console.
@@ -1523,8 +2173,17 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "project_box": project_box,
         "open_project_button": open_project_button,
         "workflow_box": workflow_box,
-        "input_box": input_box,
+        "drop_zone": drop_zone,
+        "source_list": source_list,
         "source_summary": source_summary,
+        "options": options,
+        "price_label": price_label,
+        "balance_row": balance_row,
+        "balance_notice": balance_notice,
+        "top_up_button": top_up_button,
+        "expand_pages_check": expand_pages_check,
+        "skip_completed_check": skip_completed_check,
+        "concurrency_box": concurrency_box,
         "run_button": run_button,
         "nivo_context": nivo_context,
         "nivo_runtime": nivo_runtime,
@@ -1549,6 +2208,208 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "recent": recent,
         "recent_box": recent_box,
         "resume_button": resume_button,
+    }
+
+
+def build_balance_dialog(notice, workflow_title="", parent=None):
+    """The batch did not start, and here is the one thing that changes that.
+
+    A modal is the right shape for exactly this class and a poor shape for
+    almost everything else: the user cannot continue, the fix is elsewhere, and
+    the fix takes seconds. It is the same decision the Studio already made for
+    `INSUFFICIENT_CREDITS` - an account-level blocker gets a dialog, an
+    operation failure gets a line in the log.
+
+    It carries the refusal SENTENCE it was handed rather than composing one:
+    the numbers behind it are the server's, and the panel and this dialog
+    disagreeing about the amount would be worse than either of them alone.
+
+    Returns the dialog. `exec()` is truthy when the user chose to go to
+    billing; the caller owns the URL, because only it knows the host this
+    session is connected to.
+    """
+    dialog = QDialog(parent)
+    dialog.setObjectName("mapdexBalanceDialog")
+    dialog.setWindowTitle("Not enough balance")
+    dialog.setMinimumWidth(420)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(16, 16, 16, 16)
+    layout.setSpacing(10)
+
+    headline = QLabel(
+        "{} did not start.".format(workflow_title) if workflow_title
+        else "This task did not start."
+    )
+    headline.setObjectName("mapdexSectionTitle")
+    headline.setWordWrap(True)
+    layout.addWidget(headline)
+
+    body = QLabel(str(notice or ""))
+    body.setWordWrap(True)
+    allow_narrow(body)
+    layout.addWidget(body)
+
+    # Nothing was uploaded and nothing was charged. Said out loud because the
+    # first question after a refused batch is whether half of it went anyway.
+    reassurance = QLabel(
+        "Nothing was uploaded and nothing was charged. Your sources are still "
+        "in the list."
+    )
+    reassurance.setObjectName("mapdexPageFootnote")
+    reassurance.setWordWrap(True)
+    allow_narrow(reassurance)
+    layout.addWidget(reassurance)
+
+    actions = QHBoxLayout()
+    actions.setContentsMargins(0, 0, 0, 0)
+    actions.setSpacing(8)
+    billing_button = QPushButton("Open billing")
+    billing_button.setObjectName("mapdexPrimaryButton")
+    billing_button.setDefault(True)
+    close_button = QPushButton("Not now")
+    close_button.setObjectName("mapdexSecondaryButton")
+    actions.addStretch(1)
+    actions.addWidget(billing_button)
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+
+    billing_button.clicked.connect(dialog.accept)
+    close_button.clicked.connect(dialog.reject)
+
+    return dialog
+
+
+def build_layer_picker_dialog(entries, workflow_title="", parent=None):
+    """Tick the open layers to send. Explicit selection, never "the project".
+
+    docs/UX.md keeps desktop submission from expanding into an unexpected
+    export of arbitrary project layers, and this dialog is what makes several
+    layers expressible WITHOUT breaking that: nothing is ticked when it opens,
+    every row is named, and what leaves is exactly what was ticked. A control
+    that submitted the project would be the thing that rule forbids; a control
+    that lists the project and waits is the multi-file dialog again.
+
+    An incompatible layer is SHOWN and disabled with its reason, rather than
+    filtered out. Filtered, a user who cannot find the layer they are looking
+    at has no way to learn that the workflow is the reason - which is the same
+    argument DESIGN.md makes for disabled extraction targets.
+
+    `entries` are dicts: {id, name, kind ("raster"/"vector"/other), detail,
+    eligible (bool), reason (str)}. The caller decides eligibility, because
+    that needs the workflow and a QGIS layer and this file has neither.
+    """
+    dialog = QDialog(parent)
+    dialog.setObjectName("mapdexLayerPicker")
+    dialog.setWindowTitle("Add QGIS layers")
+    dialog.setMinimumWidth(440)
+    dialog.setMinimumHeight(340)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(9)
+
+    intro = QLabel(
+        "Choose the layers to send{}. Each ticked layer becomes its own sheet.".format(
+            " to {}".format(workflow_title) if workflow_title else ""
+        )
+    )
+    intro.setWordWrap(True)
+    layout.addWidget(intro)
+
+    listing = QListWidget()
+    listing.setObjectName("mapdexLayerPickerList")
+    layout.addWidget(listing, 1)
+
+    eligible_total = 0
+    for entry in entries:
+        item = QListWidgetItem(listing)
+        name = str(entry.get("name") or entry.get("id") or "")
+        detail = str(entry.get("detail") or "")
+        item.setText("{}  —  {}".format(name, detail) if detail else name)
+        item.setData(enum_member(Qt, "ItemDataRole", "UserRole"), str(entry.get("id") or ""))
+        checkable = enum_member(Qt, "ItemFlag", "ItemIsUserCheckable")
+        enabled = enum_member(Qt, "ItemFlag", "ItemIsEnabled")
+        if entry.get("eligible"):
+            eligible_total += 1
+            item.setFlags(item.flags() | checkable | enabled)
+            # Nothing starts ticked. A dialog that opens with everything
+            # selected is the implicit expansion this design exists to avoid,
+            # one OK press away.
+            item.setCheckState(enum_member(Qt, "CheckState", "Unchecked"))
+        else:
+            item.setFlags(item.flags() & ~enabled & ~checkable)
+            item.setCheckState(enum_member(Qt, "CheckState", "Unchecked"))
+            reason = str(entry.get("reason") or "")
+            if reason:
+                item.setText("{}  —  {}".format(item.text(), reason))
+
+    state_label = QLabel("")
+    state_label.setObjectName("mapdexLayerPickerState")
+    state_label.setWordWrap(True)
+    if not entries:
+        state_label.setText("This QGIS project has no layers to send.")
+    elif eligible_total == 0:
+        state_label.setText(
+            "None of the open layers suit this workflow. The reason is beside each one."
+        )
+    layout.addWidget(state_label)
+
+    actions = QHBoxLayout()
+    actions.setContentsMargins(0, 0, 0, 0)
+    actions.setSpacing(8)
+    select_all = QPushButton("Select all compatible")
+    select_all.setObjectName("mapdexSecondaryButton")
+    select_all.setEnabled(eligible_total > 0)
+    add_button = QPushButton("Add")
+    add_button.setObjectName("mapdexPrimaryButton")
+    add_button.setDefault(True)
+    add_button.setEnabled(False)
+    cancel_button = QPushButton("Cancel")
+    cancel_button.setObjectName("mapdexSecondaryButton")
+    actions.addWidget(select_all)
+    actions.addStretch(1)
+    actions.addWidget(add_button)
+    actions.addWidget(cancel_button)
+    layout.addLayout(actions)
+
+    checked = enum_member(Qt, "CheckState", "Checked")
+    role = enum_member(Qt, "ItemDataRole", "UserRole")
+
+    def selected_ids():
+        ids = []
+        for index in range(listing.count()):
+            item = listing.item(index)
+            if item.checkState() == checked:
+                ids.append(str(item.data(role) or ""))
+        return [value for value in ids if value]
+
+    def _sync(*_args):
+        count = len(selected_ids())
+        add_button.setEnabled(count > 0)
+        # The count is on the button, so what OK is about to do is legible
+        # without counting ticks in the list above it.
+        add_button.setText("Add {} layers".format(count) if count > 1 else "Add")
+
+    def _select_all():
+        for index in range(listing.count()):
+            item = listing.item(index)
+            if item.flags() & enum_member(Qt, "ItemFlag", "ItemIsUserCheckable"):
+                item.setCheckState(checked)
+        _sync()
+
+    listing.itemChanged.connect(_sync)
+    select_all.clicked.connect(_select_all)
+    add_button.clicked.connect(dialog.accept)
+    cancel_button.clicked.connect(dialog.reject)
+
+    return dialog, {
+        "listing": listing,
+        "state_label": state_label,
+        "add_button": add_button,
+        "cancel_button": cancel_button,
+        "select_all_button": select_all,
+        "selected_ids": selected_ids,
     }
 
 

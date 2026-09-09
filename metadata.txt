@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.1
+version=0.13.2
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,34 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.0
+changelog=0.13.2
+    - The Task page is one list of sheets rather than a picker that holds one
+      answer. Files you choose or drop and QGIS layers you tick in a picker go
+      into the same list, and more than one of them is a batch: nothing has to
+      be switched on. Every sheet is named and removable, and the count is on
+      the Start button.
+    - Sending several open layers at once is new. Nothing is sent that you did
+      not tick: the picker opens with nothing selected and no control submits
+      your project. A layer this workflow cannot read is shown with the reason
+      rather than hidden.
+    - Options that Mapdex has always accepted are now yours to set: one sheet
+      per PDF page, skip sheets already finished in this project, and how many
+      sheets run at once. Each is offered only where it can do something, so
+      "every PDF page" is unavailable, with the reason, over a list holding no
+      PDF.
+    - What a task will cost is stated before you start it, and the total is on
+      the Start button itself. The figure comes from Mapdex and is a ceiling: a
+      sheet is charged only when its result is produced, so a sheet that fails
+      or abstains costs nothing.
+    - A batch your balance cannot cover no longer starts and then stops halfway
+      through. Start is unavailable, the amount you are short is stated, and
+      there is a direct route to billing. Where a price or a balance cannot be
+      read, nothing is claimed and nothing is blocked.
+    0.13.1
+    - Nivo requires a Mapdex connection. Every runtime, including your own
+      provider key, is offered after connecting rather than before.
+    - The AI vectorizer and the assisted raster tracing tool were removed.
+    0.13.0
     - QGIS now connects through the browser-approved Mapdex connector flow and
       returns to the plugin without exposing or retyping credentials.
     - Device approval opens on app.mapdex.ai, keeps the linked code immutable,

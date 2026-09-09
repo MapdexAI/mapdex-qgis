@@ -150,6 +150,7 @@ from mapdex_qgis import nivo as nivo_module  # noqa: E402
 from mapdex_qgis import plugin as plugin_module  # noqa: E402
 from mapdex_qgis.api_client import MapdexAPIError  # noqa: E402
 from mapdex_qgis.generated_contracts import BatchKind  # noqa: E402
+from mapdex_qgis import task_price as task_price_module  # noqa: E402
 from mapdex_qgis.panel import build_companion_panel  # noqa: E402
 from mapdex_qgis.qgis_runtime import QGISRuntime, bound_capability_ids  # noqa: E402
 from mapdex_qgis.qt_compat import enum_member  # noqa: E402
@@ -838,9 +839,17 @@ if os.environ.get("MAPDEX_RENDER"):
     # opened a nine-field form, and the two cards it belongs to were pushed
     # below it. Rendered separately because the fields are hidden until asked
     # for, so the first-open shot cannot show where they land.
-    PLUGIN.choose_own_model()
-    for _width in (1540, 420):
-        render_panel("settings-open", _width)
+    # `choose_own_model` was withdrawn with the signed-out own-model route, and
+    # this line still calls it - so MAPDEX_RENDER died here before producing a
+    # single PNG. A render mode that cannot render one state should skip that
+    # state and say so, not take every other shot down with it.
+    try:
+        PLUGIN.choose_own_model()
+    except AttributeError as _gone:
+        print("skipped settings-open render:", _gone)
+    else:
+        for _width in (1540, 420):
+            render_panel("settings-open", _width)
     PLUGIN.switch_page(0)
     # The first screen after connecting is a separate visual state: normal
     # conversation chrome plus the local reading, but no user turns yet. It is
@@ -2327,6 +2336,780 @@ check("one running sheet gets no list", one_running_sheet_gets_no_list)
 check("one failed sheet does get a list", one_failed_sheet_does_get_a_list)
 check("a finished sheet offers exactly one action", a_finished_sheet_offers_exactly_one_action)
 check("opening the task needs a real batch", opening_the_task_needs_a_real_batch)
+
+
+# --------------------------------------------------------------------------
+# Part 5: the Task page - several sheets, from disk and from QGIS
+# --------------------------------------------------------------------------
+#
+# The headless suite proves the list model (`test_task_sources.py`) and cannot
+# prove that anything renders it: Qt is absent there, so a drop zone wired to
+# nothing, a card grid that never emits, and a Start control that stays
+# disabled all pass it. These press the real controls on a real dock.
+
+
+from qgis.PyQt.QtWidgets import QToolButton as _TaskButton  # noqa: E402
+
+
+def _task_page(plugin):
+    plugin.switch_page(1)
+    return plugin
+
+
+def _clear_sources(plugin):
+    plugin.selected_sources = []
+    plugin._render_sources()
+
+
+def _sheet(tmp_name, payload=b"II*\x00 raster bytes"):
+    """A real file on disk. The list measures bytes, so it needs some."""
+    path = os.path.join(SANDBOX, tmp_name)
+    with open(path, "wb") as handle:
+        handle.write(payload * 64)
+    return path
+
+
+SANDBOX = os.path.join(HERE, "task-page-sandbox")
+os.makedirs(SANDBOX, exist_ok=True)
+
+
+def the_four_workflows_are_cards():
+    plugin = _task_page(need_plugin())
+    chooser = plugin.workflow_box
+    cards = descendants(chooser, _TaskButton)
+    if len(cards) != 4:
+        raise AssertionError("expected 4 workflow cards, found {}".format(len(cards)))
+    checked = [card for card in cards if card.isChecked()]
+    if len(checked) != 1:
+        raise AssertionError(
+            "exactly one card must be chosen; {} are".format(len(checked))
+        )
+    kinds = [chooser.itemData(index) for index in range(chooser.count())]
+    return "{} cards: {}".format(len(cards), ", ".join(str(kind) for kind in kinds))
+
+
+check("the four workflows are cards, one chosen", the_four_workflows_are_cards)
+
+
+def pressing_a_card_changes_the_workflow():
+    plugin = _task_page(need_plugin())
+    chooser = plugin.workflow_box
+    cards = descendants(chooser, _TaskButton)
+    start = chooser.currentIndex()
+    target = 1 if start != 1 else 2
+    cards[target].click()
+    if chooser.currentIndex() != target:
+        raise AssertionError(
+            "pressing a card did not move the selection: still {}".format(
+                chooser.currentIndex())
+        )
+    moved = chooser.currentData()
+    cards[start].click()
+    return "pressed card {} -> {}, restored".format(target, moved)
+
+
+check("pressing a workflow card really changes the workflow",
+      pressing_a_card_changes_the_workflow)
+
+
+def files_become_rows_the_user_can_read():
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    plugin._add_file_paths([_sheet("north.tif"), _sheet("south.tif")])
+    named = [
+        label.text()
+        for label in descendants(plugin.source_list, QLabel)
+        if label.objectName() == "mapdexSourceName"
+    ]
+    if "north.tif" not in named or "south.tif" not in named:
+        raise AssertionError("the rows do not name the files: {}".format(named))
+    if not plugin.source_list.isVisibleTo(plugin.workspace):
+        raise AssertionError("the list was built but left hidden")
+    return "{} sheets, named: {}".format(len(plugin.selected_sources), ", ".join(named))
+
+
+check("chosen files become named rows, not a count",
+      files_become_rows_the_user_can_read)
+
+
+def two_sheets_say_batch_on_the_button():
+    plugin = _task_page(need_plugin())
+    # Left as the two files the previous check added.
+    if len(plugin.selected_sources) != 2:
+        raise AssertionError("expected 2 sheets, have {}".format(len(plugin.selected_sources)))
+    label = plugin.run_button.text()
+    if "2" not in label or "atch" not in label:
+        raise AssertionError("the Start control does not say it starts a batch: {!r}".format(label))
+    return label
+
+
+check("two sheets make Start say it starts a batch", two_sheets_say_batch_on_the_button)
+
+
+def the_same_file_twice_is_one_sheet():
+    plugin = _task_page(need_plugin())
+    before_count = len(plugin.selected_sources)
+    plugin._add_file_paths([_sheet("north.tif")])
+    if len(plugin.selected_sources) != before_count:
+        raise AssertionError("a repeat was added again")
+    said = plugin.status.text()
+    if "lready" not in said:
+        raise AssertionError("the repeat was swallowed silently: {!r}".format(said))
+    return said
+
+
+check("the same file twice is one sheet, and it is said",
+      the_same_file_twice_is_one_sheet)
+
+
+def removing_a_row_removes_the_sheet():
+    plugin = _task_page(need_plugin())
+    before_count = len(plugin.selected_sources)
+    removers = [
+        button
+        for button in descendants(plugin.source_list, _TaskButton)
+        if button.objectName() == "mapdexSourceRemove"
+    ]
+    if not removers:
+        raise AssertionError("no row carries a remove control")
+    removers[0].click()
+    if len(plugin.selected_sources) != before_count - 1:
+        raise AssertionError("pressing remove changed nothing")
+    return "{} -> {} sheets".format(before_count, len(plugin.selected_sources))
+
+
+check("pressing a row's remove really drops that sheet", removing_a_row_removes_the_sheet)
+
+
+def start_agrees_with_the_summary():
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.api.token = "verification-session"
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    # A vector file under a raster workflow: the summary refuses it, so the
+    # button must too.
+    vector = os.path.join(SANDBOX, "parcels.geojson")
+    with open(vector, "w", encoding="utf-8") as handle:
+        handle.write("{}")
+    plugin._add_file_paths([vector])
+    plugin._refresh_ui()
+    if plugin.run_button.isEnabled():
+        raise AssertionError(
+            "Start is offered over a source the summary refuses: {!r}".format(
+                plugin.source_summary.text())
+        )
+    refused = plugin.source_summary.text()
+    _clear_sources(plugin)
+    plugin._add_file_paths([_sheet("ok.tif")])
+    plugin._refresh_ui()
+    if not plugin.run_button.isEnabled():
+        raise AssertionError("Start stays refused over a compatible sheet")
+    return "refused: {} | then enabled".format(refused[:60])
+
+
+check("Start agrees with the sentence beside it", start_agrees_with_the_summary)
+
+
+def an_open_layer_can_be_added_as_a_sheet():
+    plugin = _task_page(need_plugin())
+    layer = LAYER
+    if not layer.isValid():
+        raise NotRun("the fixture layer did not load")
+    if True:
+        plugin.workflow_box.setCurrentIndex(
+            plugin.workflow_box.findData(BatchKind.VALIDATE_DELIVER))
+        _clear_sources(plugin)
+        entries = plugin._layer_picker_entries()
+        mine = [entry for entry in entries if entry["id"] == layer.id()]
+        if not mine:
+            raise AssertionError("the open layer is not offered at all")
+        if not mine[0]["eligible"]:
+            raise AssertionError(
+                "a vector layer is refused for validate_deliver: {}".format(mine[0]["reason"]))
+        source = plugin._layer_source(layer.id())
+        plugin._add_sources([source])
+        if len(plugin.selected_sources) != 1:
+            raise AssertionError("the layer did not reach the list")
+        held = plugin.selected_sources[0]
+        if held.kind != "layer" or held.key != layer.id():
+            raise AssertionError("the sheet is not the layer: {!r}".format(held))
+        return "{} added as a layer sheet ({})".format(held.label, held.detail)
+
+
+check("an open QGIS layer can be added as a sheet", an_open_layer_can_be_added_as_a_sheet)
+
+
+def an_incompatible_layer_is_shown_with_its_reason():
+    plugin = _task_page(need_plugin())
+    layer = LAYER
+    if not layer.isValid():
+        raise NotRun("the fixture layer did not load")
+    if True:
+        # A vector layer under a raster workflow: listed, not hidden, with the
+        # reason on the row.
+        plugin.workflow_box.setCurrentIndex(
+            plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+        entries = plugin._layer_picker_entries()
+        mine = [entry for entry in entries if entry["id"] == layer.id()]
+        if not mine:
+            raise AssertionError("an ineligible layer was filtered out of the picker")
+        entry = mine[0]
+        if entry["eligible"]:
+            raise AssertionError("a vector layer was offered to a raster workflow")
+        if not entry["reason"]:
+            raise AssertionError("it is refused and does not say why")
+        return "{}: {}".format(entry["name"], entry["reason"])
+
+
+check("an unsuitable layer is listed with its reason, not hidden",
+      an_incompatible_layer_is_shown_with_its_reason)
+
+
+def options_reach_the_request():
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    # A PDF, because "every PDF page" is offered only over a list that has one
+    # and this check is about the field reaching the wire, not about the gate.
+    plugin._add_file_paths([_sheet("pages.pdf", b"%PDF-1.4 ")])
+    plugin.expand_pages_check.setChecked(True)
+    plugin.skip_completed_check.setChecked(True)
+    try:
+        chip = plugin.options.chip.text()
+        if chip == "Default":
+            raise AssertionError("the chip still says Default after two options changed")
+        payload = plugin.task_options().payload()
+        if payload.get("expand_pdf_pages") is not True:
+            raise AssertionError("expand_pdf_pages does not reach the payload")
+        if payload.get("skip_completed") is not True:
+            raise AssertionError("skip_completed does not reach the payload")
+        return "{} -> {}".format(chip, payload)
+    finally:
+        plugin.expand_pages_check.setChecked(False)
+        plugin.skip_completed_check.setChecked(False)
+        _clear_sources(plugin)
+
+
+check("options reach the request and are named on the chip", options_reach_the_request)
+
+
+def a_dropped_file_becomes_a_sheet():
+    """The drop path, driven as a real Qt drop.
+
+    This is the one route into the page that no click can reach, so nothing
+    else here would notice a drop zone wired to a callback that was never
+    assigned - which is precisely the shape of defect this harness exists for.
+    """
+    from qgis.PyQt.QtCore import QMimeData, QPointF, QUrl
+    from qgis.PyQt.QtGui import QDropEvent
+
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    dropped = _sheet("dropped.tif")
+
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(dropped)])
+    zone = plugin.drop_zone
+    event = QDropEvent(
+        QPointF(zone.width() / 2.0, zone.height() / 2.0),
+        Qt.DropAction.CopyAction,
+        data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    zone.dropEvent(event)
+
+    labels = [source.label for source in plugin.selected_sources]
+    if "dropped.tif" not in labels:
+        raise AssertionError("the drop reached nothing: {}".format(labels))
+    return "dropped.tif -> {} sheet(s)".format(len(plugin.selected_sources))
+
+
+check("a file dropped on the zone becomes a sheet", a_dropped_file_becomes_a_sheet)
+
+
+def a_drop_that_carries_no_file_is_ignored():
+    """An in-app drag must not read as an upload.
+
+    A QGIS layer dragged across the panel carries a mime payload too, and
+    treating one as a file is the defect docs/UX.md names on the web side.
+    """
+    from qgis.PyQt.QtCore import QMimeData, QPointF
+    from qgis.PyQt.QtGui import QDropEvent
+
+    plugin = _task_page(need_plugin())
+    before_count = len(plugin.selected_sources)
+    data = QMimeData()
+    data.setText("application/x-vnd.qgis.qgis.layertreemodeldata")
+    event = QDropEvent(
+        QPointF(1.0, 1.0),
+        Qt.DropAction.CopyAction,
+        data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    plugin.drop_zone.dropEvent(event)
+    if len(plugin.selected_sources) != before_count:
+        raise AssertionError("a drag carrying no file was taken as an upload")
+    return "ignored, {} sheet(s) unchanged".format(before_count)
+
+
+check("a drag carrying no local file is ignored", a_drop_that_carries_no_file_is_ignored)
+
+
+def every_workflow_card_is_drawn_whole():
+    """Both rows of the 2x2 grid, not one and a half.
+
+    A card measured on its own is always the right height, so this is invisible
+    to any component test: the defect was that the chooser's Fixed vertical
+    policy handed the grid `sizeHint()`, a QToolButton hinted ~50 px for an icon
+    over a label, and the second row was clipped through its text while each
+    card still reported its 74 px minimum.
+    """
+    plugin = _task_page(need_plugin())
+    root = plugin._panel_root
+    plugin.dock.setFloating(True)
+    plugin.dock.resize(460, 1100)
+    root.resize(460, 1100)
+    for _pass in range(3):
+        for widget in [root] + root.findChildren(QWidget):
+            layout = widget.layout()
+            if layout is not None:
+                layout.activate()
+        QGS.processEvents()
+    chooser = plugin.workflow_box
+    cards = descendants(chooser, _TaskButton)
+    # The decisive one, and the reason the first version of this check passed
+    # over a visibly clipped render: card geometry can be entirely
+    # self-consistent - cards at 0 and 74, each 74 tall - inside a widget that
+    # was handed 141 px. Nothing about the cards is wrong there; the widget is
+    # shorter than the layout it contains, and only the painted pixels say so.
+    needed = chooser.minimumSizeHint().height()
+    if chooser.height() < needed:
+        raise AssertionError(
+            "the chooser is {} px for a layout needing {} px, so its last row "
+            "paints past its own bottom edge".format(chooser.height(), needed)
+        )
+    for card in cards:
+        bottom = card.y() + card.height()
+        if bottom > chooser.height():
+            raise AssertionError(
+                "card {!r} ends at {} px inside a {} px chooser, so it is clipped".format(
+                    card.text(), bottom, chooser.height())
+            )
+        if card.height() < card.CARD_HEIGHT:
+            raise AssertionError(
+                "card {!r} is {} px tall, under its own {} px minimum".format(
+                    card.text(), card.height(), card.CARD_HEIGHT)
+            )
+    rows = sorted({card.y() for card in cards})
+    if len(rows) != 2:
+        raise AssertionError("expected a 2x2 grid, found {} row(s)".format(len(rows)))
+    # And it must not paint into whatever comes next. A card whose bottom edge
+    # lands on the section label below it is 3 px of overlap that every geometry
+    # number agrees with, because the two widgets are siblings and neither
+    # knows about the other.
+    below = plugin.source_list.parentWidget()
+    for sibling in below.findChildren(QLabel):
+        if sibling.text() != "Source":
+            continue
+        gap = sibling.mapTo(below, sibling.rect().topLeft()).y() - (
+            chooser.mapTo(below, chooser.rect().bottomLeft()).y())
+        if gap < 0:
+            raise AssertionError(
+                "the workflow cards overlap the Source label by {} px".format(-gap)
+            )
+        break
+    return "{} cards over {} rows, chooser {} px tall".format(
+        len(cards), len(rows), chooser.height())
+
+
+check("every workflow card is drawn whole", every_workflow_card_is_drawn_whole)
+
+
+def the_drop_hint_gets_real_width_rather_than_one_pixel():
+    """The hint must not collapse to one word per line.
+
+    `allow_narrow` floors every wrapping label at one pixel so no label can pin
+    a minimum on the dock. A label with no stretch factor then RECEIVES one
+    pixel, which is what rendered "Add more to run them as one batch" as eight
+    stacked words. Measured on a laid-out dock, because the offscreen render
+    made it look like a font artefact and it was not.
+    """
+    plugin = _task_page(need_plugin())
+    root = plugin._panel_root
+    plugin.dock.setFloating(True)
+    plugin.dock.resize(460, 1100)
+    root.resize(460, 1100)
+    for _pass in range(3):
+        for widget in [root] + root.findChildren(QWidget):
+            layout = widget.layout()
+            if layout is not None:
+                layout.activate()
+        QGS.processEvents()
+    zone = plugin.drop_zone
+    hint = zone.hint
+    if hint.width() < zone.width() // 2:
+        raise AssertionError(
+            "the hint is {} px inside a {} px zone, so it wraps per word".format(
+                hint.width(), zone.width())
+        )
+    # And the box stays a box: a hint that grew taller than its own zone is the
+    # same defect measured from the other end.
+    if hint.height() > zone.height():
+        raise AssertionError("the hint is taller than the drop zone")
+    return "hint {} px wide, {} px tall inside a {} px zone".format(
+        hint.width(), hint.height(), zone.width())
+
+
+check("the drop hint gets real width rather than one pixel",
+      the_drop_hint_gets_real_width_rather_than_one_pixel)
+
+
+def the_options_panel_is_separated_from_its_header():
+    plugin = _task_page(need_plugin())
+    options = plugin.options
+    options.header.setChecked(True)
+    QGS.processEvents()
+    spacing = options.layout().spacing()
+    if spacing < 4:
+        raise AssertionError(
+            "the options body sits {} px under its header, which reads as one "
+            "clipped box".format(spacing)
+        )
+    margins = options.body.layout().contentsMargins()
+    if margins.top() < 8 or margins.left() < 8:
+        raise AssertionError("the options body has no internal padding")
+    options.header.setChecked(False)
+    return "header gap {} px, body padding {},{}".format(
+        spacing, margins.left(), margins.top())
+
+
+check("the options panel is separated from its header",
+      the_options_panel_is_separated_from_its_header)
+
+
+def the_estimate_states_what_the_batch_will_cost():
+    """The figure comes from the server's own per-item charge, multiplied.
+
+    Payload shape copied from a live GET /v1/plans on api.mapdex.ai, so this
+    fails if the plugin starts reading a field the server does not send.
+    """
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin._sheet_prices = task_price_module.read_sheet_prices({
+        "sheet_prices": {"placement_cents": 200, "trace_cents": 500,
+                         "trace_list_cents": 1800, "trace_beta": True},
+        "batch_kinds": [
+            {"kind": "georeference", "charge": {"placements": 1, "traces": 0}, "cents": 200},
+            {"kind": "digitize_parcels", "charge": {"placements": 0, "traces": 1}, "cents": 500},
+            {"kind": "validate_deliver", "charge": {"placements": 0, "traces": 0}, "cents": 0},
+        ],
+    })
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    plugin._add_file_paths([_sheet("p{}.tif".format(index)) for index in range(8)])
+    line = plugin.price_label.text()
+    # The rate is in the line, the TOTAL is on the control that spends it.
+    if "$2 per sheet" not in line:
+        raise AssertionError("the rate should be stated, got {!r}".format(line))
+    if not plugin.price_label.isVisibleTo(plugin.workspace):
+        raise AssertionError("the estimate was computed and left hidden")
+    label = plugin.run_button.text()
+    if "$16" not in label or "8 sheets" not in label:
+        raise AssertionError(
+            "Start should say what it starts and what it spends, got {!r}".format(label))
+
+    # A workflow that bills nothing says so, rather than showing $0 or nothing.
+    plugin.workflow_box.setCurrentIndex(
+        plugin.workflow_box.findData(BatchKind.VALIDATE_DELIVER))
+    free = plugin.price_label.text()
+    if "No charge" not in free:
+        raise AssertionError("a free workflow should say so, got {!r}".format(free))
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    return "{} | free: {}".format(line[:52], free)
+
+
+check("the estimate states what the batch will cost",
+      the_estimate_states_what_the_batch_will_cost)
+
+
+def an_unpriced_server_shows_no_figure_at_all():
+    """Silence, never $0.
+
+    The plugin ships independently of the server it talks to, so a build
+    against an older or newer /v1/plans must say nothing. Rendering an unknown
+    price as zero is the one failure here that costs a customer money while
+    looking entirely correct.
+    """
+    plugin = _task_page(need_plugin())
+    kept = plugin._sheet_prices
+    try:
+        plugin._sheet_prices = {}
+        plugin._render_price()
+        line = plugin.price_label.text()
+        if line:
+            raise AssertionError("a price was invented with no server figure: {!r}".format(line))
+        if plugin.price_label.isVisibleTo(plugin.workspace):
+            raise AssertionError("an empty estimate is still on screen")
+        # ...and the button says nothing about money either, rather than "· $0".
+        if "$" in plugin.run_button.text():
+            raise AssertionError(
+                "a price reached the button with none published: {!r}".format(
+                    plugin.run_button.text()))
+        return "no server price -> no line, no $0"
+    finally:
+        plugin._sheet_prices = kept
+        plugin._render_price()
+
+
+check("an unpriced server shows no figure at all",
+      an_unpriced_server_shows_no_figure_at_all)
+
+
+def an_option_that_cannot_act_is_not_offered():
+    """No PDF in the list, so no "every PDF page".
+
+    Reported from a real session: the list held eight TIFFs, the chip read
+    "Every PDF page", and the checkbox above it was ticked. Nothing failed -
+    the server ignores a field it can do nothing with - which is exactly why it
+    survived. Disabled and told why, rather than hidden, so somebody looking
+    for the option they used last time can see where it went.
+    """
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.expand_pages_check.setChecked(True)
+    plugin._add_file_paths([_sheet("only-a-raster.tif")])
+    if plugin.expand_pages_check.isEnabled():
+        raise AssertionError("the PDF option is offered over a list with no PDF")
+    if not plugin.expand_pages_check.toolTip():
+        raise AssertionError("the option is refused with no reason given")
+    if "PDF" in plugin.options.chip.text():
+        raise AssertionError(
+            "the chip names a file type nothing in the list has: {!r}".format(
+                plugin.options.chip.text()))
+    if plugin.task_options().payload().get("expand_pdf_pages"):
+        raise AssertionError("a field the server can do nothing with reached the payload")
+
+    # A PDF joins the list and the tick the user already made comes back.
+    pdf = os.path.join(SANDBOX, "atlas.pdf")
+    with open(pdf, "wb") as handle:
+        handle.write(b"%PDF-1.4 not really a pdf")
+    plugin._add_file_paths([pdf])
+    if not plugin.expand_pages_check.isEnabled():
+        raise AssertionError("the option stayed off with a PDF in the list")
+    if not plugin.task_options().payload().get("expand_pdf_pages"):
+        raise AssertionError("the stored tick did not come back")
+    if "Every PDF page" not in plugin.options.chip.text():
+        raise AssertionError("the chip does not name the option that is now on")
+    plugin.expand_pages_check.setChecked(False)
+    _clear_sources(plugin)
+    return "offered only with a PDF present; the tick survives in between"
+
+
+check("an option that cannot act is not offered",
+      an_option_that_cannot_act_is_not_offered)
+
+
+def a_balance_that_cannot_cover_the_batch_stops_it():
+    """Blocked before the upload, with the numbers and the route out.
+
+    Every sheet reserves its estimate as its own run starts, so a list the
+    balance cannot cover does not fail cleanly: it runs until it stops, halfway
+    through an archive the customer has already partly paid for. docs/UX.md 13
+    asks for the block AND the top-up path, and a Start control that silently
+    refuses to move is only the first half.
+    """
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.api.token = "verification"  # noqa: S105 - a connected panel, not a session
+    plugin._sheet_prices = task_price_module.read_sheet_prices({
+        "sheet_prices": {"placement_cents": 200, "trace_beta": True},
+        "batch_kinds": [
+            {"kind": "georeference", "charge": {"placements": 1, "traces": 0}, "cents": 200},
+        ],
+    })
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    plugin._balance = task_price_module.read_balance({
+        "credits_balance": 1000, "credits_reserved": 400,
+        "credits_available": 600, "credits_enforced": True,
+    })
+    plugin._add_file_paths([_sheet("b{}.tif".format(index)) for index in range(8)])
+
+    if plugin.run_button.isEnabled():
+        raise AssertionError("Start is live over a batch the balance cannot pay for")
+    notice = plugin.balance_notice.text()
+    for figure in ("$6", "$16", "$10"):
+        if figure not in notice:
+            raise AssertionError(
+                "the refusal does not state {}: {!r}".format(figure, notice))
+    if not plugin.balance_row.isVisibleTo(plugin.workspace):
+        raise AssertionError("the refusal was computed and left hidden")
+    if not plugin.top_up_button.isVisibleTo(plugin.workspace):
+        raise AssertionError("blocked with no route out")
+
+    # Enough balance and the same list runs: the gate is the money, not the list.
+    plugin._balance = task_price_module.read_balance({
+        "credits_available": 5000, "credits_enforced": True})
+    plugin._render_price()
+    plugin._refresh_ui()
+    if not plugin.run_button.isEnabled():
+        raise AssertionError("a covered batch is still blocked")
+    if plugin.balance_row.isVisibleTo(plugin.workspace):
+        raise AssertionError("the refusal survived the balance that cleared it")
+
+    # An unread balance blocks nothing. Refusing a customer who has the money
+    # is the worse of the two errors, and the server still refuses at
+    # reservation if we were wrong.
+    plugin._balance = None
+    plugin._render_price()
+    plugin._refresh_ui()
+    if not plugin.run_button.isEnabled():
+        raise AssertionError("an unread balance was treated as an empty one")
+    if plugin.balance_notice.text():
+        raise AssertionError("a shortfall was claimed with no balance read")
+
+    plugin.api.token = ""  # noqa: S105
+    _clear_sources(plugin)
+    plugin._refresh_ui()
+    return "blocked at $6 against $16, cleared at $50, silent when unread"
+
+
+check("a balance that cannot cover the batch stops it",
+      a_balance_that_cannot_cover_the_batch_stops_it)
+
+
+def a_batch_of_two_is_submitted_as_one_batch():
+    plugin = _task_page(need_plugin())
+    _clear_sources(plugin)
+    plugin.api.token = "verification-session"
+    plugin.workflow_box.setCurrentIndex(plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+    # One of the two is a PDF, so the page option is genuinely applicable and
+    # this stays a check about what reaches `start_batch` rather than a second
+    # check of the gate above it.
+    plugin._add_file_paths([_sheet("one.tif"), _sheet("two.pdf", b"%PDF-1.4 ")])
+    plugin.expand_pages_check.setChecked(True)
+
+    sent = {}
+    uploads = []
+
+    def upload_file(path, project_id):
+        uploads.append(path)
+        return {"id": "file_{}".format(len(uploads))}
+
+    def start_batch(project_id, file_ids, kind, options=None):
+        sent["file_ids"] = list(file_ids)
+        sent["kind"] = kind
+        sent["options"] = options.payload() if options is not None else {}
+        return {"id": "batch_verification", "status": "running",
+                "counts": {"total": len(file_ids)}}
+
+    plugin.api.upload_file = upload_file
+    plugin.api.start_batch = start_batch
+    plugin.project_box.clear()
+    plugin.project_box.addItem("Verification project", "proj_verification")
+    try:
+        plugin.run_input()
+    finally:
+        plugin.expand_pages_check.setChecked(False)
+
+    if len(uploads) != 2:
+        raise AssertionError("expected 2 uploads, got {}".format(len(uploads)))
+    if len(sent.get("file_ids") or []) != 2:
+        raise AssertionError(
+            "the batch did not carry both sheets: {!r}".format(sent.get("file_ids")))
+    if sent.get("options", {}).get("expand_pdf_pages") is not True:
+        raise AssertionError("the option did not reach start_batch: {!r}".format(sent.get("options")))
+    return "2 uploads -> 1 batch, kind={}, options={}".format(
+        sent.get("kind"), sent.get("options"))
+
+
+check("two sheets are submitted as ONE batch, options included",
+      a_batch_of_two_is_submitted_as_one_batch)
+
+
+if os.environ.get("MAPDEX_RENDER") and PLUGIN is not None and PLUGIN.dock is not None:
+    # The Task page, from the product's own dock, in the two states worth
+    # looking at: several files, and a mixed list of a file plus an open QGIS
+    # layer with the options panel open. Rendered AFTER the checks so the state
+    # is one the checks have already proven, rather than one staged beside them.
+    def _render_task_page():
+        plugin = PLUGIN
+        plugin.switch_page(1)
+        plugin.api.token = "render-session"
+        # The checks above left a submitted batch in flight, and Start is
+        # correctly disabled while one is. A shot of that state would show a
+        # dead button and read as the page being broken, so the session is put
+        # back to idle first - which is the state this render is about.
+        plugin.batch_id = ""
+        plugin._last_batch = None
+        plugin._busy = False
+        plugin.project_box.clear()
+        plugin.project_box.addItem("Default Project", "proj_render")
+
+        plugin.selected_sources = []
+        plugin._render_sources()
+        plugin.workflow_box.setCurrentIndex(
+            plugin.workflow_box.findData(BatchKind.GEOREFERENCE))
+        sheets = []
+        for name, size in (("cadastre_1943_sheet_04.tif", 900_000),
+                           ("plan_1889_north.tif", 420_000)):
+            path = os.path.join(SANDBOX, name)
+            with open(path, "wb") as handle:
+                handle.write(b"II*\x00" * (size // 4))
+            sheets.append(path)
+        plugin._add_file_paths(sheets)
+        # A published price, so the shot shows the figure on the control that
+        # spends it rather than a bare "Start batch".
+        plugin._sheet_prices = task_price_module.read_sheet_prices({
+            "sheet_prices": {"placement_cents": 200, "trace_beta": True},
+            "batch_kinds": [
+                {"kind": "georeference", "charge": {"placements": 1, "traces": 0},
+                 "cents": 200},
+            ],
+        })
+        plugin._balance = task_price_module.read_balance(
+            {"credits_available": 9000, "credits_enforced": True})
+        plugin._render_price()
+        plugin._refresh_ui()
+        render_panel("task-files", 460, 1180)
+        render_panel("task-files", 900, 1180)
+
+        # And the state this page can now refuse in: the balance will not cover
+        # the list, Start is dead, and the reason and the route out are beside
+        # it. Worth a render because a disabled control with nothing next to it
+        # is exactly the failure the row exists to prevent.
+        plugin._balance = task_price_module.read_balance(
+            {"credits_available": 100, "credits_enforced": True})
+        plugin._render_price()
+        plugin._refresh_ui()
+        render_panel("task-blocked", 460, 1180)
+        plugin._balance = None
+        plugin._render_price()
+
+        # The shape the old page could not express at all: a file and an open
+        # QGIS layer in one batch.
+        plugin.selected_sources = []
+        plugin._render_sources()
+        plugin.workflow_box.setCurrentIndex(
+            plugin.workflow_box.findData(BatchKind.VALIDATE_DELIVER))
+        vector = os.path.join(SANDBOX, "parcels_batch_02.gpkg")
+        with open(vector, "wb") as handle:
+            handle.write(b"SQLite format 3\x00" * 4000)
+        plugin._add_file_paths([vector])
+        if LAYER.isValid():
+            plugin._add_sources([plugin._layer_source(LAYER.id())])
+        # `skip_completed`, not the PDF option: this list holds no PDF, and a
+        # render staging an option the page correctly refuses to offer would be
+        # a picture of the defect rather than of the product.
+        plugin.skip_completed_check.setChecked(True)
+        plugin.options.header.setChecked(True)
+        plugin._refresh_ui()
+        render_panel("task-mixed", 460, 1180)
+    try:
+        _render_task_page()
+    except Exception as _error:  # noqa: BLE001
+        print("task page render failed:", type(_error).__name__, _error)
 
 
 print("=" * 96)

@@ -138,6 +138,8 @@ from .panel import (
     action_row,
     allow_narrow,
     build_companion_panel,
+    build_balance_dialog,
+    build_layer_picker_dialog,
     build_thread_history_dialog,
 )
 from . import branding
@@ -178,7 +180,10 @@ from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
 from .continuation import action_result, continuation_budget, should_continue
 from .plan_offer import offer_prompt, plan_offer, plan_run_report
 from .trace_view import budget_notice, step_rows
-from .source_info import inspect_paths
+from . import task_sources
+from . import task_price
+from .task_options import TaskOptions, normalise_concurrency
+from . import task_options as task_options_module
 from .workspace import review_workspace_path, task_workspace_path
 
 
@@ -249,7 +254,10 @@ PANEL_WIDGET_REFS = (
     "save_settings_button", "connect_button",
     "disconnect_button", "workspace",
     "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
-    "project_box", "workflow_box", "input_box", "source_summary", "run_button",
+    "project_box", "workflow_box", "source_summary", "run_button",
+    "drop_zone", "source_list", "options",
+    "expand_pages_check", "skip_completed_check", "concurrency_box",
+    "price_label", "balance_row", "balance_notice", "top_up_button",
     "cancel_button", "retry_button", "import_button", "review_button",
     "open_batch_button", "item_list",
     "open_project_button", "recent", "recent_box", "resume_button",
@@ -828,7 +836,20 @@ class MapdexPlugin:
         self.batch_id = ""
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
         self.imported_layer_ids = set()  # type: set[str]
-        self.selected_paths = []  # type: list[str]
+        # The sheets this task will run over. A LIST, because a batch is what
+        # more than one of them IS - the old single `selected_paths` could
+        # hold several files only because the file dialog happened to be
+        # multi-select, and could never hold a layer beside them at all.
+        self.selected_sources = []  # type: list[task_sources.Source]
+        # What the server says a sheet of each batch kind costs. Empty
+        # until `/v1/plans` answers, and empty means the panel says nothing
+        # about price rather than saying zero.
+        self._sheet_prices = {}  # type: dict
+        # What the workspace has left to spend, read from `/v1/credits`.
+        # None means UNREAD, which is not zero: a build that cannot read a
+        # balance blocks nothing and claims nothing, and the server's own
+        # refusal at reservation stays the authority.
+        self._balance = None  # type: Optional[dict]
         # The resolved assistant runtime, held so the Nivo header does not open
         # the encrypted authentication database on every layer click.
         self._assistant_runtime_cache = None
@@ -838,7 +859,6 @@ class MapdexPlugin:
         # person picked by name is one they cannot match to their own work.
         # Empty after a resume, which is honest: this session did not send it.
         self._batch_file_names: dict = {}
-        self._source_label = ""
         self._pending_is_batch = False
         self._busy = False
         self._connect_task = None
@@ -899,8 +919,17 @@ class MapdexPlugin:
         self._draw_action = None
         self._draw_tool = None
         self._previous_map_tool = None
-        self.input_box = None
         self.source_summary = None
+        self.drop_zone = None
+        self.source_list = None
+        self.options = None
+        self.expand_pages_check = None
+        self.skip_completed_check = None
+        self.concurrency_box = None
+        self.price_label = None
+        self.balance_row = None
+        self.balance_notice = None
+        self.top_up_button = None
         self.run_button = None
         self.cancel_button = None
         self.retry_button = None
@@ -1265,10 +1294,13 @@ class MapdexPlugin:
             index = self.workflow_box.findData(kind)
             if index >= 0:
                 self.workflow_box.setCurrentIndex(index)
-        if self.input_box is not None:
-            index = self.input_box.findData("active_layer")
-            if index >= 0:
-                self.input_box.setCurrentIndex(index)
+        # The clicked layer becomes a source rather than selecting a mode.
+        # Adding rather than replacing is deliberate: right-clicking a second
+        # sheet and choosing the same workflow now builds a batch, which is the
+        # thing this menu could not express before.
+        source = self._layer_source(layer.id()) if layer is not None else None
+        if source is not None:
+            self._add_sources([source])
         name = layer.name() if layer is not None else ""
         # Only start when the Start button itself would have been available.
         # That check already knows about the session, the busy flag and a run
@@ -1293,11 +1325,12 @@ class MapdexPlugin:
         Touching those widgets raises RuntimeError, which QGIS shows as a
         Python error on every layer click.
         """
-        if self.dock is None or self.input_box is None:
+        if self.dock is None:
             return
         try:
-            if self.input_box.currentData() == "active_layer":
-                self._summarize_active_layer()
+            # The source list no longer follows the active layer: a layer is
+            # added by name and stays until it is removed, so changing the
+            # selection in the Layers panel must not rewrite what is queued.
             # The reading describes the ACTIVE layer, so it is stale the moment
             # that changes. This is the signal that makes it feel like a
             # companion rather than a splash screen.
@@ -1466,7 +1499,16 @@ class MapdexPlugin:
         self.provider_box.currentIndexChanged.connect(self._assistant_provider_changed)
         self.clear_key_button.clicked.connect(self.clear_assistant_key)
         self.run_button.clicked.connect(self.run_input)
-        self.input_box.currentIndexChanged.connect(self._source_changed)
+        self.drop_zone.choose_button.clicked.connect(self.choose_files)
+        self.drop_zone.layers_button.clicked.connect(self.add_qgis_layers)
+        # A drop is the same action as the Choose button, so it lands in the
+        # same place rather than in a second code path that can drift.
+        self.drop_zone.on_files = self._add_file_paths
+        self.expand_pages_check.toggled.connect(self._options_changed)
+        self.skip_completed_check.toggled.connect(self._options_changed)
+        self.concurrency_box.currentIndexChanged.connect(self._options_changed)
+        if self.top_up_button is not None:
+            self.top_up_button.clicked.connect(self.open_billing)
         self.workflow_box.currentIndexChanged.connect(self._workflow_changed)
         self.cancel_button.clicked.connect(self.cancel_batch)
         self.retry_button.clicked.connect(self.retry_failed)
@@ -1484,6 +1526,7 @@ class MapdexPlugin:
         self.nivo_history_button.clicked.connect(self.open_nivo_history)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
+        self._load_sheet_prices()
         # A bound method, never a lambda: unload() has to be able to take this
         # connection back off the QGIS interface. A lambda cannot be
         # disconnected reliably, so every reload used to leave one more
@@ -1982,7 +2025,20 @@ class MapdexPlugin:
             self.workspace_locked.setVisible(not connected)
         if self.jobs_locked is not None:
             self.jobs_locked.setVisible(not connected)
-        self.run_button.setEnabled(connected and not self._busy and not active)
+        # The three have to agree: an enabled Start above a summary that
+        # states a refusal is the panel disagreeing with itself at the one
+        # moment it costs the user something.
+        sources_ready = bool(self.selected_sources) and task_sources.summary(
+            self.selected_sources,
+            str(self.workflow_box.currentData() or "") if self.workflow_box else "",
+        )["valid"]
+        # A refusal we can see before the press is a disabled control, not a
+        # dialog after it. docs/UX.md 13 asks for the block AND the route out;
+        # the block is here, the reason and the route are the balance row.
+        affordable = self.can_afford_batch()["enough"]
+        self.run_button.setEnabled(
+            connected and not self._busy and not active and sources_ready and affordable
+        )
 
         # History needs a session and a project to list anything; New chat is
         # local and stays available so a transcript can always be cleared.
@@ -2123,76 +2179,394 @@ class MapdexPlugin:
         data = self.project_box.currentData() if self.project_box is not None else None
         return str(data or self.project_id or "")
 
-    @guarded
-    def _source_changed(self, _index):
-        mode = self.input_box.currentData()
-        if mode != "file":
-            self.selected_paths = []
-            if mode == "active_layer":
-                self._summarize_active_layer()
-            elif self.source_summary is not None:
-                self.source_summary.setText("No source selected")
-            return
-        # Let the combo popup close before opening the native Windows dialog.
-        # Opening it synchronously from currentIndexChanged can leave it behind
-        # the QGIS window on some Qt5 builds.
-        QTimer.singleShot(0, lambda selected_mode=mode: self._choose_source(selected_mode))
+    # -- The source list ---------------------------------------------------
+    #
+    # Two ways in, one list. Both ADD rather than replace, which is the whole
+    # of what makes a batch expressible here: eight scans from disk plus the
+    # two already open in QGIS is one task with ten sheets, and the combo this
+    # replaces could hold exactly one answer.
 
-    def _choose_source(self, mode):
-        if self.input_box.currentData() != mode:
-            return
+    @guarded
+    def choose_files(self, *_args):
         file_filter = (
             "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;"
             "All files (*.*)"
         )
-        # A file input is the archive/batch entry point.  Keep the active-layer
-        # route deliberately single-source (exporting an arbitrary QGIS layer
-        # collection would make a surprising, potentially huge upload), but
-        # let a user select several compatible files here and create one real
-        # server-side Batch with per-item Run/retry/review state.
         paths, _ = QFileDialog.getOpenFileNames(
             self.iface.mainWindow(), "Choose spatial files", "", file_filter
         )
-        paths = [path for path in paths if path]
+        self._add_file_paths([path for path in paths if path])
+
+    @guarded
+    def _add_file_paths(self, paths):
+        """Add files chosen from the dialog, or dropped onto the zone.
+
+        One method for both, so a drop cannot drift into a second code path
+        with its own idea of what a valid source is.
+        """
         if not paths:
-            self.input_box.blockSignals(True)
-            self.input_box.setCurrentIndex(0)
-            self.input_box.blockSignals(False)
-            self.selected_paths = []
             return
-        self.selected_paths = list(paths)
-        label = (
-            os.path.basename(paths[0])
-            if len(paths) == 1
-            else "{} files selected".format(len(paths))
+        added, duplicates = self._add_sources(
+            [task_sources.file_source(path) for path in paths]
         )
-        self.input_box.setItemText(self.input_box.currentIndex(), label)
-        self._source_label = label
-        report = inspect_paths(self.selected_paths, str(self.workflow_box.currentData() or ""))
+        self._report_added(added, duplicates, "file")
+
+    @guarded
+    def add_qgis_layers(self, *_args):
+        """Tick the open layers to send.
+
+        Explicit selection, and that is the design rather than a nicety.
+        docs/UX.md keeps a desktop action from expanding into an unexpected
+        export of arbitrary project layers; what it forbids is IMPLICIT
+        expansion - a control that quietly covers work nobody chose. A dialog
+        that lists the project, opens with nothing ticked, and sends exactly
+        what was ticked is the multi-file picker again, which the same rule
+        already permits.
+        """
+        entries = self._layer_picker_entries()
+        if not entries:
+            self._set_status("This QGIS project has no layers to send.")
+            return
+        title = ""
+        if self.workflow_box is not None:
+            title = self.workflow_box.itemText(self.workflow_box.currentIndex())
+        dialog, refs = build_layer_picker_dialog(
+            entries, workflow_title=title, parent=self.iface.mainWindow()
+        )
+        if not dialog.exec():
+            return
+        added, duplicates = self._add_sources(
+            [self._layer_source(layer_id) for layer_id in refs["selected_ids"]()]
+        )
+        self._report_added(added, duplicates, "layer")
+
+    def _layer_picker_entries(self):
+        """Every layer in the project, with why an ineligible one cannot go.
+
+        Ineligible layers are LISTED and disabled, not filtered out. Filtered,
+        somebody looking straight at the layer they want has no way to learn
+        that the workflow is the reason it is absent - the same argument
+        DESIGN.md makes for showing a disabled extraction target.
+        """
+        wanted = task_sources.wanted_data_kind(str(self.workflow_box.currentData() or ""))
+        entries = []
+        for layer in QgsProject.instance().mapLayers().values():
+            kind = self._layer_data_kind(layer)
+            detail = ""
+            reason = ""
+            eligible = False
+            if not layer.isValid():
+                reason = "not loaded"
+            elif kind == task_sources.DATA_UNKNOWN:
+                reason = "unsupported layer type"
+            elif kind != wanted:
+                reason = "needs a {} source".format(
+                    "vector" if wanted == task_sources.DATA_VECTOR else "raster"
+                )
+            elif kind == task_sources.DATA_RASTER and not self._local_raster_path(layer):
+                # A remote raster has no bytes we may upload, and discovering
+                # that at submit time is a failure after the decision was made.
+                reason = "remote raster, save it locally first"
+            else:
+                eligible = True
+            if layer.isValid():
+                crs = layer.crs().authid() if layer.crs().isValid() else "No CRS"
+                detail = "{} - {}".format(kind.title(), crs)
+            entries.append({
+                "id": layer.id(),
+                "name": layer.name(),
+                "kind": kind,
+                "detail": detail,
+                "eligible": eligible,
+                "reason": reason,
+            })
+        entries.sort(key=lambda entry: (not entry["eligible"], entry["name"].lower()))
+        return entries
+
+    def _layer_data_kind(self, layer):
+        if isinstance(layer, QgsRasterLayer):
+            return task_sources.DATA_RASTER
+        if isinstance(layer, QgsVectorLayer):
+            return task_sources.DATA_VECTOR
+        return task_sources.DATA_UNKNOWN
+
+    def _local_raster_path(self, layer):
+        """The raster's own file on disk, or "" when it has none."""
+        source = str(layer.source() or "").split("|", 1)[0]
+        if source.startswith("file:"):
+            source = QUrl(source).toLocalFile()
+        if not source:
+            return ""
+        path = os.path.normpath(source)
+        return path if os.path.isfile(path) else ""
+
+    def _layer_source(self, layer_id):
+        layer = QgsProject.instance().mapLayer(layer_id)
+        if layer is None:
+            return None
+        kind = self._layer_data_kind(layer)
+        crs = layer.crs().authid() if layer.crs().isValid() else ""
+        path = self._local_raster_path(layer) if kind == task_sources.DATA_RASTER else ""
+        return task_sources.layer_source(layer.id(), layer.name(), kind, crs=crs, path=path)
+
+    def _add_sources(self, incoming):
+        sources, added, duplicates = task_sources.add_sources(
+            self.selected_sources, [source for source in incoming if source is not None]
+        )
+        self.selected_sources = sources
+        self._render_sources()
+        return added, duplicates
+
+    def _report_added(self, added, duplicates, noun):
+        """Say what happened, repeats included.
+
+        A count that does not move after a selection reads as the picker having
+        lost it, so a duplicate is reported rather than silently absorbed.
+        """
+        if not added and not duplicates:
+            return
+        if added and duplicates:
+            self._set_status(
+                "Added {} {}. {} were already in the list.".format(
+                    added, self._plural(noun, added), duplicates
+                )
+            )
+        elif duplicates:
+            self._set_status(
+                "Already in the list: {} {}.".format(
+                    duplicates, self._plural(noun, duplicates)
+                )
+            )
+        else:
+            self._set_status(
+                task_sources.ready_notice(self.selected_sources, self._workflow_title())
+            )
+
+    def _workflow_title(self):
+        if self.workflow_box is None:
+            return ""
+        return self.workflow_box.itemText(self.workflow_box.currentIndex())
+
+    @staticmethod
+    def _plural(noun, count):
+        return noun if count == 1 else noun + "s"
+
+    @guarded
+    def _remove_source(self, kind, key):
+        self.selected_sources = task_sources.remove_source(self.selected_sources, kind, key)
+        self._render_sources()
+
+    def _render_sources(self):
+        """Redraw the list, its summary line and the Start control together.
+
+        One method, because those three have to agree: a Start control that is
+        enabled while the summary beside it states a refusal is the pair
+        disagreeing in the one place it matters.
+        """
+        if self.source_list is None or self.source_summary is None:
+            return
+        self.source_list.set_sources(self.selected_sources, self._remove_source)
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        report = task_sources.summary(self.selected_sources, workflow)
         self.source_summary.setText(
-            report["summary"] if report["valid"] else "{} · {}".format(report["summary"], report["error"])
+            report["summary"] if report["valid"]
+            else "{} - {}".format(report["summary"], report["error"])
         )
-        self._set_status(
-            "Ready to start a task with {}.".format(label)
-            if len(paths) == 1
-            else "Ready to start a batch with {} files.".format(len(paths))
+        if self.drop_zone is not None:
+            self.drop_zone.set_hint(
+                "Add more to run them as one batch"
+                if self.selected_sources
+                else "TIFF, JPG, PNG, PDF - single or several"
+            )
+        self._render_pdf_option()
+        # The Start label carries the money, so it is written by the one method
+        # that knows the money. Setting it here as well was two writers of one
+        # string, which is how a button comes to state a total the line beside
+        # it has already stopped agreeing with.
+        self._render_price()
+        self._refresh_ui()
+
+    # -- What it costs -----------------------------------------------------
+
+    def _load_sheet_prices(self):
+        """Ask the server what a sheet of each batch kind costs.
+
+        `GET /v1/plans` is the public pricing ladder and needs no session, so
+        this runs at start-up rather than after connecting - the estimate is
+        useful while choosing a workflow, which happens before Start.
+
+        On the worker, because it is a network round trip and this is called
+        from `initGui`. A failure is silence: `_sheet_prices` stays empty, the
+        line stays hidden, and nothing invents a number.
+        """
+
+        def work():
+            return self.api.sheet_prices()
+
+        def done(exception, payload):
+            if exception is not None:
+                log_debug("Could not read sheet prices", exception)
+                return
+            self._sheet_prices = task_price.read_sheet_prices(payload)
+            self._render_price()
+
+        self._task("Read Mapdex pricing", work, done, busy=False)
+
+    def _batch_kind(self):
+        return str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+
+    def _batch_total_cents(self):
+        """What the whole list costs at the published rate, 0 when unpriced."""
+        return task_price.total_cents(
+            task_price.kinds_from(self._sheet_prices),
+            self._batch_kind(),
+            len(self.selected_sources),
         )
 
-    def _summarize_active_layer(self):
-        layer = self._active_qgis_layer()
-        if layer is None or not layer.isValid():
-            self.source_summary.setText("No valid active QGIS layer")
+    def can_afford_batch(self):
+        """Whether the balance covers this list. Named, because Start reads it.
+
+        {"known", "enough", "short_cents", "available_cents"}. `known` is False
+        when the balance was never read or the deployment does not enforce
+        credits, and in that case nothing is blocked - refusing a customer who
+        has the money is a worse failure than a batch the server stops.
+        """
+        return task_price.afford(self._balance, self._batch_total_cents())
+
+    def _render_price(self):
+        """State the estimate, put the total on Start, and say when it cannot run.
+
+        Three things that have to agree and are therefore written together: the
+        rate sentence, the figure on the control that spends it, and the
+        refusal when the balance will not cover it.
+
+        Nothing at all is a real outcome and is not a zero: a build talking to a
+        server that did not price this workflow must not print "$0", which is
+        the one wrong number that costs a customer money while looking correct.
+        The same rule governs the balance - unread is silence, never "empty".
+        """
+        if self.price_label is None:
             return
-        if isinstance(layer, QgsRasterLayer):
-            kind = "Raster"
-        elif isinstance(layer, QgsVectorLayer):
-            kind = "Vector"
-        else:
-            kind = "Unsupported"
-        crs = layer.crs().authid() if hasattr(layer, "crs") and layer.crs().isValid() else "No CRS"
-        self._source_label = layer.name()
-        self.source_summary.setText("{} · {} · {}".format(layer.name(), kind, crs))
-        self._refresh_nivo_context()
+        kind = self._batch_kind()
+        line = task_price.price_line(
+            task_price.kinds_from(self._sheet_prices),
+            kind,
+            len(self.selected_sources),
+            trace_beta=bool((self._sheet_prices or {}).get("trace_beta")),
+        )
+        self.price_label.setText(line)
+        self.price_label.setVisible(bool(line))
+
+        total = self._batch_total_cents()
+        if self.run_button is not None:
+            # The money goes on the control that spends it. Somebody who
+            # presses without reading the sentence above it has still been told.
+            self.run_button.setText(
+                task_sources.start_label(
+                    self.selected_sources,
+                    task_price.total_label(
+                        task_price.kinds_from(self._sheet_prices), kind,
+                        len(self.selected_sources),
+                    ),
+                )
+            )
+
+        notice = task_price.balance_refusal(
+            self._balance, total, len(self.selected_sources)
+        )
+        if self.balance_notice is not None:
+            self.balance_notice.setText(notice)
+        if self.balance_row is not None:
+            self.balance_row.setVisible(bool(notice))
+
+    def _load_balance(self):
+        """Ask what is left to spend, so a batch is refused before it uploads.
+
+        Authenticated, so it runs on connecting rather than at start-up like
+        the price ladder, and again after a task ends because that task has
+        just spent some of it. A failure leaves `_balance` as it was: replacing
+        a figure we had with None over one bad round trip would drop the gate
+        for the rest of the session.
+        """
+        if not self.api.token:
+            return
+
+        def work():
+            return self.api.credits()
+
+        def done(exception, payload):
+            if exception is not None:
+                log_debug("Could not read the workspace balance", exception)
+                return
+            balance = task_price.read_balance(payload)
+            if balance is None:
+                log_debug("The /v1/credits response was not one this build reads")
+                return
+            self._balance = balance
+            self._render_price()
+            self._refresh_ui()
+
+        self._task("Read Mapdex balance", work, done, busy=False)
+
+    @guarded
+    def open_billing(self, *args):
+        """The one route out of an empty balance.
+
+        The authenticated application has one URL tree, so no locale prefix -
+        `/tr/workspace/billing` is a stale route that 404s or bounces through
+        the public host.
+        """
+        QDesktopServices.openUrl(QUrl("{}/workspace/billing".format(self.web_base)))
+
+    def _show_balance_dialog(self, notice):
+        """Say it again where it cannot be missed, and offer the way out."""
+        dialog = build_balance_dialog(notice, self._workflow_title(), self.dock)
+        if dialog.exec():
+            self.open_billing()
+
+    # -- Batch options -----------------------------------------------------
+
+    def task_options(self):
+        """What the options row currently says, as the value the API sends.
+
+        Filtered through `applicable`, so an option that cannot act on THIS
+        list never reaches the wire. The user's tick is not erased - it is
+        stored in the checkbox and comes back the moment a PDF joins the list.
+        """
+        if self.expand_pages_check is None:
+            return TaskOptions()
+        return task_options_module.applicable(
+            TaskOptions(
+                expand_pdf_pages=self.expand_pages_check.isChecked(),
+                skip_completed=self.skip_completed_check.isChecked(),
+                max_concurrency=normalise_concurrency(self.concurrency_box.currentData()),
+            ),
+            task_sources.has_pdf(self.selected_sources),
+        )
+
+    def _render_pdf_option(self):
+        """Offer "every PDF page" only when a PDF is in the list.
+
+        A ticked checkbox naming a file type nothing in the list has is not
+        clutter, it is a promise about work that cannot happen - and it was
+        reported as exactly that. Disabled and told why, rather than hidden:
+        somebody looking for the option they used last time otherwise has no
+        way to learn where it went, which is the argument docs/UX.md already
+        makes for a disabled layer row over a filtered one.
+        """
+        if self.expand_pages_check is None:
+            return
+        has_pdf = task_sources.has_pdf(self.selected_sources)
+        self.expand_pages_check.setEnabled(has_pdf)
+        self.expand_pages_check.setToolTip(
+            "" if has_pdf else "No PDF in this list, so there are no pages to split."
+        )
+        self._options_changed()
+
+    @guarded
+    def _options_changed(self, *_args):
+        if self.options is not None:
+            self.options.set_summary(task_options_module.summary(self.task_options()))
 
     def _nivo_snapshot(self):
         """Return only measured QGIS metadata for the untrusted context envelope."""
@@ -2463,10 +2837,11 @@ class MapdexPlugin:
             if str(getattr(data, "value", data) or "") == workflow:
                 self.workflow_box.setCurrentIndex(index)
                 break
-        if self.input_box is not None:
-            target = self.input_box.findData("active_layer")
-            if target >= 0:
-                self.input_box.setCurrentIndex(target)
+        layer = self._active_qgis_layer()
+        if layer is not None and layer.isValid():
+            source = self._layer_source(layer.id())
+            if source is not None:
+                self._add_sources([source])
         # Through the panel's own switcher, never setCurrentIndex: the stack
         # index is one of three things a page change owns, and setting it alone
         # left the tab bar on one page and the content on another.
@@ -4552,27 +4927,26 @@ class MapdexPlugin:
 
     @guarded
     def _workflow_changed(self, _index):
+        """Keep the sheets and re-check them against the new workflow.
+
+        The combo this replaces cleared the selection on every change, which
+        was survivable when a selection was one file and is not when it is
+        twelve: someone comparing two workflows over the same archive would
+        lose the list for looking. `_render_sources` re-runs the compatibility
+        check, so a list that no longer suits says so and Start stays refused.
+        """
         kind = self.workflow_box.currentData()
-        current = self.input_box.currentData()
-        self.input_box.blockSignals(True)
-        self.input_box.clear()
-        self.input_box.addItem("Select source…", "")
-        self.input_box.addItem("Active QGIS layer", "active_layer")
-        # Plural, because the dialog behind it has always been multi-select and
-        # several files have always started a real server-side batch. Naming it
-        # in the singular is why nobody found that: a capability nothing on
-        # screen mentions is one that does not exist for the person using it.
-        self.input_box.addItem("Choose files…", "file")
-        target = self.input_box.findData(current)
-        self.input_box.setCurrentIndex(target if target >= 0 else 0)
-        self.input_box.blockSignals(False)
-        self.selected_paths = []
-        self._source_label = ""
-        self.source_summary.setText("No source selected")
+        self._render_sources()
         layer_kind = "vector" if kind == BatchKind.VALIDATE_DELIVER else "raster"
+        if self.selected_sources:
+            self._set_status(
+                task_sources.summary(self.selected_sources, str(kind or ""))["error"]
+                or task_sources.ready_notice(self.selected_sources, self._workflow_title())
+            )
+            return
         self._set_status(
-            "Use the active {} layer, or choose files — select several to run "
-            "them as one batch.".format(layer_kind)
+            "Drop {} files here, choose them, or add open QGIS layers - "
+            "several become one batch.".format(layer_kind)
         )
 
     @guarded
@@ -4651,13 +5025,8 @@ class MapdexPlugin:
         self.project_box.clear()
         # The Task page's own selections are session state too: a project's
         # file left selected there reads as ready to submit when it is not.
-        self.selected_paths = []
-        if self.input_box is not None:
-            self.input_box.blockSignals(True)
-            self.input_box.setCurrentIndex(0)
-            self.input_box.blockSignals(False)
-        if self.source_summary is not None:
-            self.source_summary.setText("No source selected")
+        self.selected_sources = []
+        self._render_sources()
         self._load_recent_tasks()
         # Reported before the refresh, so the panel and the sentence agree.
         # "Disconnected." full stop, above an assistant that keeps answering
@@ -4971,6 +5340,10 @@ class MapdexPlugin:
         self._load_projects()
 
     def _load_projects(self):
+        # The balance is read on the same hook as the projects, because both
+        # are "we are connected, load the workspace" and a third call site is
+        # how a new connection path comes to skip one of them.
+        self._load_balance()
         self._task("Load Mapdex projects", self.api.projects, self._projects_loaded)
 
     @guarded
@@ -5006,87 +5379,142 @@ class MapdexPlugin:
                 "Select a Mapdex project first.",
             )
             return
-        mode = self.input_box.currentData()
-        if not mode:
+        if not self.selected_sources:
             QMessageBox.information(
-                self.iface.mainWindow(), "Mapdex", "Choose a source file first."
+                self.iface.mainWindow(),
+                "Mapdex",
+                "Add at least one source: drop files here, choose them, or add "
+                "open QGIS layers.",
             )
-            return
-        temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
-        paths = []
-        try:
-            if mode == "file":
-                if not self.selected_paths:
-                    self._choose_source(mode)
-                if not self.selected_paths:
-                    return
-                paths = list(self.selected_paths)
-            else:
-                layer = self.iface.activeLayer()
-                if layer is None or not layer.isValid():
-                    QMessageBox.information(
-                        self.iface.mainWindow(),
-                        "Mapdex",
-                        "Select a valid layer in the QGIS Layers panel first.",
-                    )
-                    return
-                kind = self.workflow_box.currentData()
-                if isinstance(layer, QgsVectorLayer):
-                    if kind != BatchKind.VALIDATE_DELIVER:
-                        raise RuntimeError(
-                            "This workflow needs a raster image. Select an open raster layer "
-                            "or choose an image file."
-                        )
-                    path = os.path.join(temp_dir, "active-layer.gpkg")
-                    options = QgsVectorFileWriter.SaveVectorOptions()
-                    options.driverName = "GPKG"
-                    options.layerName = "active_layer"
-                    result = QgsVectorFileWriter.writeAsVectorFormatV3(
-                        layer, path, QgsProject.instance().transformContext(), options
-                    )
-                    if result[0] != enum_member(QgsVectorFileWriter, "WriterError", "NoError"):
-                        raise RuntimeError("Could not export the active layer to GeoPackage.")
-                elif isinstance(layer, QgsRasterLayer):
-                    if kind == BatchKind.VALIDATE_DELIVER:
-                        raise RuntimeError(
-                            "Validate & deliver needs a vector layer. Select an open vector layer."
-                        )
-                    source = str(layer.source() or "").split("|", 1)[0]
-                    if source.startswith("file:"):
-                        source = QUrl(source).toLocalFile()
-                    path = os.path.normpath(source)
-                    if not os.path.isfile(path):
-                        raise RuntimeError(
-                            "The active raster is remote or has no local source file. "
-                            "Save it locally first, then choose that file."
-                        )
-                else:
-                    raise RuntimeError("The active QGIS layer type is not supported.")
-                paths = [path]
-        except Exception as exc:  # noqa: BLE001
-            self._show_error("Could not prepare input", exc)
             return
 
         kind = self.workflow_box.currentData()
-        report = inspect_paths(paths, str(kind or ""))
+        # Checked before anything is exported or uploaded. The list already
+        # shows this verdict, but a stale panel and a submit are two different
+        # moments and only one of them spends the user's credits.
+        report = task_sources.summary(self.selected_sources, str(kind or ""))
         self.source_summary.setText(report["summary"])
         if not report["valid"]:
-            QMessageBox.warning(self.iface.mainWindow(), "Source is not compatible", report["error"])
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Source is not compatible", report["error"]
+            )
             return
+
+        # Money, before a single byte moves. Every sheet reserves its estimate
+        # as its own run starts, so a list the balance cannot cover does not
+        # fail cleanly - it runs until it stops, halfway through an archive the
+        # customer has already partly paid for. Blocking it here is the whole
+        # point; the modal is what makes the block actionable rather than a
+        # Start control that mysteriously refuses to move.
+        #
+        # Re-checked at submit even though the panel already shows it: a
+        # balance read three minutes ago and a press are two different moments,
+        # and another run in another window may have spent it in between.
+        notice = task_price.balance_refusal(
+            self._balance, self._batch_total_cents(), len(self.selected_sources)
+        )
+        if notice:
+            self._render_price()
+            self._set_status(notice)
+            self._show_balance_dialog(notice)
+            return
+
+        temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
+        try:
+            paths, names = self._materialise_sources(temp_dir)
+        except Exception as exc:  # noqa: BLE001
+            self._show_error("Could not prepare input", exc)
+            return
+        if not paths:
+            return
+
         self.imported_layer_ids.clear()
         self._announced_state = ""
         self._pending_is_batch = len(paths) > 1
         self._set_status("Uploading to Mapdex…")
         self.batch_id = "uploading"
-        self._last_batch = {"status": "created", "counts": {"total": 1}}
+        self._last_batch = {"status": "created", "counts": {"total": len(paths)}}
         self._refresh_ui()
+        options = self.task_options()
         self._task(
-            "Send layer to Mapdex",
-            lambda: self._upload_and_run(paths, project_id, kind),
+            "Send to Mapdex",
+            lambda: self._upload_and_run(
+                paths, project_id, kind, names=names, options=options
+            ),
             self._run_started,
         )
 
-    def _upload_and_run(self, paths, project_id, kind):
+    def _remembered_source_label(self):
+        """What to call this task in the Recent list.
+
+        One sheet is named; several are counted, because a batch listed under
+        the name of whichever file happened to be first is a batch nobody can
+        find again.
+        """
+        if not self.selected_sources:
+            return "QGIS source"
+        if len(self.selected_sources) == 1:
+            return self.selected_sources[0].label
+        return "{} sheets".format(len(self.selected_sources))
+
+    def _materialise_sources(self, temp_dir):
+        """Turn the chosen sheets into local files to upload, in list order.
+
+        A file is already one. A raster layer is the file it was loaded from -
+        never a re-render, which would upload a resampled copy of the sheet the
+        user is looking at. A vector layer has no single file we may upload, so
+        it is exported to GeoPackage here, one file each: the previous code
+        wrote every layer to `active-layer.gpkg`, which was correct while only
+        one layer could ever be sent and silently overwrites at two.
+
+        Returns (paths, names) paired by position. The name is the one the user
+        chose - a file's own basename or the layer's name in QGIS - because the
+        server answers with ids, and a batch item reading "Item 3" for a sheet
+        somebody picked by name is one they cannot match to their own work.
+        """
+        paths = []
+        names = []
+        for index, source in enumerate(self.selected_sources):
+            if source.kind == task_sources.KIND_FILE:
+                paths.append(source.path or source.key)
+                names.append(source.label)
+                continue
+            layer = QgsProject.instance().mapLayer(source.key)
+            if layer is None or not layer.isValid():
+                raise RuntimeError(
+                    "The layer '{}' is no longer open in QGIS. Remove it from "
+                    "the list or load it again.".format(source.label)
+                )
+            if isinstance(layer, QgsRasterLayer):
+                path = self._local_raster_path(layer)
+                if not path:
+                    raise RuntimeError(
+                        "'{}' is a remote raster with no local file. Save it "
+                        "locally first, then add that file.".format(source.label)
+                    )
+            elif isinstance(layer, QgsVectorLayer):
+                # One file per layer. The index keeps two layers with the same
+                # name from overwriting each other in the sandbox.
+                path = os.path.join(temp_dir, "layer-{}.gpkg".format(index))
+                options = QgsVectorFileWriter.SaveVectorOptions()
+                options.driverName = "GPKG"
+                options.layerName = "layer"
+                result = QgsVectorFileWriter.writeAsVectorFormatV3(
+                    layer, path, QgsProject.instance().transformContext(), options
+                )
+                if result[0] != enum_member(QgsVectorFileWriter, "WriterError", "NoError"):
+                    raise RuntimeError(
+                        "Could not export '{}' to GeoPackage.".format(source.label)
+                    )
+            else:
+                raise RuntimeError(
+                    "'{}' is a layer type Mapdex cannot send.".format(source.label)
+                )
+            paths.append(path)
+            names.append(source.label)
+        return paths, names
+
+    def _upload_and_run(self, paths, project_id, kind, names=None, options=None):
         file_ids = []
         for path in paths:
             uploaded = self.api.upload_file(path, project_id)
@@ -5095,11 +5523,12 @@ class MapdexPlugin:
                 raise RuntimeError("Upload succeeded but no file id was returned.")
             file_ids.append(file_id)
         return {
-            "batch": self.api.start_batch(project_id, file_ids, kind),
+            "batch": self.api.start_batch(project_id, file_ids, kind, options=options),
             "file_ids": file_ids,
             # Paired by position with file_ids, which is the only place the two
-            # are ever together: the server never learns the local path.
-            "file_names": [os.path.basename(path) for path in paths],
+            # are ever together: the server never learns the local path, and a
+            # layer never had one to learn.
+            "file_names": list(names) if names else [os.path.basename(path) for path in paths],
         }
 
     @guarded
@@ -5107,6 +5536,18 @@ class MapdexPlugin:
         if exception:
             self.batch_id = ""
             self._last_batch = None
+            # The server refusing for money is the one failure here with a
+            # route out, and it reaches this branch when our own check could
+            # not see it: an unread balance, a deployment we could not measure,
+            # or a run in another window that spent it since. Branching on the
+            # canonical code, never on the message - the message is human copy
+            # and matching it would be a keyword list in disguise.
+            if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                self._load_balance()
+                self._refresh_ui()
+                self._set_status(str(exception))
+                self._show_balance_dialog(str(exception))
+                return
             self._show_error("Send to Mapdex failed", exception)
             return
         payload = response or {}
@@ -5122,7 +5563,7 @@ class MapdexPlugin:
             self.batch_id,
             self.project_id,
             str(self.workflow_box.currentData() or ""),
-            self._source_label or "QGIS source",
+            self._remembered_source_label(),
             file_ids[0] if file_ids else "",
         )
         QSettings().setValue("mapdex/project_id", self.project_id)
@@ -5408,6 +5849,10 @@ class MapdexPlugin:
                 )
             else:
                 self.progress_timer.stop()
+                # This task has just spent some of the balance, so the next one
+                # is checked against what is actually left rather than against
+                # what was left before it ran.
+                self._load_balance()
 
     @guarded
     def import_results(self, *args):

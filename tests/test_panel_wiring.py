@@ -252,9 +252,24 @@ def test_the_choice_sits_above_the_reading():
     # Qt hands the widget its sizeHint instead of the available width, which
     # collapsed the reading column to ~320 px in a 1,430 px dock and clipped
     # every row mid-sentence.
-    assert "AlignHCenter" not in PANEL, (
-        "an alignment flag is centring a capped widget again, which starves it"
-    )
+    # The rule is about the CAPPED READING COLUMN, which is what a centring flag
+    # starves: given one, Qt hands it its sizeHint instead of the available
+    # width, and a 1,430 px dock rendered a 320 px column clipped mid-sentence.
+    #
+    # This was a blanket ban on the string anywhere in the file, and that is a
+    # proxy rather than the rule. It cost a real defect the other way: the drop
+    # zone centred its labels between two stretches to avoid the word, and since
+    # `allow_narrow` floors every wrapping label at one pixel, the hint rendered
+    # one word per line. A stretch centres a WIDGET in a row; a flag centres
+    # TEXT in a widget, and a label that owns its full width needs the flag.
+    for line in PANEL.splitlines():
+        if "AlignHCenter" not in line:
+            continue
+        assert "column" not in line, (
+            "an alignment flag is centring the capped reading column again, "
+            "which starves it: {}".format(line.strip())
+        )
+    assert "setMaximumWidth(READING_WIDTH)" in PANEL
     # ONE capped column owns the width. Capping each element separately gave
     # three different right edges - status in one place, transcript in another,
     # composer in a third - and a ragged edge is what reads as "not responsive".
@@ -447,7 +462,17 @@ def test_header_controls_use_direct_svg_icons_and_combos_keep_painted_arrow():
     assert "surface_asset_path(asset_name)" not in PANEL
     assert "class _ArrowComboBox(QComboBox):" in PANEL
     assert "painter.drawLine" in PANEL
-    assert PANEL.count("_elastic(_ArrowComboBox())") == 7
+    # The rule, rather than a count of the combos that happen to exist today.
+    # This was `== 7`, and it went red for a Task page that replaced two combos
+    # with workflow cards and a drop zone - a layout change the guard has no
+    # opinion about. What it is actually protecting is that no combo escapes
+    # the painted chevron: a bare QComboBox draws QGIS's own arrow, which on
+    # this always-dark surface is the missing-icon look the class exists to fix.
+    assert "_elastic(QComboBox())" not in PANEL
+    assert re.search(r"=\s*QComboBox\(\)", PANEL) is None, (
+        "a bare QComboBox is being constructed; use _elastic(_ArrowComboBox())"
+    )
+    assert PANEL.count("_elastic(_ArrowComboBox())") >= 1
     assert "QComboBox::down-arrow" not in PANEL
 
 

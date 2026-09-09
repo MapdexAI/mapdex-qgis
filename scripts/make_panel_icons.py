@@ -118,10 +118,41 @@ def history(d, p):
     d.line([(u(12.0), u(12.4)), (u(16.2), u(14.6))], fill=p["accent"], width=int(u(1.9)))
 
 
+def pipeline(d, p):
+    """Three stages, chained: the sheet goes through all of them.
+
+    Full pipeline is the only workflow that is not one operation, so the glyph
+    has to say "several, in order" rather than name any one of them - drawing
+    the georeference target again with something added would read as a variant
+    of georeferencing. Two nodes in ink, the last in accent because it is the
+    delivered end, and the connectors carry the direction.
+
+    It became a card on the Task page, where it sat beside three workflows that
+    had a glyph and one that did not; a single blank tile in a row of four
+    reads as an icon that failed to load rather than as a workflow with none.
+    """
+    y = 12.0
+    r = 2.9
+    for index, x in enumerate((5.0, 12.0, 19.0)):
+        colour = p["accent"] if index == 2 else p["ink"]
+        d.ellipse([u(x - r), u(y - r), u(x + r), u(y + r)],
+                  outline=colour, width=int(u(1.7)))
+    # Connectors, drawn between the rings rather than through them, so the
+    # nodes stay separate objects at 24 px instead of merging into a bar.
+    for start, end in ((7.9, 9.1), (14.9, 16.1)):
+        d.line([(u(start), u(y)), (u(end), u(y))], fill=p["scan"], width=int(u(1.5)))
+    # The direction. Without it three rings in a row is a decoration.
+    d.line([(u(8.2), u(y - 1.5)), (u(9.4), u(y)), (u(8.2), u(y + 1.5))],
+           fill=p["scan"], width=int(u(1.2)), joint="curve")
+    d.line([(u(15.2), u(y - 1.5)), (u(16.4), u(y)), (u(15.2), u(y + 1.5))],
+           fill=p["scan"], width=int(u(1.2)), joint="curve")
+
+
 GLYPHS = {
     "icon_georeference": georeference,
     "icon_digitize": digitize,
     "icon_validate": validate,
+    "icon_pipeline": pipeline,
     "icon_send": send,
     "icon_new_chat": new_chat,
     "icon_history": history,

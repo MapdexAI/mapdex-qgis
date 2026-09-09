@@ -10,6 +10,7 @@ These are source-level guards. They cannot prove the absence of a crash - only a
 run in real QGIS does that - but they do stop the construct that matches the
 documented hazard from being reintroduced.
 """
+import ast
 import pathlib
 import re
 
@@ -35,8 +36,27 @@ def test_responsive_pairs_are_only_added_as_top_level_layouts():
         )
 
 
+def _method_body(name):
+    """The source of one method, located structurally.
+
+    This was a slice between two textual sentinels - from "def register_pair"
+    to "def sizeHint" - and it broke the moment a `sizeHint` was added to a
+    class ABOVE `register_pair`: the slice inverted, came back empty, and the
+    assertion below then failed for a reason that has nothing to do with what
+    it guards. An empty body is refused explicitly here, because a guard that
+    silently measures nothing is the failure mode this whole file exists to
+    avoid.
+    """
+    for node in ast.walk(ast.parse(PANEL)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = ast.get_source_segment(PANEL, node) or ""
+            assert body, "found {} and could not read its source".format(name)
+            return body
+    raise AssertionError("panel.py has no method {!r}".format(name))
+
+
 def test_each_paired_widget_is_added_to_its_row_exactly_once():
-    body = PANEL[PANEL.index("def register_pair"):PANEL.index("def sizeHint")]
+    body = _method_body("register_pair")
     # Re-parenting widgets between cells at runtime is what deleted a QComboBox
     # under PyQt6; each widget must be added once and only once.
     assert body.count("row.addWidget(") == 2

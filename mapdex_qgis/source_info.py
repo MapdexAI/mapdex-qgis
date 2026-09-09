@@ -1,7 +1,16 @@
-"""Pure source inspection helpers for pre-upload QGIS feedback."""
-from __future__ import annotations
+"""Which extension is which kind, and how to say a byte count.
 
-import os
+The one owner of the format tables. `task_sources` reads them rather than
+restating them, so adding a supported extension is one edit.
+
+`inspect_paths` used to live here and answered {"valid", "summary",
+"error"} for a list of PATHS. It was superseded by `task_sources.summary`,
+which answers the same question for a list of SOURCES - the sheets a task
+runs over, which may be open QGIS layers as well as files on disk. Keeping
+a path-only version importable would let a caller reach for it and drop
+the layer half of a batch without anything failing.
+"""
+from __future__ import annotations
 
 
 RASTER_EXTENSIONS = {".tif", ".tiff", ".jpg", ".jpeg", ".png", ".pdf"}
@@ -15,27 +24,3 @@ def human_size(size: int) -> str:
             return "{:.0f} {}".format(value, unit) if unit == "B" else "{:.1f} {}".format(value, unit)
         value /= 1024
     return "0 B"
-
-
-def inspect_paths(paths: list[str], workflow: str) -> dict:
-    if not paths:
-        return {"valid": False, "summary": "No source selected", "error": "Choose a source first."}
-    missing = [path for path in paths if not os.path.isfile(path)]
-    if missing:
-        return {"valid": False, "summary": "Source file is unavailable", "error": "The selected file no longer exists."}
-    kinds = []
-    total = 0
-    for path in paths:
-        ext = os.path.splitext(path)[1].lower()
-        kinds.append("raster" if ext in RASTER_EXTENSIONS else "vector" if ext in VECTOR_EXTENSIONS else "unknown")
-        total += os.path.getsize(path)
-    wants_vector = workflow == "validate_deliver"
-    incompatible = any(kind != ("vector" if wants_vector else "raster") for kind in kinds)
-    if len(paths) == 1:
-        label = "{} · {}".format(kinds[0].title(), human_size(total))
-    else:
-        label = "{} files · {}".format(len(paths), human_size(total))
-    if incompatible:
-        expected = "vector" if wants_vector else "raster/PDF"
-        return {"valid": False, "summary": label, "error": "This workflow requires a {} source.".format(expected)}
-    return {"valid": True, "summary": label, "error": ""}

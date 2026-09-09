@@ -74,11 +74,17 @@ SEVERITY_ICONS = {
     "success": "mIconSuccess.svg",
 }
 
-# Four of ours, because QGIS has no equivalent that paints - measured, not
+# Five of ours, because QGIS has no equivalent that paints - measured, not
 # assumed: mIconGeoreferencer.svg resolves to an empty pixmap in QGIS 4.0.2.
-# Three name the only work that leaves this machine, so a person can tell
+# Four name the only work that leaves this machine, so a person can tell
 # before pressing that it is the paid half. Send is the one control in the
 # panel with no word on it.
+#
+# The four workflow keys are the `BatchKind` values verbatim, because the Task
+# page looks an icon up by the workflow's own id. That is also why
+# `full_pipeline` had to gain one: it became a card beside three that had a
+# glyph, and one blank tile in a row of four reads as an icon that failed to
+# load rather than as a workflow that has none.
 #
 # Named without the `_dark` half: the themed resolver adds it. Generated
 # by scripts/make_panel_icons.py on the same 24-unit grid, never hand-drawn binaries.
@@ -86,6 +92,7 @@ ACTION_ICONS = {
     "georeference": "icon_georeference.png",
     "digitize_parcels": "icon_digitize.png",
     "validate_deliver": "icon_validate.png",
+    "full_pipeline": "icon_pipeline.png",
     "send": "icon_send.png",
 }
 

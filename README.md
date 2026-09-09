@@ -140,9 +140,13 @@ Open the panel from *Web → Mapdex*, or the Mapdex toolbar button.
    approve. The access token is stored encrypted in the QGIS Authentication
    Manager — never in plain settings.
 2. **Pick a project** in your Mapdex workspace.
-3. **Pick a workflow** and a **source**: the active QGIS layer, or a file on
-   disk. A vector layer is exported to GeoPackage first; a raster is sent as
-   its own file.
+3. **Pick a workflow** from the four cards, then **add the sheets**: drop files
+   onto the panel, choose them from disk, or tick open QGIS layers — all three
+   add to the same list. **More than one sheet runs as one batch**, with its own
+   per-item progress, retry and review. A vector layer is exported to GeoPackage
+   first; a raster is sent as the file it was loaded from. *Options* holds the
+   three batch settings: a sheet per PDF page, skipping sheets this project has
+   already completed, and how many run at a time.
 4. **Ask Nivo** when you want to inspect the active layer, zoom, select, style,
    prepare a Processing action, or send a Mapdex workflow in natural language.
 5. **Start task.** Progress, the current phase, and the next action appear in

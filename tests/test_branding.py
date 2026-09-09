@@ -21,6 +21,7 @@ PACKAGE = ROOT / "mapdex_qgis"
 sys.path.insert(0, str(ROOT))
 
 from mapdex_qgis import branding  # noqa: E402
+from mapdex_qgis.generated_contracts import BatchKind  # noqa: E402
 
 PLUGIN = (PACKAGE / "plugin.py").read_text(encoding="utf-8")
 REPORT_ASSETS = ROOT.parents[1] / "services" / "mapdex-extension-host" / "src" / "report" / "assets"
@@ -221,7 +222,17 @@ def test_the_eight_are_eight():
     once already, from four to nine, and every addition was decoration on a
     word that was already clear."""
     assert len(branding.SEVERITY_ICONS) == 3, sorted(branding.SEVERITY_ICONS)
-    assert len(branding.ACTION_ICONS) == 4, sorted(branding.ACTION_ICONS)
+    # The rule rather than a count. The action set is exactly the four pieces
+    # of work that leave this machine, plus send - so it is derived from
+    # BatchKind, and a fifth workflow arrives with a glyph or fails here. The
+    # count was `== 4` and went red for `full_pipeline`, which is not the
+    # decoration this guard exists to stop: the Task page looks an icon up by
+    # the workflow's own id, so three of four workflows having one is the
+    # defect, not the fix.
+    workflow_keys = {
+        value for name, value in vars(BatchKind).items() if not name.startswith("_")
+    }
+    assert set(branding.ACTION_ICONS) == workflow_keys | {"send"}, sorted(branding.ACTION_ICONS)
     assert "info" not in branding.SEVERITY_ICONS, (
         "info is the absence of a problem; a glyph there adds nothing the "
         "sentence does not say, and QGIS draws it as a speech bubble beside a "
@@ -240,8 +251,16 @@ def test_the_drawn_glyphs_are_generated_rather_than_mystery_binaries():
     generator = ROOT / "scripts" / "make_panel_icons.py"
     assert generator.is_file()
     body = generator.read_text(encoding="utf-8")
-    for work in branding.ACTION_ICONS:
-        assert work in body or work.split("_")[0] in body, work
+    # Matched on the FILE this entry names, against the generator's own GLYPHS
+    # keys. The old check looked for the dictionary key as a substring, which
+    # passed for "digitize_parcels" on the strength of "digitize" appearing
+    # somewhere in the file - so a hand-dropped binary whose name shared a word
+    # with a real glyph would have satisfied it.
+    for work, filename in branding.ACTION_ICONS.items():
+        stem = filename.rsplit(".", 1)[0]
+        assert '"{}"'.format(stem) in body, (
+            "{} names {}, which the generator does not draw".format(work, filename)
+        )
 
 
 def test_the_assistant_avatar_is_left_alone():
