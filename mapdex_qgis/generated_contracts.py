@@ -320,6 +320,42 @@ ERROR_REGISTRY = [
         "template": "The workspace balance is not enough to dispatch this run."
     },
     {
+        "code": "SUBSCRIPTION_ALREADY_ACTIVE",
+        "type": "conflict",
+        "http": 409,
+        "template": "This workspace already has a subscription. Change its plan instead of starting a second one."
+    },
+    {
+        "code": "NO_SUBSCRIPTION_TO_CHANGE",
+        "type": "conflict",
+        "http": 409,
+        "template": "This workspace has no subscription to change. Choose a plan to subscribe."
+    },
+    {
+        "code": "ALREADY_ON_PLAN",
+        "type": "conflict",
+        "http": 409,
+        "template": "This workspace is already on that plan."
+    },
+    {
+        "code": "PLAN_CHANGE_BLOCKED",
+        "type": "conflict",
+        "http": 409,
+        "template": "This workspace holds more than the {tier} plan allows."
+    },
+    {
+        "code": "PLAN_CHANGE_FAILED",
+        "type": "system",
+        "http": 502,
+        "template": "Could not change the plan. Nothing has been charged and the current plan is unchanged."
+    },
+    {
+        "code": "BILLING_PORTAL_UNAVAILABLE",
+        "type": "system",
+        "http": 502,
+        "template": "Could not open the subscription management page."
+    },
+    {
         "code": "GUEST_LIMIT_REACHED",
         "type": "rate_limit",
         "http": 402,
