@@ -89,6 +89,16 @@ UNIT_SENSITIVE_TERRAIN = frozenset({"slope", "aspect", "hillshade"})
 
 TERRAIN_OPERATIONS = frozenset({"slope", "aspect", "hillshade", "ruggedness", "roughness"})
 
+# Operations whose input layer must be a raster, because they read elevations
+# out of a grid. Named rather than inferred, so the refusal happens in front of
+# the user's question instead of inside an algorithm: a parcel layer handed to
+# `terrain.slope@1` used to be accepted and started, and the failure surfaced
+# later, away from the request that caused it.
+RASTER_INPUT_OPERATIONS = frozenset({
+    "slope", "aspect", "hillshade", "ruggedness", "roughness",
+    "contours", "flow_accumulation", "watershed", "viewshed",
+})
+
 # The operations that have a capability of their own rather than being reached
 # through the generic bridge. Kept here, beside the catalog, so the handler
 # table and the capability declarations cannot name different sets: an id

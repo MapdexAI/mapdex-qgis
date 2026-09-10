@@ -35,8 +35,51 @@ def test_the_published_vincenty_pair():
     result = inverse(FLINDERS[0], FLINDERS[1], BUNINYONG[0], BUNINYONG[1])
     assert result["distance_m"] == pytest.approx(54972.271, abs=0.001)
     assert result["azimuth_deg"] == pytest.approx(dms(306, 52, 5.37), abs=0.00002)
-    assert result["final_azimuth_deg"] == pytest.approx(dms(127, 10, 25.07), abs=0.00002)
+    # Vincenty publishes 127 10 25.07 for this line and calls it alpha-2. By the
+    # geometry it is the SIGHT BACK: the line runs north-west, so the direction
+    # of travel where it arrives is near 307 and 127 is what an instrument at
+    # Buninyong would read looking back. This assertion used to name 127 as the
+    # final azimuth, which is how the two came to be reported the wrong way
+    # round to every user of `survey.inverse@1`.
+    assert result["back_azimuth_deg"] == pytest.approx(dms(127, 10, 25.07), abs=0.00002)
+    assert result["final_azimuth_deg"] == pytest.approx(
+        dms(127, 10, 25.07) + 180, abs=0.00002)
     assert result["ellipsoid"] == "WGS84"
+
+
+def test_a_meridian_settles_which_azimuth_is_which():
+    """The case that needs no convention, and the one the server pins too.
+
+    Due north up a meridian: the direction of travel where the line arrives is
+    still 0, and an instrument there sights back along 180. Anything that
+    returns 180 and 0 has swapped them, which is a 180-degree error in every
+    backsight taken from this answer. `packages/geodesy/azimuth_naming_test.go`
+    asserts the same pair on the same line.
+    """
+    north = inverse(41.0, 27.0, 42.0, 27.0)
+    assert north["azimuth_deg"] == pytest.approx(0.0, abs=1e-9)
+    assert north["final_azimuth_deg"] == pytest.approx(0.0, abs=1e-9)
+    assert north["back_azimuth_deg"] == pytest.approx(180.0, abs=1e-9)
+
+    # Due east along a parallel, where the geodesic curves: it arrives running
+    # slightly south of east, so the sight back is slightly north of west.
+    east = inverse(41.0, 27.0, 41.0, 28.0)
+    assert east["azimuth_deg"] < 90.0
+    assert east["final_azimuth_deg"] > 90.0
+    assert east["back_azimuth_deg"] == pytest.approx(
+        east["final_azimuth_deg"] + 180.0, abs=1e-9)
+
+
+def test_forward_names_the_direction_of_travel_and_the_sight_back_apart():
+    """`forward` used to report alpha-2 as `back_azimuth_deg` and nothing else.
+
+    Walking due north, the direction of travel at the destination is 0 and the
+    sight back is 180. One number cannot be both, and the name has to say which
+    one it is: `project_onto_line` reads this to recover the line's own bearing.
+    """
+    walked = forward(41.0, 27.0, 0.0, 1000.0)
+    assert walked["final_azimuth_deg"] == pytest.approx(0.0, abs=1e-9)
+    assert walked["back_azimuth_deg"] == pytest.approx(180.0, abs=1e-9)
 
 
 def test_forward_returns_to_where_inverse_started():

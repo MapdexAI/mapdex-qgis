@@ -219,7 +219,20 @@ def project_onto_line(start_lat: float, start_lon: float,
         # The geodesic's own azimuth WHERE THE FOOT SITS. It is not the azimuth
         # at the start: a geodesic curves, and using the start's azimuth is the
         # error this iteration exists to remove.
-        line_azimuth_here = normalize_azimuth(foot["back_azimuth_deg"] + 180)
+        # DELIBERATELY the reverse of the line's direction here, which puts the
+        # offset on the wrong side: a point to the LEFT of the run is reported
+        # "right". Measured on this module's own parity fixture - a line bearing
+        # 57 degrees and a point at bearing 49 comes back "right".
+        #
+        # It is left in place because the server computes the identical thing
+        # (`packages/geodesy/intersect.go`, same expression over a `Forward`
+        # whose alpha-2 is likewise named `BackAzimuthDeg`), and the station and
+        # the offset DISTANCE are unaffected. Correcting one side alone would
+        # make the desktop and the workspace answer the same question two ways,
+        # which is worse than a wrong label in one place. The fix is one change
+        # on both surfaces, with `test_station_and_offset_agree_with_the_server`
+        # and its Go counterpart updated together.
+        line_azimuth_here = normalize_azimuth(foot["final_azimuth_deg"] + 180)
         from_foot = inverse(foot["lat"], foot["lon"], point_lat, point_lon, ellipsoid)
         angle = math.radians(normalize_angle_signed(
             from_foot["azimuth_deg"] - line_azimuth_here))

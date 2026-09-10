@@ -163,8 +163,14 @@ def inverse(from_lat: float, from_lon: float, to_lat: float, to_lon: float,
         "distance_m": b * big_a * (sigma - delta_sigma),
         "azimuth_deg": normalize_azimuth(math.degrees(math.atan2(
             cos_u2 * sin_lambda, cos_u1 * sin_u2 - sin_u1 * cos_u2 * cos_lambda))),
-        "final_azimuth_deg": normalize_azimuth(reverse + 180),
-        "back_azimuth_deg": normalize_azimuth(reverse),
+        # `reverse` is Vincenty's alpha2: the direction the line is running
+        # WHERE IT ARRIVES. The sight back from there is that turned through
+        # 180. Reporting them the other way round is a 180-degree error in
+        # every backsight, and it is what this pair shipped until a meridian
+        # measured it: due north returned a final azimuth of 180 and a back
+        # azimuth of 0, which is each other's answer.
+        "final_azimuth_deg": normalize_azimuth(reverse),
+        "back_azimuth_deg": normalize_azimuth(reverse + 180),
         "ellipsoid": ellipsoid.name,
         "iterations": iterations,
     }
@@ -224,7 +230,13 @@ def forward(lat: float, lon: float, azimuth_deg: float, distance_m: float,
     return {
         "lat": math.degrees(lat2),
         "lon": normalize_longitude(lon + math.degrees(longitude_delta)),
-        "back_azimuth_deg": normalize_azimuth(math.degrees(math.atan2(sin_alpha, -tmp))),
+        # The direct solution's alpha2, under the name that says what it is:
+        # the direction of travel at the destination. It used to be returned as
+        # `back_azimuth_deg`, and `project_onto_line` then turned it through 180
+        # to recover the line's direction - which put the offset on the wrong
+        # side of the line. Both are returned now, each meaning what it says.
+        "final_azimuth_deg": normalize_azimuth(math.degrees(math.atan2(sin_alpha, -tmp))),
+        "back_azimuth_deg": normalize_azimuth(math.degrees(math.atan2(sin_alpha, -tmp)) + 180),
         "ellipsoid": ellipsoid.name,
     }
 

@@ -381,7 +381,11 @@ class WorkflowCard(QToolButton):
     def __init__(self, title, icon=None, parent=None):
         super().__init__(parent)
         self.setObjectName("mapdexWorkflowCard")
-        self.setText(title)
+        # A button's text is mnemonic markup: Qt reads "&" as "underline the next
+        # character", so "Validate & deliver" reached the card as "Validate
+        # _deliver" and one of the four workflows looked misspelled. Doubling it
+        # is how you say a literal ampersand.
+        self.setText(str(title).replace("&", "&&"))
         self.setCheckable(True)
         self.setAutoExclusive(True)
         self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))

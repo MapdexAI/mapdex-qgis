@@ -69,6 +69,48 @@ def _require(condition: Any, message: str) -> None:
         raise RuntimeUnavailable(message)
 
 
+def is_blank(value: Any) -> bool:
+    """True when a column simply has no value here.
+
+    A missing value and a string that is only whitespace are both "no value
+    here". A number that happens to be zero, and a word that is not a number,
+    are not - and taking the second for the first is how `field_profile` came to
+    report every text column as entirely empty.
+
+    It lives here rather than in `_vendor/nivo/analytics.py`, where its one
+    sibling rule sits inside `categorical_summary`, because that file is a
+    byte-identical copy of the nivo-gis package and `test_vendored_nivo.py`
+    fails on any local edit to it. The rule is stated twice, deliberately: a
+    vendored file that has quietly diverged is the worse of the two problems,
+    and this predicate is four lines that neither side is going to change.
+    """
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def is_vector_layer(layer: Any) -> bool:
+    """A vector layer, by the two things only a vector answers."""
+    return hasattr(layer, "fields") and hasattr(layer, "getFeatures")
+
+
+def is_raster_layer(layer: Any) -> bool:
+    """A raster layer, tested by the thing only a raster has: bands.
+
+    Module level, and not a method, because the plugin has to ask the same
+    question before it starts a terrain algorithm and it holds no runtime to ask
+    it of. Two copies of this test is how one of them ends up wrong.
+
+    A vector layer also answers `dataProvider()` and `renderer()`, which is why
+    the guard that asked for those admitted a parcel layer to the raster styler
+    and let it report success on data it had not touched.
+    """
+    if is_vector_layer(layer):
+        return False
+    provider = layer.dataProvider() if hasattr(layer, "dataProvider") else None
+    return provider is not None and hasattr(provider, "bandCount")
+
+
 class QGISRuntime:
     """Binds validated capability requests to QGIS objects.
 
@@ -93,11 +135,19 @@ class QGISRuntime:
         return found
 
     def _is_vector(self, layer: Any) -> bool:
-        return hasattr(layer, "fields") and hasattr(layer, "getFeatures")
+        return is_vector_layer(layer)
 
     def vector(self, layer_id: str) -> Any:
         layer = self.layer(layer_id)
         _require(self._is_vector(layer), "that operation needs a vector layer")
+        return layer
+
+    def _is_raster(self, layer: Any) -> bool:
+        return is_raster_layer(layer)
+
+    def raster(self, layer_id: str) -> Any:
+        layer = self.layer(layer_id)
+        _require(self._is_raster(layer), "that operation needs a raster layer")
         return layer
 
     def field_names(self, layer: Any) -> list[str]:
@@ -257,8 +307,14 @@ class QGISRuntime:
         columns = []
         for name in names:
             values = [row[name] for row in data["rows"]]
-            numbers, nulls = analytics.numeric_values(values)
-            distinct = len({str(value) for value in values if value is not None})
+            numbers, _unparsable = analytics.numeric_values(values)
+            # How many values are MISSING, which is not the same question as how
+            # many failed to parse as a number. Reporting the second under the
+            # first is what told every reader that each of their text columns was
+            # entirely empty: no name parses as a number, so `nulls` came back as
+            # the row count while `distinct` beside it counted the real values.
+            nulls = sum(1 for value in values if is_blank(value))
+            distinct = len({str(value) for value in values if not is_blank(value)})
             columns.append({
                 "name": name,
                 "nulls": nulls,
@@ -1378,9 +1434,7 @@ class QGISRuntime:
             QgsSingleBandPseudoColorRenderer,
         )
 
-        layer = self.layer(layer_id)
-        _require(hasattr(layer, "dataProvider") and hasattr(layer, "renderer"),
-                 "that layer is not a raster")
+        layer = self.raster(layer_id)
         provider = layer.dataProvider()
         count = provider.bandCount() if hasattr(provider, "bandCount") else 1
         selected = int(band or 1)
@@ -2405,6 +2459,25 @@ def _visualized_groups(runtime: QGISRuntime, analysis: Mapping[str, Any], layer_
     return {"analysis": analysis, "map": applied}
 
 
+# The capabilities whose answer is arithmetic over the request rather than a
+# reading of the project. They come back as a plain dict of numbers, so they
+# carry no `kind` of their own and the transcript had nothing to name them by.
+ARITHMETIC_RESULT_KINDS = {
+    "coordinate.read@1": "coordinate_read",
+    "coordinate.write@1": "coordinate_written",
+    "crs.geoid_height@1": "geoid_height",
+    "survey.closure@1": "survey_closure",
+    "survey.forward@1": "survey_forward",
+    "survey.intersect@1": "survey_intersect",
+    "survey.inverse@1": "survey_inverse",
+    "survey.resection@1": "survey_resection",
+    "survey.scale_factor@1": "survey_scale_factor",
+    "survey.station_offset@1": "survey_station_offset",
+    "survey.traverse@1": "survey_traverse",
+    "survey.trilaterate@1": "survey_trilaterate",
+}
+
+
 def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
     """Map validated capability requests onto runtime methods.
 
@@ -2644,7 +2717,17 @@ def build_executor(runtime: QGISRuntime) -> Callable[[Mapping[str, Any]], Any]:
             # Registered but not bound to a desktop implementation: an honest
             # gap, not a silent no-op that looks like success.
             raise CapabilityError("{} is not available in this QGIS build yet".format(capability))
-        return handler(dict(request.get("params") or {}))
+        result = handler(dict(request.get("params") or {}))
+        # Give the answer a name the transcript can read. The arithmetic
+        # capabilities return a plain dict of numbers and no `kind`, and the
+        # describer's last resort for a result it cannot name is the word
+        # "Done." - which is what a bearing, a misclosure and an MGRS reference
+        # all reached the user as. Stamped here, at the boundary that knows
+        # which capability ran, rather than inside the vendored survey package.
+        kind = ARITHMETIC_RESULT_KINDS.get(capability)
+        if kind and isinstance(result, dict) and not result.get("kind"):
+            result = dict(result, kind=kind)
+        return result
 
     # What this build can actually carry out. Advertising more than this is how
     # a user gets "Nivo prepared a QGIS action" and a canvas that never moves.

@@ -412,6 +412,51 @@ def test_field_profile_marks_numeric_columns_for_the_agent(runtime):
     assert numeric["landuse"] is False
 
 
+def test_field_profile_counts_empty_values_not_unparseable_ones(runtime):
+    """Every text column used to be reported as entirely empty.
+
+    The count came from `numeric_values`, whose second return is "values that
+    would not parse as a NUMBER" - so a column of names came back with nulls
+    equal to the row count while `distinct` beside it counted the real values,
+    and `analytics.categories@1` reported the same column correctly. A field
+    profile that says a customer's data is empty when it is full is a false
+    claim about their data, not a cosmetic slip.
+    """
+    engine, _layer, _canvas = runtime
+    profile = engine.field_profile("parcels_1")
+    nulls = {item["name"]: item["nulls"] for item in profile["fields"]}
+    distinct = {item["name"]: item["distinct"] for item in profile["fields"]}
+    assert nulls["landuse"] == 0, "every landuse value is present"
+    assert nulls["area"] == 0
+    assert distinct["landuse"] == 3
+
+
+def test_field_profile_still_counts_a_missing_value_as_missing(runtime):
+    """The other direction: a real gap has to keep showing up as one.
+
+    A blank string and a missing value are both "no value here" - the same rule
+    `analytics.categories@1` applies - so the two surfaces agree on the number.
+    """
+    engine, layer, _canvas = runtime
+    layer._rows[0]["landuse"] = None
+    layer._rows[1]["landuse"] = "   "
+    profile = engine.field_profile("parcels_1")
+    nulls = {item["name"]: item["nulls"] for item in profile["fields"]}
+    assert nulls["landuse"] == 2
+
+
+def test_a_raster_operation_refuses_a_vector_layer(runtime):
+    """`style.raster@1` used to accept a parcel layer and report success.
+
+    The guard asked whether the layer had a `dataProvider` and a `renderer`,
+    and a vector layer answers both. Bands are the thing only a raster has.
+    """
+    engine, _layer, _canvas = runtime
+    with pytest.raises(RuntimeUnavailable) as raised:
+        engine.raster("parcels_1")
+    assert "raster" in str(raised.value)
+
+
 def test_comparison_measures_a_selection_against_the_whole_layer(runtime):
     engine, layer, _canvas = runtime
     layer.selectByIds([1, 2, 3, 4, 5])

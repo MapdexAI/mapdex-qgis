@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.2
+version=0.13.3
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,29 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.2
+changelog=0.13.3
+    - Back azimuth and forward azimuth were reported the wrong way round.
+      Walking due north, Nivo called the direction of travel at the far end 180
+      and the sight back 0, which are each other's answer. A backsight set from
+      that figure was 180 degrees out. Both are now what their names say.
+    - The field profile said every text column was empty. A column of parcel
+      numbers came back as entirely blank while the same column counted
+      correctly elsewhere in the plugin, because the count was of values that
+      would not read as a NUMBER rather than of values that were missing.
+    - Answers that were computed and never shown now appear. Asked for a total
+      area Nivo measured it and printed "geometry measurement"; bearings,
+      traverses, misclosures, scale factors and MGRS references all printed
+      "Done." Thirteen capabilities state their result, with the frame it was
+      measured in where that decides the number.
+    - A vector layer is no longer accepted where a raster is needed. Applying a
+      raster style to a parcel layer reported success and changed nothing, and
+      a slope or contour on a vector layer started an algorithm that could only
+      fail later. Both refuse now and say which layer and why.
+    - Smaller things you see every time: the workflow card reads
+      "Validate & deliver" rather than "Validate _deliver", the Jobs list names
+      the workflow instead of printing its internal key, and a single-symbol
+      style no longer claims to have "None classes".
+    0.13.2
     - The Task page is one list of sheets rather than a picker that holds one
       answer. Files you choose or drop and QGIS layers you tick in a picker go
       into the same list, and more than one of them is a batch: nothing has to

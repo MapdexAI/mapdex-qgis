@@ -98,6 +98,7 @@ from .qgis_runtime import (
     QGISRuntime,
     RuntimeUnavailable,
     build_executor,
+    is_raster_layer,
     raster_is_georeferenced,
 )
 from ._vendor.nivo.features import (
@@ -149,6 +150,7 @@ from . import panel_state
 from ._vendor.nivo.processing import (
     PROCESSING_OPERATION_CATALOG,
     PROCESSING_OUTPUT_ORDER,
+    RASTER_INPUT_OPERATIONS,
     UNIT_SENSITIVE_TERRAIN,
     build_algorithm_parameters,
     describe_empty_input,
@@ -193,6 +195,23 @@ WORKFLOWS = (
     ("Validate & deliver", BatchKind.VALIDATE_DELIVER),
     ("Full pipeline", BatchKind.FULL_PIPELINE),
 )
+
+
+def workflow_title(key):
+    """The name this plugin shows for a workflow, from its stored key.
+
+    One table, because the Task page said "Validate & deliver" while the Jobs
+    page said `validate_deliver` to the same person about the same run - an
+    internal key with an underscore in it, on an end-user screen. A key with no
+    entry is cleaned rather than printed raw, so a workflow this build has not
+    heard of still reads as words.
+    """
+    wanted = str(key or "")
+    for title, kind in WORKFLOWS:
+        if str(kind) == wanted:
+            return title
+    return wanted.replace("_", " ").strip().capitalize() or "Task"
+
 
 # The legacy `qgis:*` vocabulary, translated to the capability each id has
 # always meant. There is one dispatch path: a canonical `domain.name@1` from the
@@ -649,6 +668,245 @@ def _describe_review_opened(result):
         result.get("run_id") or "that run", result.get("state") or "unknown")
 
 
+def _coord(value):
+    """A latitude or longitude at a precision a surveyor can use.
+
+    `_pretty_number` stops at four decimals, which on the ground is about
+    eleven metres - fine for an area, useless for a station.
+    """
+    try:
+        return "{:.6f}".format(float(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _describe_geometry_measurement(result):
+    """The measure, and the frame it was taken in.
+
+    The frame is not decoration. The same polygon has one area in the layer's
+    own projection and another on the ellipsoid, so a number handed over
+    without saying which was used cannot be checked against anything - and
+    this result already carries the sentence that says it.
+    """
+    statistic = str(result.get("statistic") or "sum")
+    value = result.get("value")
+    if value is None:
+        value = result.get(statistic)
+    parts = ["{} {} ({})".format(
+        _pretty_number(value), result.get("unit") or "", statistic).replace("  ", " ")]
+    measured, features = result.get("measured"), result.get("features")
+    if measured is not None and features is not None:
+        parts.append("{} of {} measured".format(_pretty_number(measured), _pretty_number(features)))
+    if result.get("skipped"):
+        parts.append("{} skipped: that geometry cannot carry the measure".format(
+            _pretty_number(result["skipped"])))
+    if result.get("frame"):
+        parts.append(str(result["frame"]))
+    if result.get("truncated"):
+        parts.append("the read stopped at the row limit, so this describes part of the layer")
+    return _joined(parts)
+
+
+def _describe_crs_diagnosis(result):
+    findings = result.get("findings") or []
+    parts = ["declares {}".format(result.get("declared_crs") or "no CRS")]
+    if result.get("crs_kind"):
+        parts.append(str(result["crs_kind"]))
+    verdict = str(result.get("verdict") or "")
+    if verdict:
+        parts.append(verdict.replace("_", " "))
+    parts.append("{} finding(s)".format(len(findings)) if findings else "nothing to flag")
+    return _joined(parts)
+
+
+def _describe_datum_transformations(result):
+    operations = result.get("operations") or []
+    would = result.get("would_use") if isinstance(result.get("would_use"), dict) else {}
+    parts = ["{} → {}".format(result.get("source_crs"), result.get("target_crs")),
+             "{} operation(s)".format(len(operations))]
+    if would.get("name"):
+        parts.append("would use {}".format(would["name"]))
+    missing = [op for op in operations if isinstance(op, dict) and op.get("missing_grids")]
+    if missing:
+        # Named, because a missing grid is the difference between a metre and a
+        # decimetre and the user can install it.
+        parts.append("{} need a grid that is not installed".format(len(missing)))
+    return _joined(parts)
+
+
+def _describe_nearest(result):
+    parts = ["{} of {} nearest to {}".format(
+        _pretty_number(result.get("returned")), _pretty_number(result.get("considered")),
+        result.get("reference") or "the reference")]
+    if result.get("nearest_distance") is not None:
+        parts.append("{} to {} {}".format(
+            _pretty_number(result.get("nearest_distance")),
+            _pretty_number(result.get("farthest_distance")),
+            result.get("measured_in") or ""))
+    if isinstance(result.get("selection"), dict):
+        parts.append("selected on the map")
+    return _joined(parts)
+
+
+def _describe_legend(result):
+    entries = result.get("entries") or []
+    labels = [str(e.get("label") or "").strip() for e in entries if isinstance(e, dict)]
+    labels = [label for label in labels if label]
+    parts = ["legend for {}".format(result.get("name") or "the layer"),
+             "{} entr{}".format(len(entries), "y" if len(entries) == 1 else "ies")]
+    if labels:
+        parts.append(", ".join(labels[:4]))
+    return _joined(parts)
+
+
+def _describe_survey_inverse(result):
+    return _joined([
+        "{} m".format(_pretty_number(result.get("distance_m"))),
+        "azimuth {}°".format(_pretty_number(result.get("azimuth_deg"))),
+        "back azimuth {}°".format(_pretty_number(result.get("back_azimuth_deg"))),
+    ])
+
+
+def _describe_survey_forward(result):
+    return "lands at {}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_survey_traverse(result):
+    stations = result.get("stations") or []
+    last = stations[-1] if stations else {}
+    parts = ["{} station(s)".format(len(stations))]
+    if isinstance(last, dict) and last.get("lat") is not None:
+        parts.append("ends at {}, {}".format(_coord(last.get("lat")), _coord(last.get("lon"))))
+    return _joined(parts)
+
+
+def _describe_survey_closure(result):
+    misclosure = result.get("misclosure") if isinstance(result.get("misclosure"), dict) else {}
+    parts = ["misclosure {} m".format(_pretty_number(misclosure.get("distance_m")))]
+    if misclosure.get("precision_ratio"):
+        # A precision ratio is read as an order of magnitude, so four decimal
+        # places on it are noise: "1:25,681,297,307.0713" says nothing the
+        # rounded figure does not.
+        try:
+            parts.append("1:{:,}".format(int(round(float(misclosure["precision_ratio"])))))
+        except (TypeError, ValueError, OverflowError):
+            parts.append("1:{}".format(_pretty_number(misclosure["precision_ratio"])))
+    if result.get("total_distance_m") is not None:
+        parts.append("perimeter {} m".format(_pretty_number(result["total_distance_m"])))
+    if result.get("area_m2") is not None:
+        parts.append("area {} m²".format(_pretty_number(result["area_m2"])))
+    if result.get("area_method"):
+        parts.append(str(result["area_method"]))
+    return _joined(parts)
+
+
+def _factor(value):
+    """A scale factor at the precision a scale factor is used at.
+
+    `_pretty_number` trims trailing zeros, which turns an elevation factor of
+    0.9999843 into "1" - a figure whose whole job is the digits after the
+    fourth.
+    """
+    try:
+        return "{:.7f}".format(float(value))
+    except (TypeError, ValueError):
+        return _pretty_number(value)
+
+
+def _describe_survey_scale_factor(result):
+    parts = ["combined {}".format(_factor(result.get("combined_factor")))]
+    if result.get("parts_per_million") is not None:
+        parts.append("{} ppm".format(_pretty_number(result["parts_per_million"])))
+    parts.append("point {}".format(_factor(result.get("point_scale"))))
+    parts.append("elevation {}".format(_factor(result.get("elevation_factor"))))
+    if result.get("height_reference"):
+        parts.append("height taken as {}".format(result["height_reference"]))
+    return _joined(parts)
+
+
+def _describe_survey_intersect(result):
+    parts = ["{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))]
+    if result.get("convergence_angle_deg") is not None:
+        # A shallow intersection is a weak fix, and the angle is how a surveyor
+        # judges that, so it travels with the position rather than behind it.
+        parts.append("sights meet at {}°".format(_pretty_number(result["convergence_angle_deg"])))
+    if result.get("distance_from_first_m") is not None:
+        parts.append("{} m and {} m from the stations".format(
+            _pretty_number(result["distance_from_first_m"]),
+            _pretty_number(result.get("distance_from_second_m"))))
+    return _joined(parts)
+
+
+def _describe_survey_trilaterate(result):
+    solutions = result.get("solutions") or []
+    if not solutions:
+        return "the circles do not meet"
+    # Both, always: two circles meet twice and choosing one for the user is
+    # choosing which side of the baseline their point is on.
+    return _joined(["{} solution(s)".format(len(solutions))] + [
+        "{} {}, {}".format(s.get("side") or "", _coord(s.get("lat")), _coord(s.get("lon"))).strip()
+        for s in solutions if isinstance(s, dict)])
+
+
+def _describe_survey_resection(result):
+    return "{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_survey_station_offset(result):
+    parts = ["station {} m".format(_pretty_number(result.get("station_m"))),
+             "offset {} m {}".format(_pretty_number(result.get("offset_m")),
+                                     result.get("side") or "").strip()]
+    if result.get("beyond_start") or result.get("beyond_end"):
+        parts.append("past the {} of the line".format("start" if result.get("beyond_start") else "end"))
+    if result.get("residual_m") is not None:
+        parts.append("residual {} m".format(_pretty_number(result["residual_m"])))
+    return _joined(parts)
+
+
+def _describe_coordinate_written(result):
+    dms = result.get("dms") if isinstance(result.get("dms"), dict) else {}
+    utm = result.get("utm") if isinstance(result.get("utm"), dict) else {}
+    parts = []
+    if dms.get("latitude"):
+        parts.append("{} {}".format(dms.get("latitude"), dms.get("longitude")))
+    if utm.get("zone"):
+        parts.append("UTM {}{} {} E {} N".format(
+            utm.get("zone"), utm.get("band") or "",
+            _pretty_number(utm.get("easting_m")), _pretty_number(utm.get("northing_m"))))
+    if result.get("mgrs"):
+        parts.append("MGRS {}".format(result["mgrs"]))
+    return _joined(parts)
+
+
+def _describe_coordinate_read(result):
+    return "{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_geoid_height(result):
+    parts = []
+    for key, label in (("geoid_separation_m", "geoid separation"),
+                       ("orthometric_height_m", "orthometric height"),
+                       ("ellipsoidal_height_m", "ellipsoidal height")):
+        if result.get(key) is not None:
+            parts.append("{} {} m".format(label, _pretty_number(result[key])))
+    return _joined(parts) or "geoid height"
+
+
+def _describe_processing_started(result):
+    # Started, not finished, and it says so: the algorithm runs on QGIS's task
+    # queue and the layer appears when it lands.
+    return "started the {} in QGIS; the result appears as a new layer when it finishes".format(
+        str(result.get("operation") or "operation").replace("_", " "))
+
+
+def _describe_processing_catalog(result):
+    available = result.get("available") or []
+    labels = [str(op.get("label") or op.get("operation") or "") for op in available if isinstance(op, dict)]
+    labels = [label for label in labels if label]
+    return _joined(["{} operation(s) available here".format(len(available)),
+                    ", ".join(labels[:6])])
+
+
 RESULT_DESCRIBERS = {
     "numeric": _describe_numeric,
     "categorical": _describe_categorical,
@@ -661,12 +919,42 @@ RESULT_DESCRIBERS = {
     "layer_profile": _describe_layer_profile,
     "field_profile": _describe_field_profile,
     "project_profile": lambda result: "{} layers in the project".format(len(result.get("layers") or [])),
+    # Measurements and computations that used to reach the transcript as their
+    # own key - "geometry measurement" - or, with no key at all, as "Done."
+    "geometry_measurement": _describe_geometry_measurement,
+    "crs_diagnosis": _describe_crs_diagnosis,
+    "datum_transformations": _describe_datum_transformations,
+    "nearest": _describe_nearest,
+    "legend": _describe_legend,
+    "scale_range_applied": lambda result: str(
+        result.get("description")
+        or "drawn between 1:{} and 1:{}".format(
+            _pretty_number(result.get("minimum_scale")), _pretty_number(result.get("maximum_scale")))),
+    "processing_started": _describe_processing_started,
+    "processing_catalog": _describe_processing_catalog,
+    "survey_inverse": _describe_survey_inverse,
+    "survey_forward": _describe_survey_forward,
+    "survey_traverse": _describe_survey_traverse,
+    "survey_closure": _describe_survey_closure,
+    "survey_scale_factor": _describe_survey_scale_factor,
+    "survey_intersect": _describe_survey_intersect,
+    "survey_trilaterate": _describe_survey_trilaterate,
+    "survey_resection": _describe_survey_resection,
+    "survey_station_offset": _describe_survey_station_offset,
+    "coordinate_written": _describe_coordinate_written,
+    "coordinate_read": _describe_coordinate_read,
+    "geoid_height": _describe_geoid_height,
     "selection_applied": lambda result: "selected {} of {} features".format(
         _pretty_number(result.get("selected")), _pretty_number(result.get("requested"))),
     "visibility_applied": lambda result: "layer {}".format("shown" if result.get("visible") else "hidden"),
     "opacity_applied": lambda result: "opacity {}%".format(_pretty_number(result.get("opacity"))),
-    "style_applied": lambda result: "{} style with {} classes".format(
-        result.get("style"), _pretty_number(result.get("classes"))),
+    # A single symbol has no classes to count, and saying "with None classes"
+    # put a Python value in front of the user.
+    "style_applied": lambda result: _joined([
+        "{} style".format(result.get("style")),
+        ("{} classes".format(_pretty_number(result["classes"]))
+         if result.get("classes") else ""),
+    ]),
     "labels_applied": lambda result: "labelled by {}".format(result.get("field")),
     "filter_applied": lambda result: "{} matched {} features".format(
         result.get("expression"), _pretty_number(result.get("matched"))),
@@ -4278,6 +4566,15 @@ class MapdexPlugin:
         # and says nothing: a 10% grade reads as 89.99 degrees, measured in the
         # Workspace's own terrain tests. Refused here, before the algorithm, and
         # the refusal names the reprojection this same assistant can perform.
+        # A DEM operation on a vector layer is not a hard question, and it used
+        # to be accepted: `terrain.slope@1` on a parcel layer answered "started"
+        # and failed later, somewhere the user was no longer looking.
+        if operation in RASTER_INPUT_OPERATIONS:
+            layer = self._nivo_layer_for_action(params.get("layer_id") or "")
+            if layer is not None and not is_raster_layer(layer):
+                raise CapabilityError(
+                    "the {} needs an elevation raster; '{}' is a vector layer".format(
+                        operation_label(operation), layer.name()))
         if operation in UNIT_SENSITIVE_TERRAIN:
             layer = self._nivo_layer_for_action(params.get("layer_id") or "")
             crs = layer.crs() if layer is not None else None
@@ -6285,7 +6582,8 @@ class MapdexPlugin:
             return
         self.recent_box.clear()
         for item in self._recent_tasks():
-            label = "{} · {}".format(item.get("workflow") or "Task", item.get("source") or "Source")
+            label = "{} · {}".format(
+                workflow_title(item.get("workflow")), item.get("source") or "Source")
             self.recent_box.addItem(label, item)
         # A Resume needs a session: without one it submits a batch id the API
         # answers with a tenant-safe NOT_FOUND, which reads as a lost task.
