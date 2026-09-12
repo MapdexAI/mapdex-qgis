@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.3
+version=0.13.4
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,17 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.3
+changelog=0.13.4
+    - A released build never connects to a server on your own computer. An
+      address such as 127.0.0.1 or localhost left in your QGIS profile by an
+      earlier local setup used to be followed, so a production install could
+      send its requests there while calling itself production. Such an address
+      is now ignored, the session that came with it is dropped, and you are
+      asked to connect to Mapdex again.
+    - Settings no longer offers a local development address in a released
+      build, and typing one in is refused with the reason. Pointing a released
+      build at your own Mapdex server still works as before.
+    0.13.3
     - Back azimuth and forward azimuth were reported the wrong way round.
       Walking due north, Nivo called the direction of travel at the far end 180
       and the sight back 0, which are each other's answer. A backsight set from

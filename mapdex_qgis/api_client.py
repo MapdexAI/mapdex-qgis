@@ -7,11 +7,13 @@ import re
 from typing import Any, Callable, Optional
 from urllib import error, parse, request
 
-from .build_profile import is_production
+from .build_profile import LOOPBACK_HOSTS, is_production
 from .build_version import PLUGIN_VERSION
 
 
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+# One set, owned by build_profile, so the transport check and the build
+# profile cannot disagree about what "this computer" means.
+LOCAL_HOSTS = LOOPBACK_HOSTS
 
 # Server-supplied ids end up in temp file names; keep them to an id alphabet so
 # a hostile or buggy response cannot walk out of the download directory.

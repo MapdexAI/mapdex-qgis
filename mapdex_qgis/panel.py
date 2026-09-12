@@ -30,6 +30,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from .branding import ACTION_ICONS, surface_asset_path
+from .build_profile import endpoint_choices
 from .job_items import item_action, item_status, item_title, items_summary, order_items
 from .qt_compat import enum_member
 from .layout_rules import (
@@ -1591,9 +1592,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     api_url_input.setEditable(True)
     web_url_input = _elastic(_ArrowComboBox())
     web_url_input.setEditable(True)
-    for value in ("http://127.0.0.1:8080", "https://api.mapdex.ai"):
+    api_choices, web_choices = endpoint_choices()
+    for value in api_choices:
         api_url_input.addItem(value)
-    for value in ("http://127.0.0.1:3000", "https://app.mapdex.ai"):
+    for value in web_choices:
         web_url_input.addItem(value)
     connection_form.addRow("API", api_url_input)
     connection_form.addRow("Web", web_url_input)

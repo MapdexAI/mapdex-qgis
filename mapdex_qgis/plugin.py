@@ -55,6 +55,7 @@ from qgis.core import (
 
 from .build_profile import (
     ALLOW_CUSTOM_ENDPOINT_SETTING,
+    endpoint_refusal,
     endpoints_unlocked,
     is_production,
     resolve_endpoints,
@@ -2085,7 +2086,16 @@ class MapdexPlugin:
             self._set_status("Removed the stored provider key. Nivo will use your Mapdex plan.")
 
     def _reject_insecure_endpoint(self, url: str) -> bool:
-        """Block a plaintext endpoint that is not this machine."""
+        """Block an endpoint this build must not use.
+
+        Two reasons, checked in this order: a released build never talks to a
+        server on this computer, and nothing sends the token over plain http to
+        anywhere else.
+        """
+        refusal = endpoint_refusal(url)
+        if refusal:
+            QMessageBox.warning(self.iface.mainWindow(), "Mapdex", refusal)
+            return True
         if is_transport_secure(url):
             return False
         QMessageBox.warning(
