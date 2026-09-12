@@ -11,10 +11,12 @@ import hashlib
 import re
 from typing import Any
 
+from ._vendor.nivo.capabilities import CapabilityError, get as get_capability
 from ._vendor.nivo.processing import (
     PROCESSING_OPERATION_CATALOG,
     safe_processing_params,
 )
+from ._vendor.nivo.viewport import resolve_extent
 
 COMPANION_VERSION = "companion.qgis.v1"
 MAX_FIELDS = 64
@@ -377,6 +379,44 @@ def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
             "correlation_id": _text(action.get("correlation_id"), 128),
         })
     return result
+
+
+def capability_request(tool: str, action: dict[str, Any], fallback_layer_id: str = "",
+                       legacy_ids: dict[str, str] | None = None):
+    """Resolve one compose action to (capability_id, params), or None.
+
+    Translation happens here and execution does not: a legacy id names the same
+    operation as its canonical capability, and routing both through the
+    registry is what makes them behave the same. None means no registered
+    capability covers the id, so the caller falls back to its plugin-native
+    table.
+
+    It lived inside the plugin's Qt class, where no test without QGIS could
+    reach it, so nothing held the server's real output to it. It is here so the
+    contract test (tests/test_server_action_contract.py) runs the same code the
+    dock runs.
+    """
+    capability_id = (legacy_ids or {}).get(tool, tool)
+    capability = get_capability(capability_id)
+    if capability is None:
+        return None
+    params = dict(action.get("params") or {})
+    if capability_id == "map.zoom_extent@1":
+        # The legacy payload may carry a centre and a zoom level rather than a
+        # box. Resolving it here is what lets one registry-validated capability
+        # serve both shapes.
+        resolved = resolve_extent(params)
+        if resolved is None:
+            raise CapabilityError("that map extent had no usable bounding box or centre")
+        # Emitted under the capability's declared name, which is the server's.
+        # The resolver above is what accepts whichever name arrived; validation
+        # only ever sees the canonical one.
+        params = {"bounds": resolved["bbox"], "crs": resolved["crs"]}
+    if "layer_id" in capability.params and "layer_id" not in params:
+        layer_id = str(action.get("target") or "") or str(fallback_layer_id or "")
+        if layer_id:
+            params["layer_id"] = layer_id
+    return capability_id, params
 
 
 def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:

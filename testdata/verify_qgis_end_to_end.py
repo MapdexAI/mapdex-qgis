@@ -16,6 +16,10 @@ This script covers what a human tester would cover that a harness can:
   Part 4  dispatch every capability this build advertises, from a simulated
           compose response, and classify each as executed, refused by name, or
           silently dropped.
+  Part 4b replay the SERVER's recorded responses
+          (packages/contracts/testdata/companion/qgis_compose_responses.json)
+          through the real turn handler, prompts answered Yes and Processing
+          tasks run to completion, and measure what each one left behind.
 
 Everything below runs against the real QGIS libraries. Two boundaries are
 stubbed, and only two: the HTTP client (`plugin.api`) and the modal question
@@ -29,7 +33,8 @@ and a WSL share silently resolves to the Windows directory instead):
     set QT_QPA_PLATFORM=offscreen
     "C:/Program Files/QGIS 4.0.2/bin/python-qgis.bat" verify_qgis_end_to_end.py
 
-Stage a copy of `mapdex_qgis/` and `mapdex-test-parcels.gpkg` beside the script.
+Stage a copy of `mapdex_qgis/`, `mapdex-test-parcels.gpkg` and
+`qgis_compose_responses.json` beside the script.
 The fixture is copied before it is touched: the field calculator writes real
 columns into a real GeoPackage, so a second run against the same file trips its
 own refuse-to-overwrite guard and reports a working refusal as a failure.
@@ -1471,8 +1476,14 @@ def dispatch(action_kind, target, params, summary="verification", probe=None):
     #
     # Severity is the right instrument: it is what the person sees, and it is
     # what DESIGN.md section 8 requires the panel to carry anyway.
-    if len(plugin._nivo_turns) > 1:
-        outcome = plugin._nivo_turns[-1]
+    #
+    # And a result no longer arrives as a second turn at all: it REPLACES the
+    # reply it answers, so success leaves one turn whose text is no longer "ok".
+    # Counting turns read every such success as silent - 56 of them.
+    turns = list(plugin._nivo_turns)
+    outcome = turns[-1] if len(turns) > 1 else (
+        turns[0] if turns and str(turns[0].get("text") or "") != "ok" else None)
+    if outcome is not None:
         if str(outcome.get("severity") or "") in {"warning", "blocking"}:
             return "refused", outcome["text"]
         return "executed", outcome["text"]
@@ -1843,8 +1854,10 @@ check("a Processing operation asks before it runs", a_processing_operation_asks_
 
 
 def export_wrote_a_real_file():
+    # `target_format` is what export.layer@1 declares. This sent `format`, which
+    # the registry refuses, so the check measured its own typo.
     verdict, evidence = dispatch(
-        "export.layer@1", LAYER.id(), {"layer_id": LAYER.id(), "format": "geojson"})
+        "export.layer@1", LAYER.id(), {"layer_id": LAYER.id(), "target_format": "geojson"})
     if verdict != "executed":
         raise AssertionError("export {}: {}".format(verdict, evidence))
     written = need_runtime().export_layer(LAYER.id(), "geojson")
@@ -2038,6 +2051,452 @@ def toolbar_leaves_on_unload():
 
 
 check("the toolbar is removed on unload", toolbar_leaves_on_unload)
+
+
+# ==========================================================================
+# Part 4b: what the SERVER sends, carried out
+# ==========================================================================
+#
+# Part 4 builds every payload from this plugin's own registry, in the shape the
+# plugin expects, so it proves the plugin can run a capability and never that
+# it runs the one the server asked for. It also answers No to every Processing
+# prompt, and QGIS Processing was never initialised in this script, so no
+# buffer had ever been run end to end: "buffer yap" failed for a user while
+# every check here passed.
+#
+# These are the server's real responses (recorded by the Go test
+# TestCompanionWireFixture against the list this build really advertises),
+# replayed through the real turn handler with every prompt answered Yes and
+# every Processing task awaited. Four outcomes, and only the first is a pass:
+#
+#   executed  the action ran and its effect is on the project
+#   refused   the plugin refused it and said why (a defect unless the input
+#             genuinely cannot support it - named per case below)
+#   silent    admitted and then neither run nor explained
+#   asked     the server sent no action at all, only a question or a refusal
+#             in words - the user got no result either
+
+import copy  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
+
+
+def _server_responses_path():
+    for candidate in (
+        os.path.join(HERE, "qgis_compose_responses.json"),
+        os.path.join(HERE, "..", "..", "..", "packages", "contracts", "testdata",
+                     "companion", "qgis_compose_responses.json"),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _initialise_processing():
+    """Register the providers a real QGIS has. Without them every Processing
+    capability resolves no algorithm, which is a property of this script and
+    not of the product."""
+    from qgis.analysis import QgsNativeAlgorithms  # noqa: PLC0415
+
+    registry = QgsApplication.processingRegistry()
+    if registry.providerById("native") is None:
+        registry.addProvider(QgsNativeAlgorithms())
+    plugins = os.path.join(os.environ.get(
+        "QGIS_PREFIX_PATH", "C:/Program Files/QGIS 4.0.2/apps/qgis"), "python", "plugins")
+    if plugins not in sys.path:
+        sys.path.append(plugins)
+    try:
+        from processing.core.Processing import Processing  # noqa: PLC0415
+
+        Processing.initialize()
+    except Exception as error:  # noqa: BLE001 - GDAL/GRASS are optional here
+        print("processing plugin providers unavailable:", error)
+    return sorted(provider.id() for provider in registry.providers())
+
+
+# Refusals that are correct for THIS input. The fixture is a polygon vector
+# layer, so an elevation operation on it must be refused, and saying so is the
+# product working.
+_TERRAIN = {"aspect", "contours", "flow_accumulation", "hillshade", "roughness",
+            "ruggedness", "slope", "viewshed", "watershed"}
+
+
+def _expected_refusal(case_name):
+    operation = case_name.split(".", 1)[-1]
+    if case_name.startswith("processing.") and operation in _TERRAIN:
+        return "elevation raster"
+    return ""
+
+
+class _SynchronousTaskManager:
+    """Runs a submitted QgsTask on the calling thread, then finishes it.
+
+    The offscreen application never completes a task handed to the real task
+    manager, however long the event loop is pumped, so every Processing case
+    waited out its timeout and "no buffer appeared" was indistinguishable from
+    "the task never ran". `run()` then `finished()` is the exact sequence the
+    task manager performs, on the same task object built by the plugin's own
+    code, so the algorithm, its parameters and the completion handler are the
+    real ones. What is NOT covered is the threading itself.
+    """
+
+    def addTask(self, task):  # noqa: N802 - QgsTaskManager's spelling
+        ok = bool(task.run())
+        task.finished(ok)
+        return True
+
+    def countActiveTasks(self):  # noqa: N802
+        return 0
+
+
+class _ApplicationWithSynchronousTasks:
+    _tasks = _SynchronousTaskManager()
+
+    def __getattr__(self, name):
+        return getattr(QgsApplication, name)
+
+    def taskManager(self):  # noqa: N802
+        return self._tasks
+
+
+def _wait_for_processing(plugin, timeout=90.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        if not plugin._tasks:
+            # One more pump: `executed` is delivered through the event loop
+            # after the task manager reports the task finished.
+            for _ in range(5):
+                QCoreApplication.processEvents()
+                time.sleep(0.02)
+            return True
+        time.sleep(0.05)
+    return False
+
+
+SERVER_REPLAY = []
+REPLAY_SEQUENCE = [0]
+
+
+def _turn_outcome(plugin, reply):
+    """The transcript turns that report what the action DID.
+
+    A result used to arrive as a second turn. It now replaces the reply it
+    answers ("one request, one assistant result"), so a successful action
+    leaves exactly one turn whose text is no longer the server's reply. Reading
+    "a second turn means it ran" classified every such success as silent.
+    """
+    turns = list(plugin._nivo_turns)
+    if len(turns) > 1:
+        return turns[1:]
+    if turns and str(turns[0].get("text") or "") != reply:
+        return turns
+    return []
+
+
+def _load_server_cases():
+    path = _server_responses_path()
+    if not path:
+        raise NotRun("qgis_compose_responses.json is not staged beside the script or in the repo")
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def replay_one(case, layer, keep_layers=False):
+    """Send one recorded server response through the real turn handler.
+
+    Returns (verdict, evidence, created_layers). The created layers are removed
+    from the project unless `keep_layers` asks for them, in which case the
+    caller measures and removes them.
+    """
+    plugin = need_plugin()
+    REPLAY_SEQUENCE[0] += 1
+    index = REPLAY_SEQUENCE[0]
+    name = case["name"]
+    response = json.loads(json.dumps(case["response"]).replace("__ACTIVE_LAYER__", layer.id()))
+    # Fresh identifiers per replay: the plugin refuses an action id it has
+    # already executed, which is right for a real session and would make every
+    # case after the first a duplicate here.
+    response["id"] = "{}_r{}".format(response.get("id") or "cmp", index)
+    for action in response.get("companion_actions") or []:
+        action["action_id"] = "{}_r{}".format(action.get("action_id") or "act", index)
+    trace = response.get("trace")
+    if isinstance(trace, dict):
+        trace["turn_id"] = "{}_r{}".format(trace.get("turn_id") or "turn", index)
+        for step in trace.get("steps") or []:
+            step["id"] = "{}_r{}".format(step.get("id") or "step", index)
+    layer.setSubsetString("")
+    layer.selectByIds([1, 2, 3])
+    IFACE.setActiveLayer(layer)
+    before = set(PROJECT.mapLayers())
+    MessageBoxStub.asked = []
+    MessageBoxStub.answers = []
+    plugin.status.setText("")
+    plugin._nivo_turns = []
+    plugin._nivo_state = "idle"
+    plugin._nivo_objective = case.get("text") or ""
+    plugin._nivo_request_id += 1
+    try:
+        plugin._nivo_composed(plugin._nivo_request_id, None,
+                              {"thread_id": "", "response": copy.deepcopy(response)})
+        finished = _wait_for_processing(plugin)
+    except Exception as error:  # noqa: BLE001
+        return "error", "{}: {}".format(type(error).__name__, error), []
+    created = [PROJECT.mapLayer(layer_id) for layer_id in set(PROJECT.mapLayers()) - before]
+    produced = []
+    for new_layer in created:
+        count = new_layer.featureCount() if hasattr(new_layer, "featureCount") else -1
+        produced.append("{} ({} features)".format(new_layer.name(), count))
+    outcome = _turn_outcome(plugin, str(response.get("text") or ""))
+    last = outcome[-1] if outcome else {}
+    severity = str(last.get("severity") or "")
+    text = str(last.get("text") or "")
+    status = plugin.status.text()
+    actions = response.get("companion_actions") or []
+    problem = nivo_module.confirmation_action_problem(response)
+    if not actions:
+        verdict = "asked"
+        evidence = (response.get("text") or "")[:140]
+    elif not finished:
+        verdict = "silent"
+        evidence = "a Processing task never finished"
+    elif severity in {"warning", "blocking"} or (problem and text == problem):
+        expected = _expected_refusal(name)
+        verdict = "expected" if expected and expected in text else "refused"
+        evidence = text
+    elif created:
+        # A new empty layer is the whole point of "create a layer"; anywhere
+        # else an empty output is the result that did not happen.
+        empty = [new_layer for new_layer in created
+                 if hasattr(new_layer, "featureCount") and new_layer.featureCount() == 0
+                 and not name.startswith("layer.create")]
+        verdict = "refused" if empty else "executed"
+        evidence = "created " + ", ".join(produced)
+    elif outcome:
+        verdict = "executed"
+        evidence = text
+    elif status:
+        verdict = "refused"
+        evidence = "status only: " + status
+    else:
+        verdict = "silent"
+        evidence = "admitted, then neither run nor explained"
+    prompts = len(MessageBoxStub.asked)
+    if prompts:
+        evidence = "[{} prompt(s)] {}".format(prompts, evidence)
+    if not keep_layers:
+        for layer_id in set(PROJECT.mapLayers()) - before:
+            PROJECT.removeMapLayer(layer_id)
+        created = []
+    return verdict, evidence, created
+
+
+def replay_server_responses():
+    need_plugin()
+    cases = _load_server_cases()
+    providers = _initialise_processing()
+    MessageBoxStub.default_answer = MessageBoxStub.StandardButton.Yes
+    real_application = plugin_module.QgsApplication
+    plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+    try:
+        for case in cases:
+            verdict, evidence, _created = replay_one(case, LAYER)
+            SERVER_REPLAY.append((case["name"], verdict, evidence))
+    finally:
+        plugin_module.QgsApplication = real_application
+    LAYER.removeSelection()
+    IFACE.setActiveLayer(LAYER)
+    counts = {}
+    for _name, verdict, _evidence in SERVER_REPLAY:
+        counts[verdict] = counts.get(verdict, 0) + 1
+    return "{} responses; {}; providers {}".format(
+        len(SERVER_REPLAY), ", ".join("{} {}".format(v, n) for v, n in sorted(counts.items())),
+        ",".join(providers))
+
+
+check("the server's recorded responses are replayed through the real turn handler",
+      replay_server_responses)
+
+
+def every_server_action_is_carried_out():
+    failed = [(name, verdict, evidence) for name, verdict, evidence in SERVER_REPLAY
+              if verdict in {"refused", "silent", "error"}]
+    if not SERVER_REPLAY:
+        raise NotRun("nothing was replayed")
+    if failed:
+        raise AssertionError("{} of {} server actions were not carried out: {}".format(
+            len(failed), len(SERVER_REPLAY),
+            "; ".join("{} ({})".format(name, verdict) for name, verdict, _ in failed)))
+    return "every action the server sent was carried out"
+
+
+check("every action the server sends is carried out", every_server_action_is_carried_out)
+
+
+def the_server_answers_with_an_action():
+    asked = [name for name, verdict, _evidence in SERVER_REPLAY if verdict == "asked"]
+    if not SERVER_REPLAY:
+        raise NotRun("nothing was replayed")
+    if asked:
+        raise AssertionError("{} requests got words instead of a result: {}".format(
+            len(asked), ", ".join(asked)))
+    return "every request produced an action"
+
+
+check("the server answers a QGIS request with an action", the_server_answers_with_an_action)
+
+
+def _geographic_copy_of_the_fixture():
+    """The fixture's parcels in EPSG:4326, which is how most downloaded data
+    arrives (GeoJSON, KML). The fixture itself is metric (EPSG:32635), which is
+    exactly why a distance applied in the layer's own units never looked wrong
+    here."""
+    from qgis.core import QgsCoordinateTransform, QgsFeature, QgsGeometry  # noqa: PLC0415
+
+    target = QgsCoordinateReferenceSystem("EPSG:4326")
+    geographic = QgsVectorLayer("MultiPolygon?crs=EPSG:4326", "parcels_wgs84", "memory")
+    provider = geographic.dataProvider()
+    provider.addAttributes(LAYER.fields().toList())
+    geographic.updateFields()
+    transform = QgsCoordinateTransform(LAYER.crs(), target, PROJECT)
+    features = []
+    for feature in LAYER.getFeatures():
+        geometry = QgsGeometry(feature.geometry())
+        geometry.transform(transform)
+        copied = QgsFeature(geographic.fields())
+        copied.setGeometry(geometry)
+        copied.setAttributes(feature.attributes())
+        features.append(copied)
+    provider.addFeatures(features)
+    geographic.updateExtents()
+    PROJECT.addMapLayer(geographic)
+    return geographic
+
+
+def a_metre_buffer_on_a_geographic_layer_is_metres():
+    import math  # noqa: PLC0415
+
+    cases = {case["name"]: case for case in _load_server_cases()}
+    case = cases.get("processing.buffer")
+    if case is None:
+        raise NotRun("no recorded buffer response")
+    actions = case["response"].get("companion_actions") or [{}]
+    distance = float((actions[0].get("params") or {}).get("distance") or 0)
+    if distance <= 0:
+        raise AssertionError("the server's buffer carried no distance: {}".format(actions[0]))
+    geographic = _geographic_copy_of_the_fixture()
+    real_application = plugin_module.QgsApplication
+    plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+    created = []
+    try:
+        verdict, evidence, created = replay_one(case, geographic, keep_layers=True)
+        if verdict != "executed" or not created:
+            raise AssertionError("the buffer did not run on a geographic layer: {} - {}".format(
+                verdict, evidence))
+        source = geographic.extent()
+        output = created[0].extent()
+        grew = (output.width() - source.width()) / 2.0
+        latitude = source.center().y()
+        metres_per_degree = 111320.0 * math.cos(math.radians(latitude))
+        expected = distance / metres_per_degree
+        if grew > expected * 5:
+            raise AssertionError(
+                "a {:g} m buffer grew each side by {:.4f} degrees ({:.0f} km); {:g} m is "
+                "{:.6f} degrees here - the distance was applied in degrees".format(
+                    distance, grew, grew * metres_per_degree / 1000.0, distance, expected))
+        return "grew {:.6f} deg per side for {:g} m (expected {:.6f})".format(grew, distance, expected)
+    finally:
+        plugin_module.QgsApplication = real_application
+        for layer in created:
+            PROJECT.removeMapLayer(layer.id())
+        PROJECT.removeMapLayer(geographic.id())
+        IFACE.setActiveLayer(LAYER)
+
+
+check("a buffer in metres on a layer in degrees grows by metres",
+      a_metre_buffer_on_a_geographic_layer_is_metres)
+
+
+def _geojson_with_a_list_property(crs_code):
+    """A GeoJSON whose every feature carries a nested array, as a Mapdex
+    extraction preview does (`image_corners`). QGIS reads it as a JSON field,
+    and every Processing algorithm writing a temporary layer used to stop at the
+    first feature - reported from the field on vaudherland-cadastre-preview."""
+    import tempfile  # noqa: PLC0415
+
+    from qgis.core import QgsCoordinateTransform  # noqa: PLC0415
+
+    transform = QgsCoordinateTransform(LAYER.crs(), QgsCoordinateReferenceSystem(crs_code), PROJECT)
+    features = []
+    for feature in LAYER.getFeatures():
+        geometry = feature.geometry()
+        geometry.transform(transform)
+        box = geometry.boundingBox()
+        corners = [[box.xMinimum(), box.yMaximum()], [box.xMaximum(), box.yMaximum()],
+                   [box.xMaximum(), box.yMinimum()], [box.xMinimum(), box.yMinimum()]]
+        features.append({
+            "type": "Feature",
+            "properties": {"Layer": "LOW_CONFIDENCE", "image_corners": corners},
+            "geometry": json.loads(geometry.asJson()),
+        })
+    path = os.path.join(tempfile.mkdtemp(prefix="mapdex_json_field_"), "preview.geojson")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"type": "FeatureCollection", "name": "preview",
+                   "crs": {"type": "name", "properties": {
+                       "name": "urn:ogc:def:crs:" + crs_code.replace(":", "::")}},
+                   "features": features}, handle)
+    layer = QgsVectorLayer(path, "preview_" + crs_code.replace(":", "_"), "ogr")
+    if not layer.isValid():
+        raise AssertionError("the GeoJSON with a list property did not open")
+    PROJECT.addMapLayer(layer)
+    return layer
+
+
+def a_buffer_runs_on_a_layer_with_a_list_field():
+    cases = {case["name"]: case for case in _load_server_cases()}
+    case = cases.get("processing.buffer")
+    if case is None:
+        raise NotRun("no recorded buffer response")
+    staged = os.path.join(HERE, "vaudherland-cadastre-preview.geojson")
+    real_application = plugin_module.QgsApplication
+    plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+    layers, created, report = [], [], []
+    try:
+        # Metric (the user's case) and geographic (through the UTM copy, which
+        # is a second algorithm writing a temporary layer).
+        layers.append(_geojson_with_a_list_property(LAYER.crs().authid()))
+        layers.append(_geojson_with_a_list_property("EPSG:4326"))
+        if os.path.isfile(staged):
+            user_file = QgsVectorLayer(staged, "vaudherland-cadastre-preview", "ogr")
+            PROJECT.addMapLayer(user_file)
+            layers.append(user_file)
+        for layer in layers:
+            json_fields = [field.name() for field in layer.fields() if field.typeName().lower() == "json"]
+            if not json_fields:
+                raise AssertionError("{} has no JSON field, so it tests nothing".format(layer.name()))
+            verdict, evidence, made = replay_one(case, layer, keep_layers=True)
+            created.extend(made)
+            if verdict != "executed" or not made:
+                raise AssertionError("{}: {} - {}".format(layer.name(), verdict, evidence))
+            output = made[0]
+            if output.featureCount() != layer.featureCount():
+                raise AssertionError("{}: {} features in, {} out".format(
+                    layer.name(), layer.featureCount(), output.featureCount()))
+            sample = next(output.getFeatures())["image_corners"]
+            if not isinstance(sample, str) or not sample.startswith("["):
+                raise AssertionError("{}: image_corners arrived as {!r}".format(layer.name(), sample))
+            report.append("{} {} features".format(layer.crs().authid(), output.featureCount()))
+        return "; ".join(report)
+    finally:
+        plugin_module.QgsApplication = real_application
+        for layer in created + layers:
+            if PROJECT.mapLayer(layer.id()) is not None:
+                PROJECT.removeMapLayer(layer.id())
+        IFACE.setActiveLayer(LAYER)
+
+
+check("a buffer runs on a layer with a list field (image_corners)",
+      a_buffer_runs_on_a_layer_with_a_list_field)
 
 
 
@@ -3117,6 +3576,13 @@ print("DISPATCH SWEEP — every action this build advertises to the server")
 print("-" * 96)
 for name, verdict, evidence in DISPATCH:
     print("  {:<9} {:<32} {}".format(verdict, name, str(evidence).replace("\n", " ")[:110]))
+print("-" * 96)
+print()
+print("=" * 96)
+print("SERVER REPLAY — what the server really sends, carried out by this build")
+print("-" * 96)
+for name, verdict, evidence in SERVER_REPLAY:
+    print("  {:<9} {:<32} {}".format(verdict, name, str(evidence).replace("\n", " ")[:120]))
 print("-" * 96)
 print()
 print("=" * 96)

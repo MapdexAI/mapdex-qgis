@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.4
+version=0.13.6
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,32 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.4
+changelog=0.13.6
+    - Buffers and every other Processing operation run on layers that carry a
+      list in an attribute, such as the image_corners field on Mapdex
+      extraction previews. QGIS stopped at the first feature ("Could not store
+      attribute image_corners"); the list now travels as text and the answer
+      says which field it was.
+    0.13.5
+    - A buffer in metres is a buffer in metres. On a layer whose coordinates
+      are in degrees (most GeoJSON and KML), "buffer by 25 m" grew every shape
+      by 25 degrees, about 2,800 km. The work now runs in the layer's local UTM
+      zone and the result comes back in the layer's own coordinate system. The
+      same applies to a simplification tolerance, and a layer in feet gets its
+      distance in feet.
+    - Elevation operations (slope, aspect, hillshade, contours, watershed and
+      the rest) refuse a vector layer, or a grid measured in degrees, and say
+      why. On the route your requests actually take they were started anyway
+      and failed out of sight.
+    - A Processing run that fails now says so in the conversation, with QGIS's
+      own reason, instead of only on the status line.
+    - The geometry check works. It never received its input layer, and a clean
+      result is reported as "no invalid geometries" rather than as an empty
+      layer.
+    - Answers state their result. They read "Nivo prepared a QGIS action.: 24
+      values ..." - the sentence written before the action ran, in front of the
+      proof that it had.
+    0.13.4
     - A released build never connects to a server on your own computer. An
       address such as 127.0.0.1 or localhost left in your QGIS profile by an
       earlier local setup used to be followed, so a production install could

@@ -25,12 +25,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(git -C "$ROOT" rev-parse --show-toplevel)"
 PREFIX="$(realpath --relative-to="$REPO" "$ROOT")"
 
-# The two tests that are allowed to skip, and only for the standalone reason.
-# Both compare a vendored copy against a source that lives outside the published
-# tree: the generated contracts excerpt, and the vendored nivo-gis package.
+# The tests that are allowed to skip, and only for the standalone reason. Each
+# reads something that lives outside the published tree: the generated contracts
+# excerpt it vendors, the vendored nivo-gis package, and the recorded server wire
+# fixtures. The wire fixtures are a recording of what the API answers, so they
+# belong to the monorepo that produces them and are not the plugin's to publish;
+# what the published tree must carry is the code that acts on them, and every
+# test of that code runs here.
 # (test_vendored_prompt.py left when the prompt moved into that package - the
 # plugin no longer carries a separate copy of it to drift.)
-EXPECTED_SKIP_FILES="tests/test_vendored_contracts.py tests/test_vendored_nivo.py"
+EXPECTED_SKIP_FILES="tests/test_server_action_contract.py tests/test_vendored_contracts.py tests/test_vendored_nivo.py"
 
 WORK="$(mtmp=$(mktemp -d -t mapdex-qgis-standalone-XXXXXX); echo "$mtmp")"
 trap 'rm -rf "$WORK"' EXIT
@@ -114,7 +118,7 @@ fi
 echo "==> checking that nothing skipped for an unplanned reason"
 skips="$(echo "$output" | grep '^SKIPPED' || true)"
 if [ -z "$skips" ]; then
-  echo "error: expected the two standalone drift skips, got none." >&2
+  echo "error: expected the standalone drift skips, got none." >&2
   echo "If those tests were removed, update EXPECTED_SKIP_FILES here." >&2
   exit 1
 fi

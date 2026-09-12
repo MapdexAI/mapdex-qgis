@@ -49,10 +49,20 @@ from qgis.core import (
     QgsRasterLayer,
     QgsRectangle,
     QgsTask,
+    QgsUnitTypes,
     QgsVectorFileWriter,
     QgsVectorLayer,
 )
 
+from .processing_units import (
+    describe_processing_failure,
+    describe_textual_fields,
+    describe_validation_outcome,
+    input_parameter_aliases,
+    plan_metric_operation,
+    structured_field_names,
+    structured_value_as_text,
+)
 from .build_profile import (
     ALLOW_CUSTOM_ENDPOINT_SETTING,
     endpoint_refusal,
@@ -125,6 +135,7 @@ from .nivo import (
     allowed_actions,
     companion_context,
     confirmation_action_problem,
+    capability_request,
     confirmation_actions,
     local_processing_action,
     describe_thread,
@@ -161,7 +172,7 @@ from ._vendor.nivo.processing import (
     operation_label,
     resolve_processing_algorithm,
 )
-from .qt_compat import QAction, enum_member, qgis_version
+from .qt_compat import QAction, enum_member, field_type, qgis_version
 from ._vendor.nivo.viewport import resolve_extent
 from .results import (
     batch_failure,
@@ -4384,7 +4395,7 @@ class MapdexPlugin:
             return
         if resolved is not None:
             capability_id, params = resolved
-            if self._run_capability(capability_id, params, action.get("summary") or tool):
+            if self._run_capability(capability_id, params, action.get("summary") or tool, headline=""):
                 self._nivo_state = transition(self._nivo_state, "done")
             return
 
@@ -4414,27 +4425,10 @@ class MapdexPlugin:
         no registered capability covers the id, so the caller can fall back to
         the plugin-native table.
         """
-        capability_id = LEGACY_CAPABILITY_IDS.get(tool, tool)
-        capability = get_capability(capability_id)
-        if capability is None:
-            return None
-        params = dict(action.get("params") or {})
-        if capability_id == "map.zoom_extent@1":
-            # The legacy payload may carry a centre and a zoom level rather than
-            # a box. Resolving it here is what lets one registry-validated
-            # capability serve both shapes.
-            resolved = resolve_extent(params)
-            if resolved is None:
-                raise CapabilityError("that map extent had no usable bounding box or centre")
-            # Emitted under the capability's declared name, which is the
-            # server's. The resolver above is what accepts whichever name
-            # arrived; validation below only ever sees the canonical one.
-            params = {"bounds": resolved["bbox"], "crs": resolved["crs"]}
-        if "layer_id" in capability.params and "layer_id" not in params:
-            layer_id = str(action.get("target") or "") or (layer.id() if layer is not None else "")
-            if layer_id:
-                params["layer_id"] = layer_id
-        return capability_id, params
+        # The translation itself lives in nivo.capability_request, where the
+        # server-contract test can run it without QGIS.
+        return capability_request(
+            tool, action, layer.id() if layer is not None else "", LEGACY_CAPABILITY_IDS)
 
     def _confirm_capability(self, capability_id, summary=""):
         """Ask before running a capability the registry marks consequential.
@@ -4571,26 +4565,10 @@ class MapdexPlugin:
         one action buys no information and costs the user a step.
         """
         operation = str(params.get("operation") or "")
-        # A slope, aspect or hillshade on a grid measured in degrees is a ratio
-        # of metres to degrees, which is not a slope. QGIS computes it anyway
-        # and says nothing: a 10% grade reads as 89.99 degrees, measured in the
-        # Workspace's own terrain tests. Refused here, before the algorithm, and
-        # the refusal names the reprojection this same assistant can perform.
-        # A DEM operation on a vector layer is not a hard question, and it used
-        # to be accepted: `terrain.slope@1` on a parcel layer answered "started"
-        # and failed later, somewhere the user was no longer looking.
-        if operation in RASTER_INPUT_OPERATIONS:
-            layer = self._nivo_layer_for_action(params.get("layer_id") or "")
-            if layer is not None and not is_raster_layer(layer):
-                raise CapabilityError(
-                    "the {} needs an elevation raster; '{}' is a vector layer".format(
-                        operation_label(operation), layer.name()))
-        if operation in UNIT_SENSITIVE_TERRAIN:
-            layer = self._nivo_layer_for_action(params.get("layer_id") or "")
-            crs = layer.crs() if layer is not None else None
-            if crs is not None and crs.isValid() and crs.isGeographic():
-                raise CapabilityError(
-                    describe_geographic_terrain_refusal(operation, crs.authid()))
+        refusal = self._processing_refusal(
+            operation, self._nivo_layer_for_action(params.get("layer_id") or ""))
+        if refusal:
+            raise CapabilityError(refusal)
         action = {
             "target": params.get("layer_id") or "",
             "params": dict(params),
@@ -4601,6 +4579,123 @@ class MapdexPlugin:
         # reports when it finishes; claiming an outcome here would describe work
         # that has not happened yet.
         return {"kind": "processing_started", "operation": operation}
+
+    @staticmethod
+    def _processing_refusal(operation, layer):
+        """Why this operation cannot run on this layer, or "".
+
+        One owner, called from BOTH ways a Processing run starts. These checks
+        lived only in the named-capability wrapper, while every operation the
+        server actually sends arrives behind a confirmation and runs through
+        `_run_processing_operation` directly - so on the path users take, a
+        slope on a parcel layer was started, and a hillshade on a grid in degrees
+        was computed, exactly as if the checks did not exist. Measured by
+        replaying the server's recorded responses (verify_qgis_end_to_end.py,
+        Part 4b).
+
+        A slope, aspect or hillshade on a grid measured in degrees is a ratio of
+        metres to degrees, which is not a slope: a 10% grade reads as 89.99
+        degrees. A DEM operation on a vector layer is not a hard question either.
+        """
+        if layer is None:
+            return ""
+        if operation in RASTER_INPUT_OPERATIONS and not is_raster_layer(layer):
+            return "the {} needs an elevation raster; '{}' is a vector layer".format(
+                operation_label(operation), layer.name())
+        if operation in UNIT_SENSITIVE_TERRAIN:
+            crs = layer.crs()
+            if crs is not None and crs.isValid() and crs.isGeographic():
+                return describe_geographic_terrain_refusal(operation, crs.authid())
+        return ""
+
+    def _metric_plan(self, operation, layer, params):
+        """How a length stated in metres reaches this layer (processing_units)."""
+        crs = layer.crs()
+        geographic = bool(crs.isValid() and crs.isGeographic())
+        factor = None
+        bbox = None
+        if geographic:
+            try:
+                transform = QgsCoordinateTransform(
+                    crs, QgsCoordinateReferenceSystem("EPSG:4326"), QgsProject.instance())
+                extent = transform.transformBoundingBox(layer.extent())
+                bbox = [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()]
+            except QgsCsException:
+                bbox = None
+        elif crs.isValid():
+            units = crs.mapUnits()
+            if units != enum_member(Qgis, "DistanceUnit", "Unknown"):
+                factor = QgsUnitTypes.fromUnitToUnitFactor(
+                    enum_member(Qgis, "DistanceUnit", "Meters"), units)
+        return plan_metric_operation(operation, params, geographic, factor, bbox)
+
+    @staticmethod
+    def _reprojected_copy(layer, crs, name=""):
+        """A memory copy of `layer` in `crs`, made by QGIS's own reprojection.
+
+        Synchronous: it runs before a buffer starts and after it finishes, on a
+        layer the user is already waiting on, and a second task would leave the
+        result in the wrong coordinate system until it reported.
+        """
+        algorithm = QgsApplication.processingRegistry().algorithmById("native:reprojectlayer")
+        if algorithm is None:
+            return None
+        target = crs if isinstance(crs, QgsCoordinateReferenceSystem) else QgsCoordinateReferenceSystem(crs)
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        results, ok = algorithm.run(
+            {"INPUT": layer, "TARGET_CRS": target, "OUTPUT": "TEMPORARY_OUTPUT"},
+            context, QgsProcessingFeedback())
+        if not ok or not isinstance(results, dict):
+            return None
+        copied = context.takeResultLayer(results.get("OUTPUT"))
+        if copied is None or not copied.isValid():
+            return None
+        if name:
+            copied.setName(name)
+        return copied
+
+    @staticmethod
+    def _textual_copy(layer):
+        """A memory copy of `layer` whose nested fields hold their JSON as text.
+
+        Returns ``(layer, names)``: the original and an empty list when nothing
+        needed changing, the copy and the changed field names otherwise, and
+        ``(None, names)`` when the copy could not be made. Every Processing
+        algorithm that writes a new layer - a reprojection included - fails on
+        a JSON field (processing_units.structured_field_names).
+        """
+        if not isinstance(layer, QgsVectorLayer):
+            return layer, []
+        names = structured_field_names(
+            (field.name(), field.typeName(), field.type()) for field in layer.fields())
+        if not names:
+            return layer, []
+        from qgis.core import QgsField, QgsFields, QgsMemoryProviderUtils
+
+        changed = set(names)
+        fields = QgsFields()
+        for field in layer.fields():
+            fields.append(QgsField(field.name(), field_type("text"))
+                          if field.name() in changed else QgsField(field))
+        copy = QgsMemoryProviderUtils.createMemoryLayer(
+            layer.name(), fields, layer.wkbType(), layer.crs())
+        if copy is None or not copy.isValid():
+            return None, names
+        indexes = [layer.fields().indexOf(name) for name in names]
+        features = []
+        for source in layer.getFeatures():
+            attributes = list(source.attributes())
+            for index in indexes:
+                attributes[index] = structured_value_as_text(attributes[index])
+            feature = QgsFeature(copy.fields())
+            feature.setGeometry(source.geometry())
+            feature.setAttributes(attributes)
+            features.append(feature)
+        if not copy.dataProvider().addFeatures(features):
+            return None, names
+        copy.updateExtents()
+        return copy, names
 
     def _discover_processing(self, params):
         """Which of the allowlisted operations this QGIS can actually run.
@@ -4776,13 +4871,19 @@ class MapdexPlugin:
             executor = execute
         return executor
 
-    def _run_capability(self, capability_id, params, summary=""):
+    def _run_capability(self, capability_id, params, summary="", headline=None):
         """Validate a capability request and run it through the executor table.
 
         Every failure becomes a status message. This runs inside QGIS, where an
         escaping exception is not a stack trace in a log but a broken host
         application, which is why the plugin grew an error boundary in the first
         place. Returns True when the capability actually ran.
+
+        `summary` is the question a confirmation asks; `headline` prefixes the
+        result line and defaults to it. They differ for a server action, whose
+        summary is written BEFORE it runs ("Nivo prepared a QGIS action."):
+        used as the headline, every answer read "Nivo prepared a QGIS action.:
+        24 values - mean 10,416", a promise prefixed to its own proof.
         """
         try:
             request = validate_request(capability_id, params)
@@ -4807,7 +4908,9 @@ class MapdexPlugin:
                 capability_id, describe_exception(error)), severity="blocking")
             self._nivo_state = transition(self._nivo_state, "error")
             return False
-        described = self._describe_capability_result(summary or capability_id, result)
+        if headline is None:
+            headline = summary or capability_id
+        described = self._describe_capability_result(headline, result)
         # This action is part of the answer already on screen, not a second
         # message from Nivo. Updating the pending answer also lets a continuation
         # replace it with the final wording, so one user request produces one
@@ -5135,6 +5238,10 @@ class MapdexPlugin:
             self._nivo_state = transition(self._nivo_state, "error")
             return
         source_name = layer.name() if hasattr(layer, "name") else ""
+        refusal = self._processing_refusal(operation, layer)
+        if refusal:
+            self._action_failed("Nivo could not run that: {}".format(refusal))
+            return
         count = layer.featureCount() if hasattr(layer, "featureCount") else None
         if count == 0:
             # Only an exact zero counts as empty: several providers answer -1 for
@@ -5144,8 +5251,38 @@ class MapdexPlugin:
             self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
             self._nivo_state = transition(self._nivo_state, "done")
             return
+        # A length stated in metres is applied in metres (processing_units).
+        plan = self._metric_plan(operation, layer, action.get("params", {}))
+        if plan["strategy"] == "refuse":
+            self._action_failed("Nivo could not run that: {}".format(plan["reason"]))
+            return
+        # First, before any algorithm writes a layer: a JSON field stops every
+        # one of them, the reprojection below included.
+        working, textual = self._textual_copy(layer)
+        if working is None:
+            self._action_failed(
+                "Nivo could not run that: {} hold lists QGIS cannot copy into a new layer, "
+                "and they could not be converted to text".format(
+                    ", ".join("'{}'".format(name) for name in textual)))
+            return
+        restore_crs = None
+        if plan["strategy"] == "reproject":
+            working = self._reprojected_copy(working, plan["crs"], name=source_name)
+            if working is None:
+                self._action_failed(
+                    "Nivo could not run that: the {} is measured in metres and this layer is "
+                    "in degrees, and it could not be reprojected to {} to measure it".format(
+                        operation_label(operation), plan["crs"]))
+                return
+            restore_crs = layer.crs()
         try:
-            parameters = build_algorithm_parameters(algorithm, operation, layer, action.get("params", {}))
+            parameters = build_algorithm_parameters(algorithm, operation, working, plan["params"])
+            parameters.update({
+                key: value for key, value in input_parameter_aliases(
+                    [definition.name() for definition in algorithm.parameterDefinitions()],
+                    working).items()
+                if key not in parameters
+            })
         except Exception as exc:
             self._show_error("Nivo Processing validation failed", exc)
             self._nivo_state = transition(self._nivo_state, "error")
@@ -5166,6 +5303,13 @@ class MapdexPlugin:
             if self.dock is None:
                 return
             if not successful:
+                # Said where the request is, not only on the status line. The
+                # status line is rewritten by the next layer click, and the
+                # transcript still shows the confirmation the user accepted, so a
+                # failure reported there alone reads as a run that is still going.
+                log = feedback.textLog() if hasattr(feedback, "textLog") else ""
+                self._say(describe_processing_failure(operation_label(operation), source_name, log),
+                          severity="warning")
                 self._set_status("Nivo Processing task failed or was cancelled.")
                 self._nivo_state = transition(self._nivo_state, "error")
                 return
@@ -5202,6 +5346,12 @@ class MapdexPlugin:
                                 log_debug("resolving the Processing output {}".format(key), exc)
             output_name = ""
             produced = None
+            if restore_crs is not None and output_layer is not None and output_layer.isValid():
+                # The work ran on a metric copy; the result goes back into the
+                # coordinate system the user's layer is in.
+                returned = self._reprojected_copy(output_layer, restore_crs, name=output_layer.name())
+                if returned is not None:
+                    output_layer = returned
             if output_layer is not None and output_layer.isValid():
                 QgsProject.instance().addMapLayer(output_layer)
                 self.iface.setActiveLayer(output_layer)
@@ -5214,11 +5364,25 @@ class MapdexPlugin:
                         produced = None
                     if produced is not None and produced < 0:
                         produced = None
+            if operation == "validate":
+                # A check, not a transformation: an empty result is the good
+                # answer, and an empty "invalid geometries" layer on the map
+                # would say nothing the sentence does not.
+                if produced == 0 and output_layer is not None:
+                    QgsProject.instance().removeMapLayer(output_layer.id())
+                    self.iface.setActiveLayer(layer)
+                self._say(describe_validation_outcome(source_name, produced))
+                self.iface.mapCanvas().refresh()
+                self._nivo_state = transition(self._nivo_state, "done")
+                self._set_status("Nivo finished the {}.".format(operation_label(operation)))
+                return
             # An algorithm that finished is not the same as a result the user can
             # see: "completed" over an empty or missing output is a claim the map
             # contradicts. The algorithm id stays out of this line entirely.
-            self._say(describe_processing_outcome(
-                operation, output_name, produced, source_name))
+            outcome = describe_processing_outcome(operation, output_name, produced, source_name)
+            if output_name and produced != 0:
+                outcome += describe_textual_fields(textual)
+            self._say(outcome)
             self.iface.mapCanvas().refresh()
             self._nivo_state = transition(self._nivo_state, "done")
             if output_name and produced != 0:
@@ -5228,9 +5392,12 @@ class MapdexPlugin:
                     operation_label(operation)))
 
         task.executed.connect(completed)
-        QgsApplication.taskManager().addTask(task)
+        # Before the task is handed over, not after: a task that finishes
+        # before control returns here would otherwise have its outcome
+        # overwritten by "is running".
         self._set_status("Nivo is running the {} on '{}'.".format(
             operation_label(operation), source_name))
+        QgsApplication.taskManager().addTask(task)
 
     @guarded
     def _workflow_changed(self, _index):
