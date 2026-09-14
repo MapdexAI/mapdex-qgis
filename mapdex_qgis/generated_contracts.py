@@ -344,6 +344,12 @@ ERROR_REGISTRY = [
         "template": "This workspace holds more than the {tier} plan allows."
     },
     {
+        "code": "CURRENT_PLAN_UNRECOGNIZED",
+        "type": "conflict",
+        "http": 409,
+        "template": "This workspace's current subscription does not match a plan that can be changed here. Nothing has been charged."
+    },
+    {
         "code": "PLAN_CHANGE_FAILED",
         "type": "system",
         "http": 502,
