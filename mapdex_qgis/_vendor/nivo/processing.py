@@ -7,9 +7,16 @@ task can run.
 """
 from __future__ import annotations
 
-from typing import Any
+import math
+import re
+from typing import Any, Callable, Mapping
 
 MAX_PARAM_TEXT = 256
+
+# What a reference to a second layer may look like. QGIS layer ids are word
+# characters, dots and hyphens; a path, a URI, a GDAL virtual filesystem prefix
+# or a provider string all need a slash, a backslash, a colon or a pipe.
+LAYER_REFERENCE = re.compile(r"[\w.\-]+")
 
 PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
     "buffer": ("native:buffer", "qgis:buffer"),
@@ -174,7 +181,7 @@ OPERATION_LABELS: dict[str, str] = {
 }
 
 
-def describe_missing_algorithm(operation: Any) -> str:
+def describe_missing_algorithm(operation: Any, service_name: str = "") -> str:
     """Why an operation will not run here, and what to do instead.
 
     It replaces "This QGIS installation has no algorithm for the watershed",
@@ -187,21 +194,30 @@ def describe_missing_algorithm(operation: Any) -> str:
     telling somebody to install something would send them to fix the wrong
     thing.
 
-    Both end with the Workspace, because it computes these without any provider
-    - and offering the route that already works is worth more than a diagnosis.
+    `service_name` is the host's own server-side route, when it has one that
+    computes these without any provider. Offering the route that already works
+    is worth more than a diagnosis, but this package cannot know such a service
+    exists, so the host names it. Without one, no route is invented.
     """
     label = operation_label(operation)
+    service = str(service_name or "").strip()
     provider = PROVIDER_DEPENDENT_OPERATIONS.get(str(operation or "").strip())
     if provider:
+        if service:
+            return (
+                "This QGIS has no {} provider, and a {} needs one. Enable {} in "
+                "Processing, or upload the surface to {} and ask me there - it "
+                "computes this without any provider at all."
+            ).format(provider, label, provider, service)
         return (
-            "This QGIS has no {} provider, and a {} needs one. Enable {} in "
-            "Processing, or upload the surface to Mapdex and ask me there - it "
-            "computes this without any provider at all."
+            "This QGIS has no {} provider, and a {} needs one. Enable {} in Processing."
         ).format(provider, label, provider)
-    return (
-        "This QGIS installation has no algorithm for the {}. Upload the data to "
-        "Mapdex and ask me there instead."
-    ).format(label)
+    if service:
+        return (
+            "This QGIS installation has no algorithm for the {}. Upload the data to "
+            "{} and ask me there instead."
+        ).format(label, service)
+    return "This QGIS installation has no algorithm for the {}.".format(label)
 
 
 def describe_geographic_terrain_refusal(operation: Any, crs_description: str = "") -> str:
@@ -277,12 +293,15 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         # not a smaller version of the same request; it is a different question
         # nobody asked.
         return {}
+    # Every number is checked with math.isfinite as well as its range. NaN fails
+    # no ordering comparison, so `nan <= 0 or nan > 1e6` is False and a NaN
+    # distance used to pass straight through to the algorithm.
     if "distance" in params:
         try:
             distance = float(params.get("distance"))
         except (TypeError, ValueError):
             return {}
-        if distance <= 0 or distance > 1000000:
+        if not math.isfinite(distance) or distance <= 0 or distance > 1000000:
             return {}
         safe["distance"] = distance
     if "tolerance" in params:
@@ -290,7 +309,7 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
             tolerance = float(params.get("tolerance"))
         except (TypeError, ValueError):
             return {}
-        if tolerance <= 0 or tolerance > 1000000:
+        if not math.isfinite(tolerance) or tolerance <= 0 or tolerance > 1000000:
             return {}
         safe["tolerance"] = tolerance
     if operation == "contours":
@@ -298,14 +317,17 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
             interval = float(params.get("interval"))
         except (TypeError, ValueError):
             return {}
-        if interval <= 0 or interval > 1_000_000:
+        if not math.isfinite(interval) or interval <= 0 or interval > 1_000_000:
             return {}
         safe["interval"] = interval
         if "base" in params:
             try:
-                safe["base"] = float(params.get("base"))
+                base = float(params.get("base"))
             except (TypeError, ValueError):
                 return {}
+            if not math.isfinite(base):
+                return {}
+            safe["base"] = base
     if "z_factor" in params:
         try:
             z_factor = float(params.get("z_factor"))
@@ -333,6 +355,11 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
     for key in ("predicate", "target_layer", "field"):
         if key in params:
             value = str(params.get(key) or "").strip()[:MAX_PARAM_TEXT]
+            if key == "target_layer" and value and not LAYER_REFERENCE.fullmatch(value):
+                # Refused rather than cleaned: a second layer that looks like a
+                # path is not a layer name with odd characters, it is a request
+                # to open something that is not in the project.
+                return {}
             if value:
                 safe[key] = value
     if "target_crs" in params:
@@ -345,6 +372,31 @@ def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
         # is what made a reprojection a no-op that reported success.
         return {}
     return safe
+
+
+def resolve_target_layer(
+    params: Mapping[str, Any], lookup: Callable[[str], Any]
+) -> dict[str, Any] | None:
+    """Replace a second-layer reference with the host's own layer, or refuse.
+
+    `lookup` is the host's resolver for layers that are already loaded (in QGIS,
+    `QgsProject.instance().mapLayer`), returning None for anything else. The
+    reference must be resolved BEFORE it reaches a processing framework, because
+    QGIS Processing reads a string layer parameter as an id, then a name, then a
+    data source it opens: a reference such as ``CSV:/home/u/.pgpass`` or
+    ``/vsicurl/https://host/?d=...`` would otherwise read a local file or make
+    an outbound request. Returns a new parameter mapping, or None when the
+    reference names nothing the host has loaded.
+    """
+    resolved = dict(params)
+    reference = resolved.get("target_layer")
+    if not reference:
+        return resolved
+    layer = lookup(str(reference))
+    if layer is None:
+        return None
+    resolved["target_layer"] = layer
+    return resolved
 
 
 def normalize_crs_reference(value: Any) -> str:

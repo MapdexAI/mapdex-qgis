@@ -205,14 +205,15 @@ this plugin actually uses -- rather than the whole of those bindings, so that
 the plugin carries the contract surface it depends on and nothing more.
 
 `mapdex_qgis/_vendor/nivo/` is a vendored copy of
-[nivo-gis](https://github.com/MapdexAI/nivo-gis), the generic agent core: the
-capability registry, the bounded agent loop, the analytics and spatial kernels,
-the read-only PostGIS builder and the shared system prompt. QGIS ships no usable
-`pip`, so the source travels in the zip rather than being installed. Do not edit
-it here -- land the change in the package and re-run:
+[Nivo](https://github.com/MapdexAI/nivo) (`nivo-gis`), the generic agent core:
+the capability registry, the bounded agent loop, the analytics, spatial and
+survey kernels, the read-only PostGIS builder and the shared system prompt. Its
+source of truth is `mapdex/packages/nivo` in the Mapdex monorepo. QGIS ships no
+usable `pip`, so the source travels in the zip rather than being installed. Do
+not edit it here -- land the change in the package and re-run:
 
 ```bash
-python3 scripts/vendor_nivo.py   # refresh the copy and its recorded commit
+python3 scripts/vendor_nivo.py   # refresh the copy and its recorded digest
 python3 scripts/vendor_prompt.py # mirror the shared prompt into the monorepo
 ```
 
@@ -227,7 +228,8 @@ GNU General Public License v2.0 or later. See [LICENSE](LICENSE).
 
 The vendored `nivo-gis` package under `mapdex_qgis/_vendor/nivo/` is MIT; its
 terms ship beside it as `mapdex_qgis/_vendor/NIVO-LICENSE`, and
-`mapdex_qgis/_vendor/NIVO_VERSION` records the exact commit this tree carries.
+`mapdex_qgis/_vendor/NIVO_VERSION` records the package version and a digest of
+the exact bytes this tree carries.
 
 ## Support
 

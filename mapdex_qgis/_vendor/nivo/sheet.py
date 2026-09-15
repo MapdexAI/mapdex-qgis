@@ -2,8 +2,8 @@
 """Composing a printable map sheet, as arithmetic rather than as a canvas.
 
 A surveyor's deliverable is frequently a PLAN: a page at a stated scale with a
-legend, a scale bar, a north arrow and a title block. Mapdex delivers DATA, and
-the gap between those two is the last thing between a run and something a client
+legend, a scale bar, a north arrow and a title block. A data pipeline delivers
+DATA, and the gap between those two is the last thing between a run and something a client
 will accept.
 
 Everything here is pure. Where each item sits on the page, what ground the map

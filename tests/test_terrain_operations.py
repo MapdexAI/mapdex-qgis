@@ -12,6 +12,8 @@ perform, because warping somebody's loaded raster underneath them is a larger
 liberty than declining to answer.
 """
 
+import pathlib
+
 import pytest
 
 from mapdex_qgis._vendor.nivo import processing
@@ -51,7 +53,9 @@ def test_the_six_core_terrain_operations_still_need_no_optional_provider():
 
 
 def test_a_provider_dependent_refusal_names_the_provider_and_the_way_round_it():
-    message = processing.describe_missing_algorithm("watershed")
+    # The package is vendor-neutral, so the plugin names its own route; the
+    # plugin's call site passes the same name (see plugin.py).
+    message = processing.describe_missing_algorithm("watershed", service_name="Mapdex")
     assert "GRASS" in message
     assert "Mapdex" in message
     assert "watershed" in message
@@ -62,9 +66,16 @@ def test_a_provider_dependent_refusal_names_the_provider_and_the_way_round_it():
 def test_an_operation_with_no_provider_to_name_is_not_told_to_install_one():
     # Telling somebody to install something would send them to fix the wrong
     # thing: this is a gap in the allowlist, not a missing package.
-    message = processing.describe_missing_algorithm("buffer")
+    message = processing.describe_missing_algorithm("buffer", service_name="Mapdex")
     assert "GRASS" not in message
     assert "Mapdex" in message
+
+
+def test_the_plugin_offers_its_own_route_when_an_algorithm_is_missing():
+    # Without the name the refusal would still be correct but would drop the
+    # one route that already works, which is what the message exists to offer.
+    source = (pathlib.Path(__file__).resolve().parents[1] / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert 'describe_missing_algorithm(operation, service_name="Mapdex")' in source
 
 
 def test_only_the_three_ratio_measurements_are_unit_sensitive():

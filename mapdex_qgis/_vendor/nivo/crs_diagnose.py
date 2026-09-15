@@ -12,7 +12,6 @@ list of candidates is a list of coincidences.
 
 The rules take plain data so they can be tested without QGIS: the runtime reads
 the extent, the kind and the area of use from the project and passes them in.
-Ported from `services/mapdex-extension-host/src/crs/diagnose.py`.
 """
 from __future__ import annotations
 

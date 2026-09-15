@@ -1,30 +1,34 @@
-"""Refresh mapdex_qgis/_vendor/nivo from a checkout of the nivo-gis package.
+"""Refresh mapdex_qgis/_vendor/nivo from the nivo package in this monorepo.
 
-`nivo-gis` is the generic GIS-agent core - MIT, no dependencies, deliberately
-owned by nobody in particular. The plugin cannot depend on it as a package:
-QGIS ships no usable `pip`, the package is not on PyPI, and a plugin runs inside
-an interpreter it does not own. So the source travels in the zip, imported with
-explicit relative imports rather than a `sys.path` insert.
+`nivo` (distributed as `nivo-gis`) is the generic GIS-agent core - MIT, no
+dependencies, vendor-neutral. Its source of truth is `mapdex/packages/nivo`,
+and the public repository github.com/MapdexAI/nivo is published from there.
+The plugin cannot depend on it as a package: QGIS ships no usable `pip` and a
+plugin runs inside an interpreter it does not own. So the source travels in the
+zip, imported with explicit relative imports rather than a `sys.path` insert.
 
 This is the only way that copy is allowed to change. Editing the vendored tree
 by hand makes the fix invisible to every other client of the package, which is
-the whole failure vendoring invites; `tests/test_vendored_nivo.py` fails the
-moment the two differ.
+the whole failure vendoring invites - and it happened: for a month the fixes
+landed here while the package they belonged to fell behind.
+`tests/test_vendored_nivo.py` fails the moment the two differ.
 
-    python3 scripts/vendor_nivo.py                      # ../../../nivo-gis
-    python3 scripts/vendor_nivo.py --source ~/src/nivo-gis
-    python3 scripts/vendor_nivo.py --check              # fail if it would change
+    python3 scripts/vendor_nivo.py                          # ../../packages/nivo
+    python3 scripts/vendor_nivo.py --source path/to/nivo    # another checkout
+    python3 scripts/vendor_nivo.py --check                  # fail if it would change
 
-A DIRTY CHECKOUT IS REFUSED. `NIVO_VERSION` records a commit sha, and a sha
-that does not describe the bytes beside it is worse than no provenance at all:
-it reads as a claim anybody can check and cannot.
+PROVENANCE IS A DIGEST OF THE BYTES, NOT A COMMIT. When the package lived in
+its own repository the manifest recorded that repository's commit. Now that it
+lives in the same repository as the plugin, no commit can name the tree it is
+itself part of. A digest of every vendored file can, and it has a property the
+commit never had: the published plugin, with no monorepo anywhere, can still
+check that the bytes it carries are the bytes the manifest describes.
 """
 from __future__ import annotations
 
 import hashlib
 import pathlib
 import shutil
-import subprocess
 import sys
 
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -32,75 +36,46 @@ VENDOR = PLUGIN_ROOT / "mapdex_qgis" / "_vendor"
 DEST = VENDOR / "nivo"
 MANIFEST = VENDOR / "NIVO_VERSION"
 LICENSE = VENDOR / "NIVO-LICENSE"
-# <somewhere>/mapdex/mapdex/apps/qgis-plugin next to <somewhere>/nivo-gis.
-# Guarded, because a published standalone tree can sit shallower than that and
-# an IndexError here would read as a broken script rather than "pass --source".
-DEFAULT_SOURCE = (PLUGIN_ROOT.parents[3] / "nivo-gis" if len(PLUGIN_ROOT.parents) > 3
-                  else PLUGIN_ROOT / "no-such-checkout")
+# <repo>/mapdex/apps/qgis-plugin -> <repo>/mapdex/packages/nivo. Guarded, because
+# a published standalone tree can sit shallower than that and an IndexError here
+# would read as a broken script rather than "pass --source".
+DEFAULT_SOURCE = (PLUGIN_ROOT.parents[1] / "packages" / "nivo" if len(PLUGIN_ROOT.parents) > 1
+                  else PLUGIN_ROOT / "no-such-package")
 
+PUBLIC_SOURCE = "https://github.com/MapdexAI/nivo"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 HEADER = """\
-# The vendored copy of nivo-gis under mapdex_qgis/_vendor/nivo.
+# The vendored copy of the nivo package under mapdex_qgis/_vendor/nivo.
 #
-# nivo-gis is not on PyPI and QGIS ships no usable pip, so the plugin cannot
-# depend on it as a package: it carries the source and imports it with explicit
-# relative imports. tests/test_vendored_nivo.py fails when this tree diverges
-# from the checkout named below, and skips when that checkout is absent - a
-# standalone plugin repository has no monorepo sibling to compare against.
+# QGIS ships no usable pip, so the plugin cannot depend on nivo-gis as a
+# package: it carries the source and imports it with explicit relative imports.
+# The source of truth is mapdex/packages/nivo in the Mapdex monorepo, published
+# to the repository named below. tests/test_vendored_nivo.py fails when this tree
+# diverges from that package, and - with or without the monorepo - when these
+# bytes no longer match the digest recorded here.
 #
-# To update: re-run scripts/vendor_nivo.py against a clean nivo-gis checkout.
+# To update: re-run scripts/vendor_nivo.py. Never edit the vendored tree.
 #
-# The commit sha is split across commit-1..commit-4 (10 hex chars each) rather
-# than one 40-char field: plugins.qgis.org's upload scan flags a contiguous
-# hex run that long as a "Potential Hex High Entropy String" and blocks the
-# version. Reassembled in order, commit-1+commit-2+commit-3+commit-4 is the
-# exact same full sha; nothing about the recorded provenance is shortened or
-# lost, only its on-disk shape.
+# The digest is split across digest-1..digest-7 (10 hex chars each, the last
+# shorter) rather than one 64-char field: plugins.qgis.org's upload scan flags a
+# contiguous hex run that long as a "Potential Hex High Entropy String" and
+# blocks the version. Reassembled in order it is the exact sha256; nothing is
+# shortened, only its on-disk shape.
 
 """
 
-# Chunk length for the split commit-N fields: long enough that four chunks
-# reassemble the standard 40-char sha1, short enough that no single field
+# Chunk length for the split digest-N fields: short enough that no single field
 # reads as a high-entropy secret to a scanner (see HEADER above).
-_COMMIT_CHUNK = 10
+_CHUNK = 10
 
 
-def _split_commit(full_sha: str) -> list[str]:
-    return [full_sha[i:i + _COMMIT_CHUNK] for i in range(0, len(full_sha), _COMMIT_CHUNK)]
+def fingerprint(root: pathlib.Path) -> dict:
+    """Every file under `root` by relative path, with the sha256 of its bytes.
 
-
-def _git(repo: pathlib.Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, text=True, check=True).stdout.strip()
-
-
-def _package_version(repo: pathlib.Path) -> str:
-    pyproject = repo / "pyproject.toml"
-    if not pyproject.is_file():
-        return "?"
-    for line in pyproject.read_text(encoding="utf-8").splitlines():
-        if line.startswith("version = "):
-            return line.split("=", 1)[1].strip().strip('"')
-    return "?"
-
-
-def _manifest(repo: pathlib.Path) -> str:
-    commit_lines = [
-        "commit-{} = {}".format(i + 1, chunk)
-        for i, chunk in enumerate(_split_commit(_git(repo, "rev-parse", "HEAD")))
-    ]
-    return HEADER + "\n".join((
-        "source = https://github.com/MapdexAI/nivo",
-        "version = " + _package_version(repo),
-        *commit_lines,
-        "committed = " + _git(repo, "log", "-1", "--format=%cI"),
-        "subject = " + _git(repo, "log", "-1", "--format=%s"),
-        "worktree = clean",
-    )) + "\n"
-
-
-def _fingerprint(root: pathlib.Path) -> dict:
+    Bytes, not text: a line-ending change is a real difference in a tree that
+    ships inside a zip, and reading as text would hide it.
+    """
     out = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
@@ -109,32 +84,52 @@ def _fingerprint(root: pathlib.Path) -> dict:
     return out
 
 
+def tree_digest(files: dict) -> str:
+    """One sha256 over the sorted (path, file digest) pairs."""
+    lines = "".join("{} {}\n".format(name, files[name]) for name in sorted(files))
+    return hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
+def _package_version(package_root: pathlib.Path) -> str:
+    pyproject = package_root / "pyproject.toml"
+    if not pyproject.is_file():
+        return "?"
+    for line in pyproject.read_text(encoding="utf-8").splitlines():
+        if line.startswith("version = "):
+            return line.split("=", 1)[1].strip().strip('"')
+    return "?"
+
+
+def _manifest(package_root: pathlib.Path, digest: str) -> str:
+    chunks = [digest[i:i + _CHUNK] for i in range(0, len(digest), _CHUNK)]
+    return HEADER + "\n".join((
+        "source = " + PUBLIC_SOURCE,
+        "canonical = mapdex/packages/nivo",
+        "version = " + _package_version(package_root),
+        *("digest-{} = {}".format(i + 1, chunk) for i, chunk in enumerate(chunks)),
+    )) + "\n"
+
+
 def main(argv) -> int:
     check = "--check" in argv
-    repo = pathlib.Path(argv[argv.index("--source") + 1]).expanduser() if "--source" in argv else DEFAULT_SOURCE
-    package = repo / "nivo"
+    root = pathlib.Path(argv[argv.index("--source") + 1]).expanduser() if "--source" in argv else DEFAULT_SOURCE
+    package = root / "nivo"
 
     if not package.is_dir():
         print("error: no nivo package at {}; pass --source".format(package), file=sys.stderr)
         return 2
-    if not (repo / ".git").exists():
-        print("error: {} is not a git checkout, so no commit can be recorded".format(repo), file=sys.stderr)
-        return 2
-    if _git(repo, "status", "--porcelain"):
-        print("error: {} has uncommitted changes. Commit them first - a recorded sha that does "
-              "not describe these bytes is provenance nobody can check.".format(repo), file=sys.stderr)
-        return 2
 
-    manifest = _manifest(repo)
-    same = _fingerprint(package) == _fingerprint(DEST) if DEST.is_dir() else False
+    source_files = fingerprint(package)
+    manifest = _manifest(root, tree_digest(source_files))
+    same = DEST.is_dir() and fingerprint(DEST) == source_files
     same = same and MANIFEST.is_file() and MANIFEST.read_text(encoding="utf-8") == manifest
-    same = same and LICENSE.is_file() and LICENSE.read_bytes() == (repo / "LICENSE").read_bytes()
+    same = same and LICENSE.is_file() and LICENSE.read_bytes() == (root / "LICENSE").read_bytes()
 
     if check:
         if same:
-            print("mapdex_qgis/_vendor/nivo is current with {}".format(repo))
+            print("mapdex_qgis/_vendor/nivo is current with {}".format(root))
             return 0
-        print("error: mapdex_qgis/_vendor/nivo differs from {}; run scripts/vendor_nivo.py".format(repo),
+        print("error: mapdex_qgis/_vendor/nivo differs from {}; run scripts/vendor_nivo.py".format(root),
               file=sys.stderr)
         return 1
 
@@ -148,10 +143,10 @@ def main(argv) -> int:
     # the code and drop the terms. It lives outside DEST deliberately: the drift
     # check compares `_vendor/nivo` to the package tree, and a file the package
     # does not have there would read as local drift.
-    shutil.copyfile(repo / "LICENSE", LICENSE)
+    shutil.copyfile(root / "LICENSE", LICENSE)
 
-    files = sorted(_fingerprint(DEST))
-    print("vendored {} files from {} @ {}".format(len(files), repo, _git(repo, "rev-parse", "--short", "HEAD")))
+    files = sorted(fingerprint(DEST))
+    print("vendored {} files from {} (version {})".format(len(files), root, _package_version(root)))
     # The data files are the ones a naive `*.py` copy drops, and their absence
     # only shows up as an ImportError inside QGIS on somebody else's machine.
     missing = [name for name in ("prompts/nivo.system.md", "py.typed") if name not in files]

@@ -170,6 +170,7 @@ from ._vendor.nivo.processing import (
     describe_missing_algorithm,
     describe_processing_outcome,
     operation_label,
+    resolve_target_layer,
     resolve_processing_algorithm,
 )
 from .qt_compat import QAction, enum_member, field_type, qgis_version
@@ -3564,7 +3565,8 @@ class MapdexPlugin:
         The model's own view of risk is not consulted: the decision carries the
         capability id and the registry decides whether it needs a person.
         """
-        return self._confirm_capability(str((decision or {}).get("capability") or ""))
+        return self._confirm_capability(
+            str((decision or {}).get("capability") or ""), "", (decision or {}).get("params"))
 
     def _offer_hosted_path(self, notice):
         """Ask whether to send this question to Mapdex after a provider failure.
@@ -4430,16 +4432,24 @@ class MapdexPlugin:
         return capability_request(
             tool, action, layer.id() if layer is not None else "", LEGACY_CAPABILITY_IDS)
 
-    def _confirm_capability(self, capability_id, summary=""):
+    def _confirm_capability(self, capability_id, summary="", params=None):
         """Ask before running a capability the registry marks consequential.
 
         The registry decides this, not the model and not the server. A compose
         response that simply omits `requires_confirmation` must not be able to
         make `field.calculate@1` write a column into the user's own data
         silently - that write cannot be undone from here.
+
+        Any file the request names is shown in the question. A confirmation
+        that says "Read a coordinate list into a layer" without saying WHICH
+        file is not consent to reading a particular file; it is a button.
         """
         capability = get_capability(capability_id)
         question = summary or (capability.summary if capability is not None else capability_id)
+        files = [str(value) for key, value in sorted(dict(params or {}).items())
+                 if str(key).endswith("path") and value]
+        if files:
+            question = "{}\n\nFile: {}".format(question, "\n".join(files))
         yes = enum_member(QMessageBox, "StandardButton", "Yes")
         no = enum_member(QMessageBox, "StandardButton", "No")
         answer = QMessageBox.question(
@@ -4889,7 +4899,8 @@ class MapdexPlugin:
             request = validate_request(capability_id, params)
         except CapabilityError as error:
             return self._capability_refused(error)
-        if request.get("requires_confirmation") and not self._confirm_capability(capability_id, summary):
+        if request.get("requires_confirmation") and not self._confirm_capability(
+                capability_id, summary, request.get("params")):
             self._set_status("Nivo did not run {}.".format(summary or capability_id))
             self._nivo_state = transition(self._nivo_state, "done")
             return False
@@ -5233,8 +5244,9 @@ class MapdexPlugin:
         if algorithm is None:
             # Names the missing provider and the route round it. "This
             # installation has no algorithm" named nothing and offered no next
-            # move, which is the same failure as an unexplained error code.
-            self._set_status(describe_missing_algorithm(operation))
+            # move, which is the same failure as an unexplained error code. The
+            # route is ours to name: the vendored package is vendor-neutral.
+            self._set_status(describe_missing_algorithm(operation, service_name="Mapdex"))
             self._nivo_state = transition(self._nivo_state, "error")
             return
         source_name = layer.name() if hasattr(layer, "name") else ""
@@ -5256,6 +5268,23 @@ class MapdexPlugin:
         if plan["strategy"] == "refuse":
             self._action_failed("Nivo could not run that: {}".format(plan["reason"]))
             return
+        # The second layer is resolved against this project and handed to QGIS
+        # as a layer object, never as text. Processing reads a string layer
+        # parameter as an id, then a name, then a data source it OPENS, so a
+        # request naming "CSV:/home/u/.pgpass" or "/vsicurl/https://host/?d=..."
+        # read a local file or made an outbound request - and the named
+        # two-layer operations ask no question first.
+
+        def project_layer(reference):
+            found = QgsProject.instance().mapLayer(reference)
+            return found if found is not None and found.isValid() else None
+
+        resolved_params = resolve_target_layer(plan["params"], project_layer)
+        if resolved_params is None:
+            self._action_failed(
+                "Nivo could not run that: the second layer it names is not a layer in this project")
+            return
+        plan = dict(plan, params=resolved_params)
         # First, before any algorithm writes a layer: a JSON field stops every
         # one of them, the reprojection below included.
         working, textual = self._textual_copy(layer)

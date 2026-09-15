@@ -56,7 +56,16 @@ FORBIDDEN_FUNCTIONS = frozenset({
     "lo_import", "lo_export", "dblink", "dblink_exec", "pg_sleep",
     "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf",
     "set_config", "pg_logdir_ls", "pg_file_write", "query_to_xml",
+    "current_setting", "pg_notify", "table_to_xml",
 })
+
+# Families denied by prefix, because a list of names misses the next member of
+# the family. dblink_connect and dblink_send_query open a separate session that
+# a READ ONLY transaction does not cover; lo_* reads and writes large objects;
+# pg_ls_* lists server directories; pg_advisory* takes locks. Builders quote
+# every identifier and the scan blanks quoted text, so a column that happens to
+# start with one of these cannot trip this.
+FORBIDDEN_FUNCTION_PREFIXES = ("dblink", "lo_", "pg_ls_", "pg_advisory", "pg_read_", "pg_file_")
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
@@ -172,11 +181,15 @@ def guard_statement(sql: str) -> str:
     forbidden = words & FORBIDDEN_KEYWORDS
     if forbidden:
         raise ReadOnlyViolation("forbidden statement keyword: {}".format(sorted(forbidden)[0]))
-    functions = words & FORBIDDEN_FUNCTIONS
+    functions = (words & FORBIDDEN_FUNCTIONS) | {
+        word for word in words if word.startswith(FORBIDDEN_FUNCTION_PREFIXES)}
     if functions:
         raise ReadOnlyViolation("forbidden function: {}".format(sorted(functions)[0]))
-    # `SELECT ... INTO new_table` writes despite starting with SELECT.
-    if re.search(r"\binto\b", lowered) and not re.search(r"\bwithin\s+group\b", lowered):
+    # `SELECT ... INTO new_table` writes despite starting with SELECT. There is
+    # no exemption for `within group`: that phrase does not contain the word
+    # `into`, so the exemption protected nothing, and it let
+    # `percentile_cont(0.5) within group (order by a) into t2` through.
+    if re.search(r"\binto\b", lowered):
         raise ReadOnlyViolation("SELECT INTO is not allowed")
     if re.search(r"\bfor\s+(update|share|no\s+key\s+update)\b", lowered):
         raise ReadOnlyViolation("row locking is not allowed")

@@ -40,9 +40,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_TOKENS = 2048
+# A chat completion is a few kilobytes. A body far past this is a hostile or
+# broken endpoint, and reading it whole would take the host application's memory.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # Anything that looks like a credential is masked before it can be surfaced.
+# Case-insensitive, and the bearer alphabet includes base64's `+/=`, because a
+# pattern that only matches the vendors' own spelling misses a gateway's token.
+# Keys with no recognisable shape are masked by value in ModelProvider._scrub.
 SECRET_PATTERN = re.compile(
-    r"(sk-[A-Za-z0-9_\-]{8,}|sk-ant-[A-Za-z0-9_\-]{8,}|AIza[A-Za-z0-9_\-]{20,}|Bearer\s+[A-Za-z0-9._\-]{8,})"
+    r"(?i)(sk-ant-[A-Za-z0-9_\-]{8,}|sk-[A-Za-z0-9_\-]{8,}|gsk_[A-Za-z0-9]{8,}|xai-[A-Za-z0-9_\-]{8,}"
+    r"|hf_[A-Za-z0-9]{8,}|AIza[A-Za-z0-9_\-]{20,}|bearer\s+[A-Za-z0-9._~+/=\-]{8,}"
+    r"|(?:api[_-]?key|access[_-]?token|key|token)=[^&\s]{8,})"
 )
 
 RUNTIME_HOSTED = "hosted"
@@ -187,7 +195,21 @@ class ModelProvider:
         """Non-secret description for the settings UI and for evidence."""
         return {"provider": self.name, "model": self.model, "endpoint": self.base_url or "default"}
 
+    def _scrub(self, text: Any) -> str:
+        """Redact credential shapes, and this provider's own key by value.
+
+        A pattern can only recognise keys that look like a known vendor's. The
+        configured key is the one value certain to be a secret, whatever it looks
+        like, so it is removed literally as well.
+        """
+        cleaned = redact(text)
+        if len(self._api_key) >= 8:
+            cleaned = cleaned.replace(self._api_key, "[redacted]")
+        return cleaned
+
     def _post(self, url: str, headers: Mapping[str, str], payload: Mapping[str, Any]) -> dict[str, Any]:
+        # `from None` on every re-raise: the original exception keeps the
+        # unredacted text in __context__, and a traceback formatter prints it.
         try:
             raw = self._transport(url, headers, payload, self.timeout)
         except urllib.error.HTTPError as exc:  # pragma: no cover - network shape
@@ -196,15 +218,15 @@ class ModelProvider:
                 detail = exc.read().decode("utf-8", "replace")[:400]
             except Exception:
                 detail = ""
-            raise ProviderError(redact("{} returned HTTP {}. {}".format(self.name, exc.code, detail)))
+            raise ProviderError(self._scrub("{} returned HTTP {}. {}".format(self.name, exc.code, detail))) from None
         except urllib.error.URLError as exc:  # pragma: no cover - network shape
-            raise ProviderError(redact("Could not reach {}: {}".format(self.name, exc.reason)))
+            raise ProviderError(self._scrub("Could not reach {}: {}".format(self.name, exc.reason))) from None
         except Exception as exc:
-            raise ProviderError(redact("{} request failed: {}".format(self.name, exc)))
+            raise ProviderError(self._scrub("{} request failed: {}".format(self.name, exc))) from None
         try:
             return json.loads(raw.decode("utf-8"))
         except (ValueError, AttributeError) as exc:
-            raise ProviderError(redact("{} returned a malformed response: {}".format(self.name, exc)))
+            raise ProviderError(self._scrub("{} returned a malformed response: {}".format(self.name, exc))) from None
 
 
 def _http_post(url: str, headers: Mapping[str, str], payload: Mapping[str, Any], timeout: int) -> bytes:
@@ -222,8 +244,26 @@ def _http_post(url: str, headers: Mapping[str, str], payload: Mapping[str, Any],
     # ftp:, custom handlers - refused before a Request is built. The host is not
     # fixed, because a user may point the plugin at their own OpenAI-compatible
     # gateway or a local Ollama; the scheme is what is constrained.
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310  # nosec B310
-        return response.read()
+    #
+    # Redirects are refused. urllib's default handler copies every request
+    # header, the key included, onto the redirected request and allows an http
+    # target, and the scheme check above runs only on the first URL. So an
+    # endpoint answering `302 Location: http://anywhere/` received the key in
+    # cleartext at a host nobody configured. A model POST has no legitimate
+    # redirect to follow.
+    opener = urllib.request.build_opener(_RefuseRedirects)
+    with opener.open(request, timeout=timeout) as response:  # noqa: S310  # nosec B310
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ProviderError("the provider response is larger than this client accepts")
+    return raw
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Turn any redirect into an error instead of following it with the key."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - urllib signature
+        return None
 
 
 class OpenAIProvider(ModelProvider):
@@ -415,6 +455,13 @@ def build_provider(settings: Mapping[str, Any], transport: Callable[..., bytes] 
         )
     if name in KEYED_PROVIDERS and not api_key:
         raise ProviderError("{} needs an API key".format(name))
+    if name in KEYED_PROVIDERS:
+        # A vendor's key goes to that vendor's own endpoint and nowhere else. A
+        # base URL left over from an earlier gateway setting, or written into the
+        # host's settings by someone else, used to receive an OpenAI, Anthropic
+        # or Gemini key while the interface said it was sent to the vendor. A
+        # gateway is configured as `openai_compatible`, which names its URL.
+        base_url = ""
     model = str(settings.get("model") or "").strip() or factory.default_model
     if not model:
         # Only reachable for a gateway with no default. Refused here, naming the

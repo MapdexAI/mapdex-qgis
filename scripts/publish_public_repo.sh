@@ -78,6 +78,18 @@ if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
   exit 2
 fi
 
+# Only a commit already on master is published. A tag or a manual dispatch can
+# name any commit, including one on a branch nobody reviewed, and a published
+# tag goes on to plugins.qgis.org. A dry run skips this so a branch can be
+# inspected.
+if [ "$DRY_RUN" -eq 0 ]; then
+  git fetch --quiet origin master || true
+  if ! git merge-base --is-ancestor "$REF" origin/master; then
+    echo "error: $REF is not on origin/master; only merged commits are published" >&2
+    exit 1
+  fi
+fi
+
 echo "==> splitting $PREFIX out of $REF"
 SPLIT="$(git subtree split --prefix="$PREFIX" "$REF")"
 COUNT="$(git rev-list --count "$SPLIT")"

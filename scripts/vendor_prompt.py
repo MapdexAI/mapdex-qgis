@@ -31,7 +31,7 @@ import pathlib
 import sys
 
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parents[1]
-SOURCE = PLUGIN_ROOT / "mapdex_qgis" / "_vendor" / "nivo" / "prompts" / "nivo.system.md"
+SOURCE = PLUGIN_ROOT.parents[1] / "packages" / "nivo" / "nivo" / "prompts" / "nivo.system.md"
 TARGET = PLUGIN_ROOT.parents[1] / "packages" / "ai-prompts" / "prompts" / "nivo.system.md"
 
 

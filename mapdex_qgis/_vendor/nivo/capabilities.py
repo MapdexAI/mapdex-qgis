@@ -113,10 +113,27 @@ class Capability:
 _REGISTRY: dict[str, Capability] = {}
 
 
-def register(capability: Capability) -> Capability:
-    """Add a capability. The extension point for OSS contributors."""
+def _declaration(capability: Capability) -> tuple:
+    """Everything about a capability that decides what it may do."""
+    return (capability.describe(), capability.clients, capability.refusal)
+
+
+def register(capability: Capability, replace: bool = False) -> Capability:
+    """Add a capability. The extension point for OSS contributors.
+
+    An id that is already registered is refused unless the declaration is
+    identical (a module reloaded in the same session registers the same thing
+    twice) or the caller says `replace=True`. Without this, any package imported
+    later could swap `field.calculate@1` for a copy marked safe and turn off its
+    confirmation, with nothing to show that it happened.
+    """
     if not capability.id or "@" not in capability.id:
         raise ValueError("capability id must be name@version")
+    existing = _REGISTRY.get(capability.id)
+    if existing is not None and not replace and _declaration(existing) != _declaration(capability):
+        raise ValueError(
+            "{} is already registered with a different declaration; pass replace=True to "
+            "override it deliberately".format(capability.id))
     _REGISTRY[capability.id] = capability
     return capability
 
@@ -596,8 +613,8 @@ _c("style.raster@1", "style", "Set raster band rendering, stretch and opacity.",
 # -- Sheet --------------------------------------------------------------------
 #
 # A surveyor's deliverable is frequently a PLAN: a page at a stated scale with a
-# legend, a scale bar, a north arrow and a title block. Mapdex delivers DATA, and
-# the gap between the two is the last thing between a run and something a client
+# legend, a scale bar, a north arrow and a title block. A data pipeline delivers
+# DATA, and the gap between the two is the last thing between a run and something a client
 # will accept.
 #
 # The composition is arithmetic and lives in `sheet.py` where it can be checked
@@ -1193,7 +1210,11 @@ _c("field.import_points@1", "field",
            "elevation_field": {"type": "string"},
            "name": {"type": "string"},
            "delimiter": {"type": "string"}},
-   risk=RISK_SAFE, execution=EXEC_LOCAL, produces=("layer",), reversible=True,
+   # Consequential, not safe: `path` is a file on the user's machine chosen by
+   # whoever wrote the request, and what is read flows back to the model as an
+   # observation. A prompt-injected layer name could otherwise read any
+   # CSV-shaped file into the project with no question asked.
+   risk=RISK_CONSEQUENTIAL, execution=EXEC_LOCAL, produces=("layer",), reversible=True,
    clients=(CLIENT_QGIS,))
 _c("field.calculate@1", "field", "Add a field computed from the layer's existing fields.",
    params={"layer_id": {"type": "string", "required": True},

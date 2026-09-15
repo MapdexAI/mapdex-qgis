@@ -268,7 +268,17 @@ def compile_expression(source: str, fields: Sequence[str]):
         raise ExpressionError("the expression is empty")
     if len(text) > MAX_EXPRESSION_LENGTH:
         raise ExpressionError("the expression is too long")
-    return _Parser(_tokenize(text), fields).parse()
+    # Both escapes were reachable from one expression and neither was an
+    # ExpressionError, so a caller that catches only that type crashed instead
+    # of refusing: nesting deeper than the interpreter's recursion limit (the
+    # node budget allows it) and a non-ASCII digit such as '²', which isdigit()
+    # accepts and float() does not.
+    try:
+        return _Parser(_tokenize(text), fields).parse()
+    except RecursionError:
+        raise ExpressionError("the expression is nested too deeply") from None
+    except ValueError:
+        raise ExpressionError("the expression contains a number this calculator cannot read") from None
 
 
 def evaluate(node, row: Mapping[str, Any]) -> Any:

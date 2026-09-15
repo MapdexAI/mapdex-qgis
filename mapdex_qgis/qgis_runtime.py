@@ -64,6 +64,39 @@ def raster_is_georeferenced(layer: Any) -> bool:
     return bool(crs.isValid()) and not layer.extent().isEmpty()
 
 
+_EXPORT_DIRECTORY: list = []
+
+
+def private_export_directory() -> str:
+    """This session's own export directory, created owner-only on first use.
+
+    A fixed name under the shared temp directory let another local user create
+    it first and then read or replace whatever was exported into it. mkdtemp
+    makes a fresh directory with mode 0700 that nobody else can have prepared.
+    """
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    if not _EXPORT_DIRECTORY or not os.path.isdir(_EXPORT_DIRECTORY[0]):
+        _EXPORT_DIRECTORY[:] = [tempfile.mkdtemp(prefix="mapdex-exports-")]
+    return _EXPORT_DIRECTORY[0]
+
+
+def confined_export_path(directory: str, requested: Any) -> str:
+    """Where a requested export may be written: inside `directory`, by name only.
+
+    Directories, drive letters, UNC shares and `..` in the request are dropped;
+    only a sanitised file name and extension survive.
+    """
+    import os  # noqa: PLC0415
+
+    name = os.path.basename(str(requested or "").replace("\\", "/"))
+    stem, extension = os.path.splitext(name)
+    safe_stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in stem)[:60] or "export"
+    safe_extension = "".join(c for c in extension.lower() if c.isalnum())[:5]
+    return os.path.join(directory, safe_stem + ("." + safe_extension if safe_extension else ""))
+
+
 def _require(condition: Any, message: str) -> None:
     if not condition:
         raise RuntimeUnavailable(message)
@@ -1720,18 +1753,25 @@ class QGISRuntime:
 
         exported = ""
         if export_path:
-            exporter = QgsLayoutExporter(layout)
             lowered = str(export_path).lower()
-            if lowered.endswith(".pdf"):
-                result = exporter.exportToPdf(export_path, QgsLayoutExporter.PdfExportSettings())
-            elif lowered.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff")):
-                result = exporter.exportToImage(export_path, QgsLayoutExporter.ImageExportSettings())
-            else:
+            if not lowered.endswith((".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff")):
                 raise CapabilityError(
                     "a sheet is exported as .pdf or as an image (.png, .jpg, .tif)")
+            # Only the file NAME is taken from the request, and it is written
+            # into this session's private export directory, exactly as
+            # export_layer does. The path used to be honoured as given, from a
+            # capability that asks no question, so a request - or text injected
+            # into one - could overwrite a file the user owns or write the map to
+            # a network share such as \\host\share\plan.pdf.
+            destination = confined_export_path(private_export_directory(), export_path)
+            exporter = QgsLayoutExporter(layout)
+            if lowered.endswith(".pdf"):
+                result = exporter.exportToPdf(destination, QgsLayoutExporter.PdfExportSettings())
+            else:
+                result = exporter.exportToImage(destination, QgsLayoutExporter.ImageExportSettings())
             _require(result == enum_member(QgsLayoutExporter, "ExportResult", "Success"),
-                     "QGIS could not write the sheet to {}".format(export_path))
-            exported = export_path
+                     "QGIS could not write the sheet to {}".format(destination))
+            exported = destination
 
         layout.setName(title or "Mapdex sheet")
         project.layoutManager().addLayout(layout)
@@ -1862,7 +1902,6 @@ class QGISRuntime:
         no phrasing of the prompt makes an arbitrary filesystem write safe.
         """
         import os
-        import tempfile
 
         # Validate the format before importing anything or resolving a layer.
         # Refusing an unwritable format is a decision this function can make on
@@ -1883,8 +1922,7 @@ class QGISRuntime:
         # vector operation and the raster path has no writer here.
         layer = self.vector(layer_id)
 
-        directory = os.path.join(tempfile.gettempdir(), "mapdex-exports")
-        os.makedirs(directory, exist_ok=True)
+        directory = private_export_directory()
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in layer.name())[:60] or "layer"
         path = os.path.join(directory, "{}.{}".format(safe_name, extension))
 

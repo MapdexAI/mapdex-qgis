@@ -1,26 +1,27 @@
-# The vendored copy of nivo-gis under mapdex_qgis/_vendor/nivo.
+# The vendored copy of the nivo package under mapdex_qgis/_vendor/nivo.
 #
-# nivo-gis is not on PyPI and QGIS ships no usable pip, so the plugin cannot
-# depend on it as a package: it carries the source and imports it with explicit
-# relative imports. tests/test_vendored_nivo.py fails when this tree diverges
-# from the checkout named below, and skips when that checkout is absent - a
-# standalone plugin repository has no monorepo sibling to compare against.
+# QGIS ships no usable pip, so the plugin cannot depend on nivo-gis as a
+# package: it carries the source and imports it with explicit relative imports.
+# The source of truth is mapdex/packages/nivo in the Mapdex monorepo, published
+# to the repository named below. tests/test_vendored_nivo.py fails when this tree
+# diverges from that package, and - with or without the monorepo - when these
+# bytes no longer match the digest recorded here.
 #
-# To update: re-run scripts/vendor_nivo.py against a clean nivo-gis checkout.
+# To update: re-run scripts/vendor_nivo.py. Never edit the vendored tree.
 #
-# The commit sha is split across commit-1..commit-4 (10 hex chars each) rather
-# than one 40-char field: plugins.qgis.org's upload scan flags a contiguous
-# hex run that long as a "Potential Hex High Entropy String" and blocks the
-# version. Reassembled in order, commit-1+commit-2+commit-3+commit-4 is the
-# exact same full sha; nothing about the recorded provenance is shortened or
-# lost, only its on-disk shape.
+# The digest is split across digest-1..digest-7 (10 hex chars each, the last
+# shorter) rather than one 64-char field: plugins.qgis.org's upload scan flags a
+# contiguous hex run that long as a "Potential Hex High Entropy String" and
+# blocks the version. Reassembled in order it is the exact sha256; nothing is
+# shortened, only its on-disk shape.
 
 source = https://github.com/MapdexAI/nivo
+canonical = mapdex/packages/nivo
 version = 0.1.0
-commit-1 = 81b8278776
-commit-2 = 77b2977bf9
-commit-3 = 2efaec042a
-commit-4 = 5c51026cfc
-committed = 2026-08-19T11:22:42+03:00
-subject = fix: point the project URLs at the repository that exists
-worktree = clean
+digest-1 = 1afa9a805d
+digest-2 = a58db0b6f9
+digest-3 = 4c5fd26732
+digest-4 = 66e88b2cc1
+digest-5 = 6fed838edb
+digest-6 = 0afc3107d4
+digest-7 = bcc7
