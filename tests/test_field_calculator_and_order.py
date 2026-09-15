@@ -305,6 +305,44 @@ def test_an_empty_field_name_is_refused():
         run_calculate(layer, field="   ", expression="1")
 
 
+# 1e300 times an area of at least 1e4, three times, is past the largest float
+# (about 1.8e308), so every row with an area evaluates to inf.
+OVERFLOWING = "1" + "0" * 300 + " * area_m2 * area_m2 * area_m2"
+
+
+def test_an_infinite_value_in_an_integer_column_never_leaves_a_half_written_column():
+    # int(inf) raised AFTER addAttributes, so the user's layer kept a new, empty
+    # column from a run that reported failure.
+    layer = make_layer()
+    result = run_calculate(layer, field="huge", expression=OVERFLOWING, field_type="integer")
+    index = layer.fields().indexOf("huge")
+    assert result["kind"] == "field_calculated"
+    assert layer.provider.changes[1][index] is None
+    assert result["problems"]
+
+
+def test_an_infinite_value_is_stored_as_null_not_as_inf():
+    layer = make_layer()
+    run_calculate(layer, field="huge", expression=OVERFLOWING)
+    index = layer.fields().indexOf("huge")
+    assert layer.provider.changes[1][index] is None
+
+
+def test_a_text_result_in_a_number_column_is_null_with_a_reason():
+    layer = make_layer()
+    result = run_calculate(layer, field="code", expression="concat('P-', area_m2)")
+    index = layer.fields().indexOf("code")
+    assert layer.provider.changes[1][index] is None
+    assert any("not a number" in problem for problem in result["problems"])
+
+
+def test_the_preview_shows_the_values_that_will_be_stored():
+    preview = run_calculate(make_layer(), field="huge", expression=OVERFLOWING, preview=True)
+    applied = run_calculate(make_layer(), field="huge", expression=OVERFLOWING)
+    assert preview["nulls"] == applied["nulls"] == 3
+    assert preview["sample"] == applied["sample"] == []
+
+
 # --------------------------------------------------------------------------
 # The measure tool's state machine
 # --------------------------------------------------------------------------

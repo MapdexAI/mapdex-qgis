@@ -704,6 +704,63 @@ def session_setup(timeout_ms: int = DEFAULT_TIMEOUT_MS) -> list[str]:
     ]
 
 
+# The two columns read_only_query puts in front of every row.
+READ_ONLY_PROBE_COLUMNS = 2
+
+
+def read_only_query(statement: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> str:
+    """One statement batch that runs `statement` read-only and says whether it was.
+
+    A host that sends setup and query as separate calls cannot promise they
+    share a session: QGIS pools libpq connections, so `BEGIN READ ONLY`, the
+    SELECT and `COMMIT` could each land on a different one, and a failure after
+    `BEGIN` left a transaction open on a pooled connection. PostgreSQL runs the
+    statements of one simple-query call as ONE implicit transaction that ends
+    with the batch, so setting the transaction read-only inside the same batch
+    covers exactly this query and leaves nothing open.
+
+    Every returned row carries the server's own answer, read inside that
+    transaction: `current_setting('transaction_read_only')` first, then a
+    marker that is NULL on the single row an empty result still produces (the
+    query is LEFT JOINed to a one-row probe, so there is always a row to read
+    the setting from). Read the result with `unwrap_read_only_rows`.
+
+    `statement` is guarded again here; the wrapper only adds fixed text.
+    """
+    guarded = guard_statement(statement)
+    timeout = max(1000, min(int(timeout_ms or DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS))
+    # B608 is a string-built query by construction here, and deliberately so:
+    # `guarded` has just passed guard_statement (one read-only SELECT), the
+    # timeout is a clamped int, and everything else is fixed text.
+    return (
+        "SET TRANSACTION READ ONLY; "  # nosec B608
+        "SET LOCAL statement_timeout = {timeout}; "
+        "SET LOCAL idle_in_transaction_session_timeout = {timeout}; "
+        "SELECT current_setting('transaction_read_only') AS nivo_read_only, nivo_result.* "
+        "FROM (SELECT 1) AS nivo_probe "
+        "LEFT JOIN LATERAL (SELECT true AS nivo_row, nivo_rows.* FROM ({statement}) AS nivo_rows) "
+        "AS nivo_result ON true"
+    ).format(timeout=timeout, statement=guarded)
+
+
+def unwrap_read_only_rows(rows: Sequence[Sequence[Any]] | None) -> tuple[list[list[Any]], bool]:
+    """The query's own rows, and whether the server ran them read-only.
+
+    Refuses rather than guesses when the result does not have the wrapper's
+    shape. A connection that split the batch and returned another statement's
+    result would otherwise read as an empty answer, or as a read-only one, and
+    neither would be true.
+    """
+    rows = [list(row) for row in (rows or [])]
+    if not rows or any(len(row) < READ_ONLY_PROBE_COLUMNS for row in rows):
+        raise ReadOnlyViolation("the connection did not return the read-only probe with the result")
+    settings = {str(row[0]).strip().lower() for row in rows}
+    if not settings <= {"on", "off"}:
+        raise ReadOnlyViolation("the connection did not report the transaction's read-only setting")
+    data = [row[READ_ONLY_PROBE_COLUMNS:] for row in rows if row[1] is not None]
+    return data, settings == {"on"}
+
+
 def bind_numeric_parameters(sql: str, params: Sequence[Any]) -> str:
     """Substitute the `%s` placeholders, accepting numbers and nothing else.
 

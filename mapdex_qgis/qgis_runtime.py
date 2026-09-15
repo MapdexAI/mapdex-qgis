@@ -97,6 +97,31 @@ def confined_export_path(directory: str, requested: Any) -> str:
     return os.path.join(directory, safe_stem + ("." + safe_extension if safe_extension else ""))
 
 
+def coerce_calculated_value(value: Any, kind: str) -> tuple[Any, str]:
+    """A calculated value converted for storage in a `kind` column, and why not.
+
+    Returns ``(stored, problem)``. A value that cannot be stored becomes None
+    with a reason, never an exception: an infinite or NaN number, or a result
+    that is not a number in a number or integer column. That is what lets the
+    field calculator convert every row BEFORE it adds the column.
+    """
+    import math  # noqa: PLC0415
+
+    if value is None:
+        return None, ""
+    if kind == "text":
+        return str(value), ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None, "{!r} is not a number".format(str(value)[:40])
+    if not math.isfinite(number):
+        return None, "a value was not a finite number"
+    if kind == "integer":
+        return int(number), ""
+    return number, ""
+
+
 def _require(condition: Any, message: str) -> None:
     if not condition:
         raise RuntimeUnavailable(message)
@@ -1091,38 +1116,37 @@ class QGISRuntime:
         )
 
     def _pg_execute(self, connection: Any, connection_id: str, built: tuple) -> dict[str, Any]:
-        """Run one built statement inside a read-only transaction where possible.
+        """Run one built statement read-only, and report what the server said.
 
-        The transaction is attempted rather than assumed. QGIS pools its own
-        libpq connections and does not promise that two `executeSql` calls share
-        a session, so the result reports whether the server-side READ ONLY
-        guarantee was actually established. The two construction-side layers -
-        builders that emit only SELECT, identifiers validated against this live
-        connection - hold either way; saying which ones were in force is the
-        difference between a guarantee and a hope.
+        One `executeSql` call carries the read-only setting, the timeouts and the
+        query (postgis.read_only_query). It used to be several calls - BEGIN, the
+        SETs, the query, COMMIT - but QGIS pools its libpq connections and does
+        not promise two calls share a session, so the READ ONLY could apply to a
+        different session than the SELECT, and a failure after BEGIN left an
+        open transaction on a pooled connection. `enforced_read_only` was True
+        whenever nothing raised: an assumption, not a measurement.
+
+        It is now the server's own `transaction_read_only`, read inside the same
+        transaction as the query. A connection that does not return that probe
+        is refused rather than trusted, because its answer cannot be told apart
+        from an empty one. The construction-side layers - builders that emit
+        only SELECT, identifiers validated against this live connection - hold
+        either way.
         """
         sql, params = built
         statement = postgis.bind_numeric_parameters(sql, params)
-        enforced = True
-        for setup in postgis.session_setup():
-            try:
-                connection.executeSql(setup)
-            except Exception as error:  # noqa: BLE001
-                enforced = False
-                log_debug("establishing a read-only PostGIS transaction", error)
-                break
         try:
-            rows = connection.executeSql(statement)
+            raw = connection.executeSql(postgis.read_only_query(statement))
         except Exception as error:  # noqa: BLE001
             raise RuntimeUnavailable("that query could not be run on '{}': {}".format(connection_id, error))
-        finally:
-            if enforced:
-                try:
-                    connection.executeSql("COMMIT")
-                except Exception as error:  # noqa: BLE001
-                    log_debug("closing the read-only PostGIS transaction", error)
+        try:
+            rows, enforced = postgis.unwrap_read_only_rows(raw)
+        except postgis.ReadOnlyViolation as error:
+            raise RuntimeUnavailable(
+                "'{}' did not confirm the query ran read-only, so its answer is not used: {}".format(
+                    connection_id, error)) from None
         return {
-            "rows": [list(row) for row in (rows or [])],
+            "rows": rows,
             "sql": statement,
             "enforced_read_only": enforced,
         }
@@ -2313,21 +2337,29 @@ class QGISRuntime:
         if missing:
             raise CapabilityError("this layer has no field called {}".format(", ".join(missing)))
 
-        # Evaluate first, write second. A preview and a real run compute exactly
-        # the same values, so what the user approves is what lands.
+        kind = str(field_type).lower()
+        if kind not in ("number", "integer", "text"):
+            kind = "number"
+
+        # Evaluate AND convert first, write second. A preview and a real run
+        # compute exactly the same stored values, so what the user approves is
+        # what lands. Conversion used to happen after the column was added, so a
+        # value that could not be stored - an infinite product in an integer
+        # column, a text result in a number column - raised with the new, empty
+        # column already on the user's layer.
         values: dict[int, Any] = {}
         failures: list[str] = []
         sample: list[Any] = []
         for feature in layer.getFeatures():
             row = {key: feature[key] for key in existing}
             try:
-                value = expressions.evaluate(compiled, row)
+                value, problem = coerce_calculated_value(expressions.evaluate(compiled, row), kind)
             except expressions.ExpressionError as error:
+                value, problem = None, str(error)
+            if problem and len(failures) < 3:
                 # One unusable row must not abandon the layer, but the count is
                 # reported rather than hidden.
-                value = None
-                if len(failures) < 3:
-                    failures.append(str(error))
+                failures.append(problem)
             values[feature.id()] = value
             if len(sample) < 5 and value is not None:
                 sample.append(value)
@@ -2346,9 +2378,6 @@ class QGISRuntime:
 
         from .qt_compat import field_type as resolve_field_type
 
-        kind = str(field_type).lower()
-        if kind not in ("number", "integer", "text"):
-            kind = "number"
         provider = layer.dataProvider()
         if not provider.addAttributes([QgsField(name, resolve_field_type(kind))]):
             raise CapabilityError("this layer's storage does not accept a new field")
@@ -2358,14 +2387,10 @@ class QGISRuntime:
         if index < 0:
             raise CapabilityError("the field was accepted but did not appear on the layer")
 
-        # Coerced from the requested kind rather than from the resolved Qt enum,
-        # because that enum's identity differs between Qt5 and Qt6 and comparing
-        # against it would quietly write floats into an integer column on one of
-        # the two bindings.
-        coerce = {"integer": int, "text": str}.get(kind, float)
-        changes = {}
-        for feature_id, value in values.items():
-            changes[feature_id] = {index: None if value is None else coerce(value)}
+        # The values were already converted for the requested kind (rather than
+        # for the resolved Qt enum, whose identity differs between Qt5 and Qt6),
+        # so nothing below can raise with the column half-written.
+        changes = {feature_id: {index: value} for feature_id, value in values.items()}
         provider.changeAttributeValues(changes)
         layer.updateFields()
         layer.triggerRepaint()

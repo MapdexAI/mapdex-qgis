@@ -182,9 +182,43 @@ def offline_capability_ids(client: str = CLIENT_QGIS) -> frozenset:
 # Parameter validation
 # --------------------------------------------------------------------------
 
+def _finite_number(name: str, value: Any) -> float:
+    """A finite number, or a CapabilityError naming the parameter.
+
+    ``bool`` is refused although Python calls it an ``int``: ``opacity: true``
+    is not a request for opacity 1. Containers are refused rather than handed to
+    ``float()``, and a numeric string is still accepted, because a model writing
+    ``"10"`` has asked for ten. Every failure is a CapabilityError, including
+    the ``OverflowError`` that ``int(float("inf"))`` raises, so a caller that
+    catches the documented type is never surprised by another.
+    """
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set)):
+        raise CapabilityError("{} must be a number".format(name))
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise CapabilityError("{} must be a number".format(name)) from None
+    if not math.isfinite(number):
+        raise CapabilityError("{} must be a finite number".format(name))
+    return number
+
+
+def _in_range(name: str, spec: Mapping[str, Any], number: float) -> None:
+    low, high = spec.get("min"), spec.get("max")
+    if low is not None and number < low:
+        raise CapabilityError("{} must be at least {}".format(name, low))
+    if high is not None and number > high:
+        raise CapabilityError("{} must be at most {}".format(name, high))
+
+
 def _coerce(name: str, spec: Mapping[str, Any], value: Any) -> Any:
     kind = str(spec.get("type") or "string")
     if kind == "string":
+        # A list or an object is not text with odd characters. Stringifying it
+        # produced "['a', 'b']" as a layer id or a title, which then either
+        # failed somewhere far from here or, worse, succeeded.
+        if isinstance(value, (Mapping, list, tuple, set)):
+            raise CapabilityError("{} must be text".format(name))
         text = str(value if value is not None else "").strip()[:MAX_PARAM_STRING]
         options = spec.get("enum")
         if options and text not in options:
@@ -193,29 +227,16 @@ def _coerce(name: str, spec: Mapping[str, Any], value: Any) -> Any:
             raise CapabilityError("{} is required".format(name))
         return text
     if kind == "number":
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            raise CapabilityError("{} must be a number".format(name))
-        if number != number or number in (float("inf"), float("-inf")):
-            raise CapabilityError("{} must be a finite number".format(name))
-        low, high = spec.get("min"), spec.get("max")
-        if low is not None and number < low:
-            raise CapabilityError("{} must be at least {}".format(name, low))
-        if high is not None and number > high:
-            raise CapabilityError("{} must be at most {}".format(name, high))
+        number = _finite_number(name, value)
+        _in_range(name, spec, number)
         return number
     if kind == "integer":
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
+        number = _finite_number(name, value)
+        # Refused, not truncated: `limit: 9.99` asked for something other than 9.
+        if not number.is_integer():
             raise CapabilityError("{} must be a whole number".format(name))
-        low, high = spec.get("min"), spec.get("max")
-        if low is not None and number < low:
-            raise CapabilityError("{} must be at least {}".format(name, low))
-        if high is not None and number > high:
-            raise CapabilityError("{} must be at most {}".format(name, high))
-        return number
+        _in_range(name, spec, number)
+        return int(number)
     if kind == "boolean":
         if isinstance(value, bool):
             return value
@@ -223,10 +244,10 @@ def _coerce(name: str, spec: Mapping[str, Any], value: Any) -> Any:
     if kind == "bbox":
         if not isinstance(value, (list, tuple)) or len(value) != 4:
             raise CapabilityError("{} must be [minx, miny, maxx, maxy]".format(name))
-        try:
-            box = [float(item) for item in value]
-        except (TypeError, ValueError):
-            raise CapabilityError("{} must contain four numbers".format(name))
+        # Each corner through the same finite-number check. NaN fails every
+        # ordering comparison, so the inverted-box test below could not catch
+        # it and a NaN extent reached the canvas.
+        box = [_finite_number(name, item) for item in value]
         if box[0] > box[2] or box[1] > box[3]:
             raise CapabilityError("{} is inverted".format(name))
         return box
@@ -307,6 +328,11 @@ def _coerce_points(name: str, spec: Mapping[str, Any], value: Any) -> list[list[
     minimum = spec.get("min_points")
     if minimum is not None and len(points) < minimum:
         raise CapabilityError("{} needs at least {} point(s)".format(name, minimum))
+    # Declared on the capability and, until now, never read: a watershed that
+    # takes one outlet was handed three and used whichever the runtime picked.
+    maximum = spec.get("max_points")
+    if maximum is not None and len(points) > maximum:
+        raise CapabilityError("{} takes at most {} point(s)".format(name, maximum))
     if not points and spec.get("required"):
         raise CapabilityError("{} is required".format(name))
     return points

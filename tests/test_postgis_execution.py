@@ -103,11 +103,21 @@ class FakeTable:
 
 
 class FakeConnection:
-    def __init__(self, rows=None, fail_setup=False, fail_query=False):
+    """A QGIS database connection that answers the way PostgreSQL does.
+
+    A batch carrying `SET TRANSACTION READ ONLY` returns the wrapped rows: the
+    server's `transaction_read_only`, the row marker, then the data - or the
+    single probe row an empty result produces. `read_only` is what the server
+    reports; `splits_batches` models a connection that runs only the first
+    statement of a batch and returns its (empty) result.
+    """
+
+    def __init__(self, rows=None, read_only="on", fail_query=False, splits_batches=False):
         self.statements = []
         self._rows = rows if rows is not None else [[42]]
-        self._fail_setup = fail_setup
+        self._read_only = read_only
         self._fail_query = fail_query
+        self._splits_batches = splits_batches
 
     def fields(self, _schema, _table):
         return [FakeField("id", "int4"), FakeField("name", "text"),
@@ -118,10 +128,13 @@ class FakeConnection:
 
     def executeSql(self, sql):
         self.statements.append(sql)
-        if self._fail_setup and sql.startswith(("BEGIN", "SET LOCAL")):
-            raise RuntimeError("no session")
-        if self._fail_query and sql.lower().lstrip().startswith(("select", "with")):
+        if self._fail_query:
             raise RuntimeError("relation does not exist")
+        if self._splits_batches:
+            return []
+        if "SET TRANSACTION READ ONLY" in sql:
+            wrapped = [[self._read_only, True] + list(row) for row in self._rows]
+            return wrapped or [[self._read_only, None]]
         return list(self._rows)
 
 
@@ -148,22 +161,45 @@ def test_a_profile_reports_the_discovered_shape_and_the_statement_it_ran():
     assert result["enforced_read_only"] is True
 
 
-def test_the_read_only_transaction_is_opened_before_the_query():
+def test_the_read_only_setting_and_the_query_travel_in_one_call():
+    # QGIS pools its libpq connections and does not promise two executeSql calls
+    # share a session. Separate BEGIN / query / COMMIT calls could put the READ
+    # ONLY on one session and the SELECT on another, and a failure after BEGIN
+    # left a transaction open on a pooled connection.
     connection = FakeConnection()
     _runtime(connection).postgis_profile("warehouse", "public", "parcels")
-    assert connection.statements[0] == "BEGIN READ ONLY"
-    assert any("statement_timeout" in statement for statement in connection.statements)
-    assert connection.statements[-1] == "COMMIT"
+    assert len(connection.statements) == 1
+    batch = connection.statements[0]
+    assert batch.startswith("SET TRANSACTION READ ONLY")
+    assert "statement_timeout" in batch
+    assert "current_setting('transaction_read_only')" in batch
+    assert "COMMIT" not in batch.upper()
 
 
-def test_a_session_that_cannot_be_made_read_only_says_so_instead_of_pretending():
-    # QGIS pools its own libpq connections and does not promise two executeSql
-    # calls share a session. The construction-side layers still hold; reporting
-    # which guarantees were in force is the difference from a hope.
-    connection = FakeConnection(fail_setup=True)
+def test_a_server_that_reports_read_write_is_reported_as_not_enforced():
+    # Measured, not assumed: the setting comes back from inside the transaction
+    # the query ran in. The construction-side layers still hold, so the rows
+    # are returned, and the result says which guarantee was not in force.
+    connection = FakeConnection(read_only="off")
     result = _runtime(connection).postgis_profile("warehouse", "public", "parcels")
     assert result["enforced_read_only"] is False
     assert result["rows"]
+
+
+def test_a_connection_that_splits_the_batch_is_refused_rather_than_trusted():
+    # Its empty answer is indistinguishable from "no rows" and says nothing
+    # about read-only, so it is not used.
+    from mapdex_qgis.qgis_runtime import RuntimeUnavailable
+
+    with pytest.raises(RuntimeUnavailable) as error:
+        _runtime(FakeConnection(splits_batches=True)).postgis_profile("warehouse", "public", "parcels")
+    assert "read-only" in str(error.value)
+
+
+def test_an_empty_result_is_still_verified_as_read_only():
+    result = _runtime(FakeConnection(rows=[])).postgis_analyze(
+        "warehouse", "public", "parcels", "bbox_count", bbox=[0, 0, 1, 1])
+    assert result["enforced_read_only"] is True
 
 
 def test_an_unknown_connection_names_what_was_asked_for():

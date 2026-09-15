@@ -18,10 +18,10 @@
 source = https://github.com/MapdexAI/nivo
 canonical = mapdex/packages/nivo
 version = 0.1.0
-digest-1 = 1afa9a805d
-digest-2 = a58db0b6f9
-digest-3 = 4c5fd26732
-digest-4 = 66e88b2cc1
-digest-5 = 6fed838edb
-digest-6 = 0afc3107d4
-digest-7 = bcc7
+digest-1 = 1c09ab08d5
+digest-2 = 163a6499e4
+digest-3 = ec95469d8f
+digest-4 = 668a4df819
+digest-5 = d4e6fd81d2
+digest-6 = b527e6f0f5
+digest-7 = 2574
