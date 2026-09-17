@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.6
+version=0.13.8
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,14 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.6
+changelog=0.13.8
+    - No change to behaviour. The package digest is stored in a shape the
+      plugins.qgis.org upload scan no longer reports as a possible secret.
+    0.13.7
+    - Clicking a row in the panel works on QGIS 3 again. It raised
+      "QMouseEvent object has no attribute position" on every click, because
+      the panel used a Qt6-only call that QGIS 3 (Qt5) does not have.
+    0.13.6
     - Buffers and every other Processing operation run on layers that carry a
       list in an attribute, such as the image_corners field on Mapdex
       extraction previews. QGIS stopped at the first feature ("Could not store

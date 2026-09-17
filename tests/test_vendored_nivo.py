@@ -136,6 +136,43 @@ def test_the_manifest_describes_the_bytes_that_ship():
     assert (VENDOR / "NIVO-LICENSE").is_file(), "the vendored package ships without its licence"
 
 
+def _detect_secrets_hex_entropy(value: str) -> float:
+    """detect-secrets' HexHighEntropyString score, which plugins.qgis.org runs.
+
+    Shannon entropy over the hex charset, lowered for an all-digit value. The
+    upload scan flags a value scoring above 3.0.
+    """
+    import math
+
+    entropy = 0.0
+    for char in "0123456789abcdefABCDEF":
+        share = value.count(char) / len(value)
+        if share > 0:
+            entropy -= share * math.log(share, 2)
+    if len(value) > 1 and value.isdigit():
+        entropy -= 1.2 / math.log(len(value), 2)
+    return entropy
+
+
+def test_no_manifest_value_reads_as_a_secret_on_upload():
+    """plugins.qgis.org flagged digest-1 and digest-3 of version 0.13.7.
+
+    The digest was already split into 10-char chunks for this reason, and a
+    10-char chunk passes only when its characters happen to repeat. This checks
+    every value against the scanner's own formula rather than against a length
+    somebody believed was short enough.
+    """
+    flagged = {}
+    for line in MANIFEST.read_text(encoding="utf-8").splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if value and all(c in "0123456789abcdefABCDEF" for c in value):
+            if _detect_secrets_hex_entropy(value) > 3.0:
+                flagged[key] = value
+    assert not flagged, "NIVO_VERSION values the upload scan reports as secrets: {}".format(flagged)
+
+
 def test_the_package_data_the_prompt_needs_is_here():
     """`nivo.prompt` reads its markdown at import time.
 

@@ -37,6 +37,19 @@ def enum_member(owner, *names):
     )
 
 
+def event_point(event):
+    """The integer widget position of a mouse event on Qt5 and Qt6.
+
+    ``QMouseEvent.position()`` exists only in Qt6; Qt5 (QGIS 3) has ``pos()``,
+    which Qt6 deprecates. Calling the Qt6 spelling directly raised
+    AttributeError on every click in QGIS 3.44.
+    """
+    position = getattr(event, "position", None)
+    if callable(position):
+        return position().toPoint()
+    return event.pos()
+
+
 def geometry_type(name):
     """``QgsWkbTypes.GeometryType.<name>`` across Qt5 and Qt6.
 

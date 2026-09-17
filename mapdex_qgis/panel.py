@@ -32,7 +32,7 @@ from qgis.PyQt.QtWidgets import (
 from .branding import ACTION_ICONS, surface_asset_path
 from .build_profile import endpoint_choices
 from .job_items import item_action, item_status, item_title, items_summary, order_items
-from .qt_compat import enum_member
+from .qt_compat import enum_member, event_point
 from .layout_rules import (
     MINIMUM_WIDTH,
     PREFERRED_HEIGHT,
@@ -175,7 +175,7 @@ class ActionRow(QFrame):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        if self.rect().contains(event.position().toPoint()):
+        if self.rect().contains(event_point(event)):
             for callback in list(self._callbacks):
                 callback()
 
