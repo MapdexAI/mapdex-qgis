@@ -242,6 +242,12 @@ ERROR_REGISTRY = [
         "template": "The layer changed after this edit session started. Reload the layer and apply the edit again."
     },
     {
+        "code": "RUN_ALREADY_ACTIVE",
+        "type": "conflict",
+        "http": 409,
+        "template": "This work is already running. Wait for it to finish, or open the run that is in progress."
+    },
+    {
         "code": "MUTATION_NOT_REVERSIBLE",
         "type": "validation",
         "http": 422,
