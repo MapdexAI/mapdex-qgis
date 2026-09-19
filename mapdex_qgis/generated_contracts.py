@@ -242,6 +242,54 @@ ERROR_REGISTRY = [
         "template": "The layer changed after this edit session started. Reload the layer and apply the edit again."
     },
     {
+        "code": "GEOREFERENCE_AWAITS_CONTROL_POINTS",
+        "type": "conflict",
+        "http": 409,
+        "template": "This georeference is waiting for control points. Place them at the georeference desk; it cannot be accepted without them."
+    },
+    {
+        "code": "GEOREFERENCE_NOT_AWAITING_CONTROL_POINTS",
+        "type": "conflict",
+        "http": 409,
+        "template": "This run is not waiting for control points: {message}"
+    },
+    {
+        "code": "GEOREFERENCE_SOURCE_MISMATCH",
+        "type": "conflict",
+        "http": 409,
+        "template": "These control points were placed on a different sheet than the one this run is waiting on."
+    },
+    {
+        "code": "RUN_RESUME_CONFLICT",
+        "type": "conflict",
+        "http": 409,
+        "template": "This run was already resumed with different input. Reload it to see what is running."
+    },
+    {
+        "code": "RUN_NOT_CANCELLABLE",
+        "type": "conflict",
+        "http": 409,
+        "template": "This run cannot be cancelled: {message}"
+    },
+    {
+        "code": "STEP_REJECTED",
+        "type": "bad_request",
+        "http": 422,
+        "template": "A reviewer rejected this step, so the run did not continue past it."
+    },
+    {
+        "code": "RUN_NOT_RESUMABLE",
+        "type": "conflict",
+        "http": 409,
+        "template": "This run can no longer be resumed: {message}"
+    },
+    {
+        "code": "GEOREFERENCE_CONTROL_POINTS_INVALID",
+        "type": "bad_request",
+        "http": 400,
+        "template": "The control points supplied for this sheet are not valid: {message}"
+    },
+    {
         "code": "RUN_ALREADY_ACTIVE",
         "type": "conflict",
         "http": 409,
