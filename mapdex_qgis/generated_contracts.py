@@ -92,6 +92,12 @@ ERROR_REGISTRY = [
         "template": "{message}"
     },
     {
+        "code": "PROCESSING_TIME_BUDGET_EXHAUSTED",
+        "type": "processing",
+        "http": 422,
+        "template": "{message}"
+    },
+    {
         "code": "UNSUPPORTED_TARGET_FORMAT",
         "type": "bad_request",
         "http": 400,
