@@ -95,6 +95,61 @@ SPLIT="$(git subtree split --prefix="$PREFIX" "$REF")"
 COUNT="$(git rev-list --count "$SPLIT")"
 echo "    $SPLIT ($COUNT commits)"
 
+# WHAT IS PUSHED, WHEN THE PUBLIC REPO DID NOT START FROM THE SPLIT
+# ----------------------------------------------------------------
+# The public repo was opened on 2026-08-04 with two hand commits, before this
+# script existed, so its main never descended from the split. Every publish from
+# 2026-09-18 on was refused with "fetch first", and main there is protected
+# against force pushes, so --force is refused as well.
+#
+# Instead the split is laid on top of the public head with one merge commit
+# whose tree IS the split's tree: the public repo still shows exactly what is
+# under $PREFIX, the real commits stay reachable as the merge's second parent,
+# and the push is an ordinary fast-forward. Later publishes do the same on top
+# of the last merge.
+#
+# This is not a licence to absorb anything. A commit reachable from the public
+# head and not from the split must be one of the two known starting commits or
+# a merge this script wrote (it carries a Mirrored-Split trailer). Anything else
+# is a commit somebody made in the public repo, and the script still stops so a
+# person can look at it.
+LEGACY_PUBLIC_COMMITS="e4fdd04756f40ae476e7da835495481b5276f003 ab3395e234c243cb30cf4a7f21dd96f706ae2d73"
+PUBLISH="$SPLIT"
+PUBLIC=""
+if [ "$FORCE" -eq 0 ] && git fetch --quiet "$REMOTE" "+refs/heads/$BRANCH:refs/mirror/public" 2>/dev/null; then
+  PUBLIC="$(git rev-parse refs/mirror/public)"
+fi
+if [ -n "$PUBLIC" ] && ! git merge-base --is-ancestor "$PUBLIC" "$SPLIT"; then
+  if git merge-base --is-ancestor "$SPLIT" "$PUBLIC"; then
+    echo "==> $BRANCH there already contains $SPLIT; nothing new to publish"
+    PUBLISH="$PUBLIC"
+  else
+    unknown=""
+    for c in $(git rev-list "$PUBLIC" "^$SPLIT"); do
+      case " $LEGACY_PUBLIC_COMMITS " in *" $c "*) continue ;; esac
+      if git log -1 --format=%B "$c" | grep -q '^Mirrored-Split: '; then continue; fi
+      unknown="$unknown $c"
+    done
+    if [ -n "$unknown" ]; then
+      echo "error: $BRANCH there has commits this monorepo did not make:" >&2
+      for c in $unknown; do git log -1 --format='    %h %an: %s' "$c" >&2; done
+      echo "Bring them into $PREFIX here. To discard them instead, lift the force-push" >&2
+      echo "rule on $BRANCH there and re-run with --force." >&2
+      exit 1
+    fi
+    # Author and date come from the split head, so publishing the same split
+    # onto the same public head always writes the same commit.
+    GIT_AUTHOR_NAME="$(git log -1 --format=%an "$SPLIT")"
+    GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$SPLIT")"
+    GIT_AUTHOR_DATE="$(git log -1 --format=%ad --date=raw "$SPLIT")"
+    export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE
+    export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL" GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+    PUBLISH="$(printf 'Publish %s from the monorepo\n\nMirrored-Split: %s\n' "${SPLIT:0:12}" "$SPLIT" \
+      | git commit-tree "$SPLIT^{tree}" -p "$PUBLIC" -p "$SPLIT")"
+    echo "==> laid the split on top of $BRANCH there as $PUBLISH"
+  fi
+fi
+
 # The tag must name the version the tree actually declares, or the public
 # release workflow packages one version under another's name.
 if [ -n "$TAG" ]; then
@@ -110,7 +165,7 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
   echo "dry run: would push"
-  echo "    $SPLIT -> $REMOTE $BRANCH$([ "$FORCE" -eq 1 ] && echo ' (forced)')"
+  echo "    $PUBLISH -> $REMOTE $BRANCH$([ "$FORCE" -eq 1 ] && echo ' (forced)')"
   [ -n "$TAG" ] && echo "    tag $TAG -> $REMOTE"
   echo
   echo "published tree at the split head:"
@@ -119,7 +174,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 echo "==> pushing to $REMOTE $BRANCH"
-push_args=("$REMOTE" "$SPLIT:refs/heads/$BRANCH")
+push_args=("$REMOTE" "$PUBLISH:refs/heads/$BRANCH")
 [ "$FORCE" -eq 1 ] && push_args=(--force "${push_args[@]}")
 
 if ! git push "${push_args[@]}"; then
@@ -137,7 +192,7 @@ fi
 
 if [ -n "$TAG" ]; then
   echo "==> pushing tag $TAG"
-  git push "$REMOTE" "$SPLIT:refs/tags/$TAG"
+  git push "$REMOTE" "$PUBLISH:refs/tags/$TAG"
 fi
 
 echo
