@@ -11,16 +11,35 @@ TERMINAL_BATCH_STATES = frozenset({"completed", "failed", "cancelled", "partial"
 SUCCEEDED_ITEM_STATES = frozenset({"succeeded", "completed"})
 REVIEW_ITEM_STATES = frozenset({"needs_review", "review_required"})
 
+# The canonical code extraction returns for a raster with no real-world
+# placement. Callers branch on the code and never on the message: the message is
+# human copy the server may reword or localize, and matching it would be a
+# keyword list in disguise. `tests/test_mapdex_runs.py` asserts this string is
+# still in the generated error registry, so a contract rename cannot leave the
+# plugin quietly matching a code that no longer exists.
+GEOREFERENCE_REQUIRED = "GEOREFERENCE_REQUIRED"
+
 
 def batch_state(detail: dict[str, Any]) -> str:
     return str(detail.get("state") or detail.get("status") or "").lower()
 
 
+def _failed_items(detail: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    for item in detail.get("items") or []:
+        if isinstance(item, dict) and str(item.get("state") or "").lower() == "failed":
+            yield item
+
+
+def _error_code(error: Any) -> str:
+    """The canonical code on one item's error, or "" when it carries none."""
+    if isinstance(error, dict):
+        return str(error.get("code") or "").strip().upper()
+    return ""
+
+
 def first_batch_error(detail: dict[str, Any]) -> str:
     """Return one actionable server error without exposing raw envelopes."""
-    for item in detail.get("items") or []:
-        if str(item.get("state") or "").lower() != "failed":
-            continue
+    for item in _failed_items(detail):
         error = item.get("error")
         if isinstance(error, dict):
             message = error.get("message")
@@ -31,6 +50,58 @@ def first_batch_error(detail: dict[str, Any]) -> str:
         if isinstance(error, str) and error.strip():
             return error.strip()
     return ""
+
+
+def batch_failure(detail: dict[str, Any]) -> dict[str, str]:
+    """The first failed item's typed error, kept whole.
+
+    `first_batch_error` reduces the same error to one sentence for the status
+    line. That is right for display and wrong for deciding what to do next: the
+    canonical code and the file the refusal is about are both on the wire and
+    both were being dropped, so a refusal that names a next step arrived as a
+    generic failure with nowhere to go.
+    """
+    for item in _failed_items(detail):
+        error = item.get("error")
+        code = _error_code(error)
+        message = ""
+        correlation_id = ""
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            correlation_id = str(error.get("correlation_id") or "").strip()
+        elif isinstance(error, str):
+            message = error.strip()
+        if not code and not message:
+            continue
+        return {
+            "code": code,
+            "message": message,
+            "correlation_id": correlation_id,
+            "file_id": str(item.get("file_id") or "").strip(),
+        }
+    return {"code": "", "message": "", "correlation_id": "", "file_id": ""}
+
+
+def failed_item_codes(detail: dict[str, Any]) -> list[str]:
+    """One entry per failed item: its canonical code, or "" if it reported none.
+
+    The empty entries are the point. They keep the list the same length as the
+    failures, so a caller asking whether every failure shares one code cannot
+    get a true answer out of the items that never said.
+    """
+    return [_error_code(item.get("error")) for item in _failed_items(detail)]
+
+
+def every_failure_needs_placement(detail: dict[str, Any]) -> bool:
+    """Whether every failed item was refused for want of real-world placement.
+
+    Retry re-sends all failed items, so it is worth offering while any one of
+    them could come back differently. When they were all refused for want of
+    placement, the identical request produces the identical refusal, and
+    offering it teaches the user that the button does nothing.
+    """
+    codes = failed_item_codes(detail)
+    return bool(codes) and all(code == GEOREFERENCE_REQUIRED for code in codes)
 
 
 def batch_is_terminal(detail: dict[str, Any]) -> bool:
@@ -55,6 +126,144 @@ def review_run_ids(detail: dict[str, Any]) -> list[str]:
         if run_id and state in REVIEW_ITEM_STATES:
             runs.append(run_id)
     return runs
+
+
+# `GET /v1/runs` reports the task status and, when a job exists, the job state on
+# top of it. The two vocabularies overlap but are not identical, so both are
+# folded into the four buckets `mapdex.jobs@1` offers rather than asking the user
+# to know which surface produced the word they are reading.
+FAILED_RUN_STATES = frozenset({"failed", "cancelled"})
+COMPLETED_RUN_STATES = frozenset({"completed", "succeeded"})
+
+# The listing is bounded because it lands in a chat transcript, not a table. A
+# project with three hundred sheets would otherwise print three hundred lines.
+MAX_LISTED_RUNS = 10
+
+
+def run_state(run: dict[str, Any]) -> str:
+    """The state to report for one run.
+
+    The job state wins when there is a job: the task row can still read
+    `dispatched` while its job has already failed, and reporting the older of
+    two known facts is how a failure stays invisible.
+    """
+    job = run.get("job")
+    if isinstance(job, dict):
+        state = str(job.get("state") or "").strip().lower()
+        if state:
+            return "needs_review" if state == "review_required" else state
+    return str(run.get("status") or run.get("state") or "").strip().lower()
+
+
+def run_matches_state(run: dict[str, Any], wanted: str) -> bool:
+    """Whether a run belongs in the requested bucket."""
+    state = run_state(run)
+    if wanted in ("", "all"):
+        return True
+    if wanted == "review_required":
+        return state in REVIEW_ITEM_STATES
+    if wanted == "failed":
+        return state in FAILED_RUN_STATES
+    if wanted == "completed":
+        return state in COMPLETED_RUN_STATES
+    if wanted == "active":
+        # Active is everything that has not stopped. Defined as the complement
+        # of the terminal sets rather than as its own list, so a state this
+        # build has never seen is reported as still running instead of being
+        # dropped from every bucket and vanishing from the answer.
+        return state not in FAILED_RUN_STATES | COMPLETED_RUN_STATES | REVIEW_ITEM_STATES
+    return False
+
+
+def run_failure(run: dict[str, Any]) -> str:
+    """The failure the server reported for this run, or "" when it reported none.
+
+    A run listed as failed with no reason is the case the capability's own
+    summary promises to explain, so the message is carried through rather than
+    reduced to the state word.
+    """
+    job = run.get("job") if isinstance(run.get("job"), dict) else {}
+    error = job.get("error") if isinstance(job, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        correlation_id = str(error.get("correlation_id") or "").strip()
+        if message and correlation_id:
+            return "{} (reference {})".format(message, correlation_id)
+        if message:
+            return message
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return ""
+
+
+def run_failure_code(run: dict[str, Any]) -> str:
+    """The canonical code behind this run's failure, or "" when it carries none.
+
+    Reported beside the message rather than folded into it, because the listing
+    is where a user asks what went wrong and some codes name a next step the
+    sentence alone cannot route them to.
+    """
+    job = run.get("job") if isinstance(run.get("job"), dict) else {}
+    return _error_code(job.get("error") if isinstance(job, dict) else None)
+
+
+def summarize_runs(
+    runs: Any, state: str = "all", limit: int = MAX_LISTED_RUNS
+) -> dict[str, Any]:
+    """Turn a `GET /v1/runs` payload into a bounded, structured answer.
+
+    Counts are taken over every run the project has, not over the truncated
+    list: "3 of 47 runs" is a different fact from "3 runs", and reporting the
+    page size as the total would be a number the product invented.
+    """
+    rows = [run for run in (runs if isinstance(runs, list) else []) if isinstance(run, dict)]
+    wanted = str(state or "all").strip().lower()
+    counts: dict[str, int] = {}
+    for run in rows:
+        key = run_state(run) or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    matched = [run for run in rows if run_matches_state(run, wanted)]
+    listed = []
+    for run in matched[: max(1, int(limit))]:
+        listed.append(
+            {
+                "run_id": str(run.get("id") or ""),
+                "state": run_state(run) or "unknown",
+                "title": str(run.get("prompt") or "").strip()[:120],
+                "created_at": str(run.get("created_at") or ""),
+                "error": run_failure(run),
+                "code": run_failure_code(run),
+            }
+        )
+    return {
+        "kind": "jobs",
+        "state": wanted,
+        "total": len(rows),
+        "matched": len(matched),
+        "counts": counts,
+        "runs": listed,
+    }
+
+
+def select_review_run(runs: Any, run_id: str = "") -> dict[str, Any] | None:
+    """The run a review should open, or None when there is nothing to review.
+
+    Without an explicit id this picks the most recent run that needs review.
+    `GET /v1/runs` returns newest first, so the first match is that run; sorting
+    on `created_at` here would re-derive an order the server already decided and
+    would silently reorder runs whose timestamps are missing.
+    """
+    rows = [run for run in (runs if isinstance(runs, list) else []) if isinstance(run, dict)]
+    wanted = str(run_id or "").strip()
+    if wanted:
+        for run in rows:
+            if str(run.get("id") or "") == wanted:
+                return run
+        return None
+    for run in rows:
+        if run_state(run) in REVIEW_ITEM_STATES:
+            return run
+    return None
 
 
 def _iter_result_refs(run: dict[str, Any]) -> Iterable[dict[str, Any]]:
@@ -183,6 +392,33 @@ def split_review_buckets(geojson: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def geojson_truncation_notice(geojson: dict[str, Any], layer_name: str) -> str:
+    """Return a warning string if a `/v1/layers/{id}/geojson` response was
+    truncated (FN-003), or "" when it wasn't or the server didn't report it.
+
+    The endpoint's default page size is 5000 features; a layer larger than
+    that returned exactly 5000 features with nothing distinguishing it from a
+    genuinely small layer, so a QGIS import could silently miss most of a
+    dataset. The server now stamps `properties.truncated`/`returned_count`/
+    `total_count` on the FeatureCollection (RFC 7946 §7 foreign members) when
+    it knows the layer's true size; older servers that don't send these
+    fields simply produce no notice here.
+    """
+    if not isinstance(geojson, dict):
+        return ""
+    properties = geojson.get("properties")
+    if not isinstance(properties, dict) or not properties.get("truncated"):
+        return ""
+    returned = properties.get("returned_count")
+    total = properties.get("total_count")
+    if isinstance(returned, int) and isinstance(total, int) and total > 0:
+        return (
+            "{}: only {} of {} features were imported. Re-run with a higher limit "
+            "or use the GeoJSON export instead of the QGIS import to get the rest."
+        ).format(layer_name, returned, total)
+    return "{}: this layer was truncated on import.".format(layer_name)
+
+
 def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
     """Return [{url, name}] for downloadable GeoJSON artifacts only."""
     found: list[dict[str, str]] = []
@@ -201,3 +437,22 @@ def collect_geojson_artifact_urls(run: dict[str, Any]) -> list[dict[str, str]]:
         name = str(ref.get("summary") or ref.get("label") or ref.get("id") or "Mapdex result")
         found.append({"url": url, "name": name})
     return found
+
+
+def fallback_artifact_imports(run: dict[str, Any]) -> list[dict[str, str]]:
+    """GeoJSON artifacts to import, and only when nothing else represents them.
+
+    Every geometry-producing step output materializes as a PostGIS-backed Layer
+    (hard rule 24), so a GeoJSON artifact sitting beside a Layer of the same run
+    is a copy of it. After a georeference it is not even that: the artifact is
+    `preview.geojson`, the projected footprint of the rectified raster, which is
+    a rectangle describing where the image landed rather than data anybody
+    asked for. Importing it unconditionally put a polygon in the QGIS project
+    next to the raster, both carrying the same name.
+
+    The artifact route stays for the run that materialized no Layer at all,
+    which is the case it was written for.
+    """
+    if collect_layer_imports(run):
+        return []
+    return collect_geojson_artifact_urls(run)

@@ -3,28 +3,71 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import traceback
+from functools import partial
 from typing import Callable, Optional
 
-from qgis.PyQt.QtCore import Qt, QLocale, QSettings, QTimer, QUrl
+from qgis.PyQt.QtCore import (
+    QObject,
+    Qt,
+    QLocale,
+    QSettings,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from qgis.PyQt.QtGui import QDesktopServices, QIcon
-from qgis.PyQt.QtWidgets import QAction, QDockWidget, QFileDialog, QMessageBox
+from qgis.PyQt.QtWidgets import (
+    QDockWidget,
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from qgis.core import (
     QgsApplication,
+    QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
+    QgsPointXY,
+    QgsGeometry,
+    QgsFeature,
     QgsCsException,
+    Qgis,
+    QgsMapLayer,
+    QgsMessageLog,
+    QgsProcessingAlgRunnerTask,
+    QgsProcessingContext,
+    QgsProcessingFeedback,
     QgsProject,
     QgsRasterLayer,
     QgsRectangle,
     QgsTask,
+    QgsUnitTypes,
     QgsVectorFileWriter,
     QgsVectorLayer,
 )
 
+from .processing_units import (
+    describe_processing_failure,
+    describe_textual_fields,
+    describe_validation_outcome,
+    input_parameter_aliases,
+    plan_metric_operation,
+    structured_field_names,
+    structured_value_as_text,
+)
 from .build_profile import (
     ALLOW_CUSTOM_ENDPOINT_SETTING,
+    endpoint_refusal,
     endpoints_unlocked,
+    is_production,
     resolve_endpoints,
 )
 from .api_client import (
@@ -36,24 +79,127 @@ from .api_client import (
     safe_filename_part,
     same_origin,
 )
+from .build_version import PLUGIN_VERSION
+from .connections import discover_connections, qgis_connection_names
+from .credentials import (
+    HOSTED_PROVIDER_NAME,
+    ProviderCredentialStore,
+    describe_privacy,
+    public_settings,
+)
 from .generated_contracts import BatchKind
-from .guidance import ACTIVE_STATES, run_has_started, task_guidance
-from .layout_rules import MINIMUM_WIDTH, PREFERRED_WIDTH
-from .panel import build_companion_panel
-from .qt_compat import enum_member
+from ._vendor.nivo.providers import ProviderError, build_provider, default_model_for, resolve_runtime
+from ._vendor.nivo.agent import AgentSession
+from .byok import (
+    ByokTurn,
+    is_byok,
+    needs_mapdex_account,
+    provider_failed,
+    session_allowance,
+)
+from ._vendor.nivo.capabilities import (
+    CLIENT_QGIS,
+    CapabilityError,
+    for_client,
+    get as get_capability,
+    validate_request,
+)
+from .qgis_runtime import (
+    PLUGIN_BOUND_CAPABILITIES,
+    QGISRuntime,
+    RuntimeUnavailable,
+    build_executor,
+    is_raster_layer,
+    raster_is_georeferenced,
+)
+from ._vendor.nivo.features import (
+    can_place,
+    describe_placement,
+    describe_unplaceable_geometry,
+    plan_points,
+    scatter_in_rectangle,
+)
+from .guard import describe_exception, format_traceback, guarded, log_debug
+from .guidance import (
+    ACTIVE_STATES,
+    failure_next_step,
+    run_has_started,
+    task_guidance,
+    with_failure_guidance,
+)
+from .layout_rules import BUBBLE_WIDTH, MINIMUM_WIDTH, PREFERRED_WIDTH
+from .nivo import (
+    GEOMETRY_CHOICES,
+    THREAD_ID_SETTING,
+    THREAD_PROJECT_SETTING,
+    allowed_actions,
+    companion_context,
+    confirmation_action_problem,
+    capability_request,
+    confirmation_actions,
+    local_processing_action,
+    describe_thread,
+    geometry_from_choice,
+    remembered_thread,
+    thread_is_gone,
+    thread_list_items,
+    thread_title,
+    thread_turns,
+    transition,
+)
+from .panel import (
+    action_row,
+    allow_narrow,
+    build_companion_panel,
+    build_balance_dialog,
+    build_layer_picker_dialog,
+    build_thread_history_dialog,
+)
+from . import branding
+from . import connector_auth
+from . import first_look
+from . import panel_state
+from ._vendor.nivo.processing import (
+    PROCESSING_OPERATION_CATALOG,
+    PROCESSING_OUTPUT_ORDER,
+    RASTER_INPUT_OPERATIONS,
+    UNIT_SENSITIVE_TERRAIN,
+    build_algorithm_parameters,
+    describe_empty_input,
+    describe_geographic_terrain_refusal,
+    describe_missing_algorithm,
+    describe_processing_outcome,
+    operation_label,
+    resolve_target_layer,
+    resolve_processing_algorithm,
+)
+from .qt_compat import QAction, enum_member, field_type, qgis_version
+from ._vendor.nivo.viewport import resolve_extent
 from .results import (
+    batch_failure,
     batch_is_terminal,
     batch_state,
-    collect_geojson_artifact_urls,
     collect_layer_imports,
+    every_failure_needs_placement,
+    fallback_artifact_imports,
     first_batch_error,
+    geojson_truncation_notice,
     review_run_ids,
+    run_state,
+    select_review_run,
     split_review_buckets,
     succeeded_run_ids,
+    summarize_runs,
 )
 from .token_store import LEGACY_TOKEN_SETTING, qgis_token_store
-from .source_info import inspect_paths
-from .workspace import task_workspace_path
+from .continuation import action_result, continuation_budget, should_continue
+from .plan_offer import offer_prompt, plan_offer, plan_run_report
+from .trace_view import budget_notice, step_rows
+from . import task_sources
+from . import task_price
+from .task_options import TaskOptions, normalise_concurrency
+from . import task_options as task_options_module
+from .workspace import review_workspace_path, task_workspace_path
 
 
 WORKFLOWS = (
@@ -63,9 +209,71 @@ WORKFLOWS = (
     ("Full pipeline", BatchKind.FULL_PIPELINE),
 )
 
-DEFAULT_API = "https://api.mapdex.ai"
-DEFAULT_WEB = "https://mapdex.ai"
 
+def workflow_title(key):
+    """The name this plugin shows for a workflow, from its stored key.
+
+    One table, because the Task page said "Validate & deliver" while the Jobs
+    page said `validate_deliver` to the same person about the same run - an
+    internal key with an underscore in it, on an end-user screen. A key with no
+    entry is cleaned rather than printed raw, so a workflow this build has not
+    heard of still reads as words.
+    """
+    wanted = str(key or "")
+    for title, kind in WORKFLOWS:
+        if str(kind) == wanted:
+            return title
+    return wanted.replace("_", " ").strip().capitalize() or "Task"
+
+
+# The legacy `qgis:*` vocabulary, translated to the capability each id has
+# always meant. There is one dispatch path: a canonical `domain.name@1` from the
+# server and a legacy id from an older server both resolve to the same
+# registered capability, are validated by the registry, and run through the same
+# executor table. Before this, the legacy half was an eighteen-branch if/elif
+# chain of hand-written QGIS calls that duplicated - and in places contradicted -
+# the runtime it sat next to: the visibility branch would raise on a layer that
+# is not in the layer tree, and nothing the chain did was recorded on the undo
+# stack, so `style.undo@1` could not reverse it.
+#
+# This table only ever shrinks. A new capability is added to the registry and
+# the executor table, never here.
+LEGACY_CAPABILITY_IDS = {
+    "qgis:zoom_to_layer@1": "map.zoom_layer@1",
+    "qgis:zoom_to_selection@1": "map.zoom_selection@1",
+    "qgis:zoom_to_extent@1": "map.zoom_extent@1",
+    "qgis:refresh_canvas@1": "map.refresh@1",
+    "qgis:previous_extent@1": "map.previous_extent@1",
+    "qgis:add_xyz_basemap@1": "map.basemap@1",
+    "qgis:inspect_layer@1": "inspect.layer@1",
+    "qgis:open_attribute_table@1": "layer.attribute_table@1",
+    "qgis:set_layer_visibility@1": "layer.visibility@1",
+    "qgis:set_layer_opacity@1": "layer.opacity@1",
+    "qgis:select_all@1": "selection.all@1",
+    "qgis:clear_selection@1": "selection.clear@1",
+    "qgis:invert_selection@1": "selection.invert@1",
+}
+
+# The shapes the canvas tool can collect, which is the enum draw.geometry@1
+# declares. Multi-part geometries are absent on purpose: a user drawing one
+# shape has drawn one shape, and offering "multipolygon" would promise a second
+# part there is no gesture to start.
+DRAWABLE_GEOMETRIES = ("point", "linestring", "polygon")
+
+# The legacy ids with no registered capability behind them. Each names a method
+# on the plugin rather than a branch in a conditional, so the dispatcher stays
+# one lookup whether or not the registry knows the id.
+PLUGIN_NATIVE_ACTIONS = {
+    "qgis:add_features@1": "_run_add_features",
+    "qgis:create_layer@1": "_run_create_layer",
+    "qgis:open_processing@1": "_run_open_processing",
+    "qgis:next_extent@1": "_run_next_extent",
+}
+
+DEFAULT_API = "https://api.mapdex.ai"
+DEFAULT_WEB = "https://app.mapdex.ai"
+CONNECT_TOTAL_TIMEOUT = 120.0
+CONNECT_HTTP_TIMEOUT = 10.0
 # While a task waits for browser review the panel keeps a slow watch, so an
 # approved result still lands in QGIS without the user pressing Resume.
 REVIEW_POLL_MS = 15000
@@ -75,18 +283,753 @@ REVIEW_POLL_MS = 15000
 # callback that outlives the panel meets None instead of a destroyed object.
 PANEL_WIDGET_REFS = (
     "status", "connection_label", "api_url_input", "web_url_input",
-    "save_settings_button", "connect_button", "disconnect_button", "workspace",
+    "save_settings_button", "connect_button",
+    "disconnect_button", "workspace",
     "batch_group", "batch_title", "phase_label", "progress_bar", "guidance_label",
-    "project_box", "workflow_box", "input_box", "source_summary", "run_button",
+    "project_box", "workflow_box", "source_summary", "run_button",
+    "drop_zone", "source_list", "options",
+    "expand_pages_check", "skip_completed_check", "concurrency_box",
+    "price_label", "balance_row", "balance_notice", "top_up_button",
     "cancel_button", "retry_button", "import_button", "review_button",
+    "open_batch_button", "item_list",
     "open_project_button", "recent", "recent_box", "resume_button",
+    "connect_promise", "sign_in", "tail", "body_layout",
+    "first_open_prompt", "first_open_title",
+    "segment_bar",
+    "tabs", "switch_page", "workspace_body", "workspace_locked", "jobs_locked",
+    "assistant_key_state",
+    "nivo_context", "nivo_runtime", "composer",
+    "nivo_reply", "nivo_input", "nivo_send_button",
+    "nivo_stop_button", "nivo_status",
+    "nivo_new_button", "nivo_history_button",
 )
 
 
+def transcript_turn(sender, text, steps=None, actions=None, severity="", fact="", opening=False):
+    """One transcript entry, and the only place its shape is written.
+
+    A dict rather than a tuple, learned the hard way: the entry used to be
+    `(sender, text)`, grew a third element, and seven call sites went on
+    writing two. plugin.py cannot be imported by the headless suite, so a shape
+    mismatch here is invisible until a user hits it inside QGIS. A tuple that
+    has now grown twice more - actions, a severity, a measured fact line -
+    would be that bug waiting a third time.
+    """
+    return {
+        "sender": sender,
+        "text": str(text),
+        "steps": list(steps or []),
+        "actions": list(actions or []),
+        "severity": str(severity or ""),
+        "fact": str(fact or ""),
+        "opening": bool(opening),
+    }
+
+
+def opening_turns(state):
+    """The opening reading, as transcript entries.
+
+    Module level and pure so the render harness can draw exactly what the
+    panel draws. It kept its own copy of this and the two drifted within a day:
+    the harness went on appending the capability chip to the last finding after
+    the product had moved it to a row of its own, so the screenshots were of a
+    layout nobody shipped.
+    """
+    reading = first_look.opening_reading(state)
+    layer_id = state.get("layer_id", "")
+    turns = [
+        transcript_turn(
+            "assistant",
+            finding["detail"],
+            actions=[dict(action, layer_id=layer_id) for action in finding["actions"]],
+            severity=finding["severity"],
+            fact=finding["headline"],
+            opening=True,
+        )
+        for finding in reading["findings"]
+    ]
+    # "What can this thing do" is the question a stranger has in front of every
+    # one of these states, so it is offered from all of them - on its own row,
+    # because three chips do not fit a narrow dock and Qt has no wrapping row
+    # to rescue them.
+    #
+    # ONE owner. Three findings carried the same chip as well, so the empty
+    # project printed "What can Nivo do?" twice, one row under the other, which
+    # is what a reader takes for a broken screen rather than for a repeated
+    # offer.
+    if turns:
+        # This belongs to the reading immediately above it. A separate empty
+        # turn produced a large floating link with no visible owner.
+        turns[-1]["actions"].append(
+            {"label": "See what Nivo can do", "kind": "capabilities"})
+    return turns
+
+
 def plugin_icon() -> QIcon:
-    """The Mapdex mark, drawn from the packaged icon next to this module."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+    """The listing mark: the indigo symbol `metadata.txt` names.
+
+    Kept for the one surface that has no palette to read - the plugin manager
+    and plugins.qgis.org - and as the last fallback for a build missing its
+    assets, because a QIcon with no file draws nothing and an invisible button
+    is worse than a wrongly coloured one. Inside QGIS the identity is
+    `mapdex_mark_icon()`: see branding.py and MEMORY hard rule 27, which makes
+    the black/white symbol the default mark and the blue one an accent variant.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), branding.LISTING_MARK)
     return QIcon(path) if os.path.isfile(path) else QIcon()
+
+
+def surface_asset_icon(name: str) -> QIcon:
+    """A glyph for the PANEL's surface rather than for the QGIS interface.
+
+    `themed_asset_icon` reads the application palette, which is right for the
+    toolbar - that bar is whatever colour the user's theme makes it. It is
+    wrong inside this panel, which paints its own `#191919` ground whatever the
+    host theme is: on a LIGHT QGIS theme it picked the ink variant and drew a
+    near-black glyph on near-black, which on screen is indistinguishable from
+    an icon that failed to load.
+
+    Measured rather than reasoned: on a light interface the four panel glyphs
+    came back at relative luminance 0.06 against the surface's own 0.09.
+
+    So the panel always takes the light-coloured file - the one whose name says
+    `_dark`, meaning "for a dark surface".
+    """
+    stem, _, extension = name.rpartition(".")
+    return asset_icon("{}_dark.{}".format(stem or name, extension or "png"))
+
+
+def mapdex_mark_icon() -> QIcon:
+    """The Mapdex mark for the interface QGIS is currently wearing.
+
+    Routed through `themed_asset_icon` rather than resolving the file here, so
+    the mark uses the dark variant on dark interfaces, then the light one, then
+    the listing mark. One indigo picture on every theme is what this replaces.
+    """
+    return themed_asset_icon(branding.MARK_FOR_LIGHT_INTERFACE)
+
+
+def asset_icon(name: str) -> QIcon:
+    """A packaged icon from assets/, falling back to the Mapdex mark.
+
+    The fallback keeps a build whose asset is missing usable rather than blank,
+    which matters because a QIcon with no file draws nothing at all and the
+    button becomes invisible.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", name)
+    return QIcon(path) if os.path.isfile(path) else plugin_icon()
+
+
+def interface_is_dark() -> bool:
+    """Is the QGIS window dark? Measured from the palette, not from its name.
+
+    QGIS ships Night Mapping and Blend of Gray, users install their own, and on
+    macOS and Windows the system theme can darken the application without any
+    QGIS setting changing at all. Matching theme NAMES would be a hardcoded
+    list that is wrong for every theme nobody thought of, which is a mistake
+    this repository has paid for elsewhere and has one answer: read the value.
+
+    The window background lightness is that value. Below the midpoint the bar
+    behind the toolbar is dark, whatever anyone called the theme.
+    """
+    try:
+        from qgis.PyQt.QtGui import QPalette  # noqa: PLC0415 - Qt-only import
+        from qgis.PyQt.QtWidgets import QApplication  # noqa: PLC0415
+
+        application = QApplication.instance()
+        if application is None:
+            return False
+        window = application.palette().color(
+            enum_member(QPalette, "ColorRole", "Window"))
+        return window.lightness() < 128
+    except Exception as exc:  # noqa: BLE001 - a wrong icon beats no toolbar
+        log_debug("reading the interface palette", exc)
+        return False
+
+
+def themed_asset_icon(name: str) -> QIcon:
+    """The dark variant of an asset on a dark interface, else the light one.
+
+    Falls back through the light variant to the Mapdex mark, so a build missing
+    the dark file shows a wrong-but-visible icon rather than an empty button.
+    """
+    if interface_is_dark():
+        stem, _, extension = name.rpartition(".")
+        dark = "{}_dark.{}".format(stem or name, extension or "png")
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", dark)
+        if os.path.isfile(path):
+            return QIcon(path)
+    return asset_icon(name)
+
+
+# --------------------------------------------------------------------------
+# Reporting a capability result
+# --------------------------------------------------------------------------
+#
+# The analytics kernel computes a mean, a frequency table, an outlier rule and
+# its bounds - and the transcript used to print the server's one-line summary
+# followed by the result's `kind` in brackets. The numbers were measured and
+# then discarded, which is what made an assistant that can profile a cadastral
+# layer read as one that does nothing useful.
+#
+# These functions state what was measured and nothing else. Every value comes
+# out of the result object; a field the result does not carry is not mentioned
+# rather than defaulted, because a fabricated zero in a statistics line is worse
+# than a shorter line.
+
+SIMPLE_RESULT_PHRASES = {
+    "zoomed": "Zoomed to the layer.",
+    "zoomed_to_selection": "Zoomed to the selection.",
+    "zoomed_to_extent": "Moved the map to that area.",
+    "refreshed": "Redrew the map.",
+    "previous_extent": "Went back to the previous view.",
+    "table_opened": "Opened the attribute table.",
+    "layer_activated": "Made that the active layer.",
+    "selected_all": "Selected every feature in the layer.",
+    "selection_cleared": "Cleared the selection.",
+    "selection_inverted": "Inverted the selection.",
+    "filter_cleared": "Removed the filter.",
+    "no_map_change": "Nothing on the map needed to change.",
+    "nothing_to_undo": "There is nothing to undo.",
+    "reorder_unchanged": "That layer is already in that position.",
+    # Started, not finished. The run list has to be fetched before it can be
+    # reported, and naming a run to review is not the same as having opened it.
+    "review_requested": "Looking for the run to review…",
+}
+
+
+def _pretty_number(value):
+    """A readable number, or the value unchanged when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return str(value)
+    magnitude = abs(number)
+    if magnitude and (magnitude < 0.001 or magnitude >= 1e12):
+        return "{:.4g}".format(number)
+    if number.is_integer():
+        return "{:,}".format(int(number))
+    return "{:,.4f}".format(number).rstrip("0").rstrip(".")
+
+
+def _joined(parts):
+    return " · ".join(part for part in parts if part)
+
+
+def _describe_numeric(result):
+    if not result.get("usable"):
+        return "no usable numbers in that field ({} empty)".format(_pretty_number(result.get("nulls") or 0))
+    parts = [
+        "{} values".format(_pretty_number(result.get("usable"))),
+        "mean {}".format(_pretty_number(result.get("mean"))),
+        "median {}".format(_pretty_number(result.get("median"))),
+        "min {}".format(_pretty_number(result.get("min"))),
+        "max {}".format(_pretty_number(result.get("max"))),
+    ]
+    if result.get("nulls"):
+        parts.append("{} empty".format(_pretty_number(result["nulls"])))
+    if result.get("scope") and result["scope"] != "all":
+        parts.append("scope: {}".format(result["scope"]))
+    if result.get("truncated"):
+        parts.append("the read stopped at the row limit, so this describes part of the layer")
+    return _joined(parts)
+
+
+def _describe_categorical(result):
+    categories = result.get("categories") or []
+    if not categories:
+        return "no values to count in that field"
+    head = ", ".join(
+        "{} ({})".format(entry.get("value"), _pretty_number(entry.get("count")))
+        for entry in categories[:5]
+    )
+    parts = ["{} distinct values in {}".format(
+        _pretty_number(result.get("distinct")), _pretty_number(result.get("usable"))), head]
+    if result.get("truncated"):
+        parts.append("more categories not shown")
+    if result.get("nulls"):
+        parts.append("{} empty".format(_pretty_number(result["nulls"])))
+    return _joined(parts)
+
+
+def _describe_histogram(result):
+    bins = result.get("bins") or []
+    if not bins:
+        return "no numeric values to bin"
+    return "{} bins from {} to {}".format(
+        len(bins), _pretty_number(bins[0].get("min")), _pretty_number(bins[-1].get("max")))
+
+
+def _describe_top_n(result):
+    rows = result.get("rows") or []
+    parts = ["{} of {} by {}".format(
+        _pretty_number(result.get("matched")), _pretty_number(result.get("considered")), result.get("field"))]
+    if rows:
+        parts.append("top values " + ", ".join(_pretty_number(row.get("value")) for row in rows[:5]))
+    return _joined(parts)
+
+
+def _describe_outliers(result):
+    if not result.get("matched"):
+        if result.get("reason") == "not_enough_values":
+            return "too few values to judge an outlier"
+        return "no outliers under {}".format(result.get("rule") or result.get("method"))
+    return _joined([
+        "{} of {} flagged".format(
+            _pretty_number(result.get("matched")), _pretty_number(result.get("considered"))),
+        "rule: {}".format(result.get("rule") or result.get("method")),
+        "outside {} to {}".format(
+            _pretty_number(result.get("lower_bound")), _pretty_number(result.get("upper_bound"))),
+    ])
+
+
+def _describe_group(result):
+    groups = result.get("groups") or []
+    if not groups:
+        return "nothing to group"
+    head = ", ".join(
+        "{} {}".format(entry.get("group"), _pretty_number(entry.get("value"))) for entry in groups[:5])
+    label = result.get("statistic") or "count"
+    if result.get("value_field"):
+        label = "{} of {}".format(label, result["value_field"])
+    parts = ["{} by {}".format(label, result.get("group_field")),
+             "{} groups".format(_pretty_number(result.get("group_count"))), head]
+    if result.get("skipped_null_values"):
+        parts.append("{} rows had no value".format(_pretty_number(result["skipped_null_values"])))
+    return _joined(parts)
+
+
+def _describe_comparison(result):
+    left = result.get("left") or {}
+    right = result.get("right") or {}
+    delta = result.get("delta") or {}
+    parts = ["mean {} vs {}".format(_pretty_number(left.get("mean")), _pretty_number(right.get("mean")))]
+    if isinstance(delta.get("mean_percent"), (int, float)):
+        parts.append("{}% difference".format(_pretty_number(delta["mean_percent"])))
+    parts.append("{} vs {} values".format(
+        _pretty_number(left.get("usable")), _pretty_number(right.get("usable"))))
+    return _joined(parts)
+
+
+def _describe_breaks(result):
+    return "{} {} classes from {} to {}".format(
+        _pretty_number(result.get("classes")), result.get("method"),
+        _pretty_number(result.get("min")), _pretty_number(result.get("max")))
+
+
+def _describe_layer_profile(result):
+    parts = [str(result.get("name") or ""), str(result.get("type") or "")]
+    if result.get("type") == "vector":
+        parts.append("{} features".format(_pretty_number(result.get("feature_count"))))
+        parts.append("{} fields".format(len(result.get("fields") or [])))
+        if result.get("selected"):
+            parts.append("{} selected".format(_pretty_number(result["selected"])))
+    else:
+        parts.append("{}x{} px".format(_pretty_number(result.get("width")), _pretty_number(result.get("height"))))
+        parts.append("{} bands".format(_pretty_number(result.get("bands"))))
+        if result.get("georeferenced") is False:
+            parts.append("not georeferenced")
+    parts.append(result.get("crs") or "no CRS")
+    return _joined(parts)
+
+
+def _describe_field_profile(result):
+    fields = result.get("fields") or []
+    numeric = [field["name"] for field in fields if field.get("numeric")]
+    parts = ["{} fields over {} features".format(len(fields), _pretty_number(result.get("features")))]
+    if numeric:
+        parts.append("numeric: " + ", ".join(numeric[:8]))
+    return _joined(parts)
+
+
+def _describe_jobs(result):
+    """The run list, stating both what matched and what the project holds.
+
+    "3 runs" and "3 of 47 runs" answer different questions, and the second is
+    the one a user filtering by state asked. A listing truncated to fit the
+    transcript says so, because a silently cut list reads as a complete one.
+    """
+    matched = int(result.get("matched") or 0)
+    total = int(result.get("total") or 0)
+    state = str(result.get("state") or "all")
+    if not total:
+        return "this project has no Mapdex runs yet"
+    if not matched:
+        return "none of the {} runs in this project are {}".format(_pretty_number(total), state)
+    rows = result.get("runs") or []
+    head = ("{} of {} runs".format(_pretty_number(matched), _pretty_number(total))
+            if state != "all" else "{} runs".format(_pretty_number(total)))
+    parts = [head]
+    for row in rows:
+        line = "{} {}".format(row.get("state") or "unknown", row.get("title") or row.get("run_id") or "")
+        failure = str(row.get("error") or "")
+        parts.append("{} - {}".format(line.strip(), failure) if failure else line.strip())
+    if matched > len(rows):
+        parts.append("{} more not listed".format(_pretty_number(matched - len(rows))))
+    return _joined(parts)
+
+
+def _describe_jobs_requested(result):
+    state = str(result.get("state") or "all")
+    return "reading the run list" if state == "all" else "reading the {} runs".format(state)
+
+
+def _describe_review_opened(result):
+    return "opened the review for {} ({})".format(
+        result.get("run_id") or "that run", result.get("state") or "unknown")
+
+
+def _coord(value):
+    """A latitude or longitude at a precision a surveyor can use.
+
+    `_pretty_number` stops at four decimals, which on the ground is about
+    eleven metres - fine for an area, useless for a station.
+    """
+    try:
+        return "{:.6f}".format(float(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _describe_geometry_measurement(result):
+    """The measure, and the frame it was taken in.
+
+    The frame is not decoration. The same polygon has one area in the layer's
+    own projection and another on the ellipsoid, so a number handed over
+    without saying which was used cannot be checked against anything - and
+    this result already carries the sentence that says it.
+    """
+    statistic = str(result.get("statistic") or "sum")
+    value = result.get("value")
+    if value is None:
+        value = result.get(statistic)
+    parts = ["{} {} ({})".format(
+        _pretty_number(value), result.get("unit") or "", statistic).replace("  ", " ")]
+    measured, features = result.get("measured"), result.get("features")
+    if measured is not None and features is not None:
+        parts.append("{} of {} measured".format(_pretty_number(measured), _pretty_number(features)))
+    if result.get("skipped"):
+        parts.append("{} skipped: that geometry cannot carry the measure".format(
+            _pretty_number(result["skipped"])))
+    if result.get("frame"):
+        parts.append(str(result["frame"]))
+    if result.get("truncated"):
+        parts.append("the read stopped at the row limit, so this describes part of the layer")
+    return _joined(parts)
+
+
+def _describe_crs_diagnosis(result):
+    findings = result.get("findings") or []
+    parts = ["declares {}".format(result.get("declared_crs") or "no CRS")]
+    if result.get("crs_kind"):
+        parts.append(str(result["crs_kind"]))
+    verdict = str(result.get("verdict") or "")
+    if verdict:
+        parts.append(verdict.replace("_", " "))
+    parts.append("{} finding(s)".format(len(findings)) if findings else "nothing to flag")
+    return _joined(parts)
+
+
+def _describe_datum_transformations(result):
+    operations = result.get("operations") or []
+    would = result.get("would_use") if isinstance(result.get("would_use"), dict) else {}
+    parts = ["{} → {}".format(result.get("source_crs"), result.get("target_crs")),
+             "{} operation(s)".format(len(operations))]
+    if would.get("name"):
+        parts.append("would use {}".format(would["name"]))
+    missing = [op for op in operations if isinstance(op, dict) and op.get("missing_grids")]
+    if missing:
+        # Named, because a missing grid is the difference between a metre and a
+        # decimetre and the user can install it.
+        parts.append("{} need a grid that is not installed".format(len(missing)))
+    return _joined(parts)
+
+
+def _describe_nearest(result):
+    parts = ["{} of {} nearest to {}".format(
+        _pretty_number(result.get("returned")), _pretty_number(result.get("considered")),
+        result.get("reference") or "the reference")]
+    if result.get("nearest_distance") is not None:
+        parts.append("{} to {} {}".format(
+            _pretty_number(result.get("nearest_distance")),
+            _pretty_number(result.get("farthest_distance")),
+            result.get("measured_in") or ""))
+    if isinstance(result.get("selection"), dict):
+        parts.append("selected on the map")
+    return _joined(parts)
+
+
+def _describe_legend(result):
+    entries = result.get("entries") or []
+    labels = [str(e.get("label") or "").strip() for e in entries if isinstance(e, dict)]
+    labels = [label for label in labels if label]
+    parts = ["legend for {}".format(result.get("name") or "the layer"),
+             "{} entr{}".format(len(entries), "y" if len(entries) == 1 else "ies")]
+    if labels:
+        parts.append(", ".join(labels[:4]))
+    return _joined(parts)
+
+
+def _describe_survey_inverse(result):
+    return _joined([
+        "{} m".format(_pretty_number(result.get("distance_m"))),
+        "azimuth {}°".format(_pretty_number(result.get("azimuth_deg"))),
+        "back azimuth {}°".format(_pretty_number(result.get("back_azimuth_deg"))),
+    ])
+
+
+def _describe_survey_forward(result):
+    return "lands at {}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_survey_traverse(result):
+    stations = result.get("stations") or []
+    last = stations[-1] if stations else {}
+    parts = ["{} station(s)".format(len(stations))]
+    if isinstance(last, dict) and last.get("lat") is not None:
+        parts.append("ends at {}, {}".format(_coord(last.get("lat")), _coord(last.get("lon"))))
+    return _joined(parts)
+
+
+def _describe_survey_closure(result):
+    misclosure = result.get("misclosure") if isinstance(result.get("misclosure"), dict) else {}
+    parts = ["misclosure {} m".format(_pretty_number(misclosure.get("distance_m")))]
+    if misclosure.get("precision_ratio"):
+        # A precision ratio is read as an order of magnitude, so four decimal
+        # places on it are noise: "1:25,681,297,307.0713" says nothing the
+        # rounded figure does not.
+        try:
+            parts.append("1:{:,}".format(int(round(float(misclosure["precision_ratio"])))))
+        except (TypeError, ValueError, OverflowError):
+            parts.append("1:{}".format(_pretty_number(misclosure["precision_ratio"])))
+    if result.get("total_distance_m") is not None:
+        parts.append("perimeter {} m".format(_pretty_number(result["total_distance_m"])))
+    if result.get("area_m2") is not None:
+        parts.append("area {} m²".format(_pretty_number(result["area_m2"])))
+    if result.get("area_method"):
+        parts.append(str(result["area_method"]))
+    return _joined(parts)
+
+
+def _factor(value):
+    """A scale factor at the precision a scale factor is used at.
+
+    `_pretty_number` trims trailing zeros, which turns an elevation factor of
+    0.9999843 into "1" - a figure whose whole job is the digits after the
+    fourth.
+    """
+    try:
+        return "{:.7f}".format(float(value))
+    except (TypeError, ValueError):
+        return _pretty_number(value)
+
+
+def _describe_survey_scale_factor(result):
+    parts = ["combined {}".format(_factor(result.get("combined_factor")))]
+    if result.get("parts_per_million") is not None:
+        parts.append("{} ppm".format(_pretty_number(result["parts_per_million"])))
+    parts.append("point {}".format(_factor(result.get("point_scale"))))
+    parts.append("elevation {}".format(_factor(result.get("elevation_factor"))))
+    if result.get("height_reference"):
+        parts.append("height taken as {}".format(result["height_reference"]))
+    return _joined(parts)
+
+
+def _describe_survey_intersect(result):
+    parts = ["{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))]
+    if result.get("convergence_angle_deg") is not None:
+        # A shallow intersection is a weak fix, and the angle is how a surveyor
+        # judges that, so it travels with the position rather than behind it.
+        parts.append("sights meet at {}°".format(_pretty_number(result["convergence_angle_deg"])))
+    if result.get("distance_from_first_m") is not None:
+        parts.append("{} m and {} m from the stations".format(
+            _pretty_number(result["distance_from_first_m"]),
+            _pretty_number(result.get("distance_from_second_m"))))
+    return _joined(parts)
+
+
+def _describe_survey_trilaterate(result):
+    solutions = result.get("solutions") or []
+    if not solutions:
+        return "the circles do not meet"
+    # Both, always: two circles meet twice and choosing one for the user is
+    # choosing which side of the baseline their point is on.
+    return _joined(["{} solution(s)".format(len(solutions))] + [
+        "{} {}, {}".format(s.get("side") or "", _coord(s.get("lat")), _coord(s.get("lon"))).strip()
+        for s in solutions if isinstance(s, dict)])
+
+
+def _describe_survey_resection(result):
+    return "{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_survey_station_offset(result):
+    parts = ["station {} m".format(_pretty_number(result.get("station_m"))),
+             "offset {} m {}".format(_pretty_number(result.get("offset_m")),
+                                     result.get("side") or "").strip()]
+    if result.get("beyond_start") or result.get("beyond_end"):
+        parts.append("past the {} of the line".format("start" if result.get("beyond_start") else "end"))
+    if result.get("residual_m") is not None:
+        parts.append("residual {} m".format(_pretty_number(result["residual_m"])))
+    return _joined(parts)
+
+
+def _describe_coordinate_written(result):
+    dms = result.get("dms") if isinstance(result.get("dms"), dict) else {}
+    utm = result.get("utm") if isinstance(result.get("utm"), dict) else {}
+    parts = []
+    if dms.get("latitude"):
+        parts.append("{} {}".format(dms.get("latitude"), dms.get("longitude")))
+    if utm.get("zone"):
+        parts.append("UTM {}{} {} E {} N".format(
+            utm.get("zone"), utm.get("band") or "",
+            _pretty_number(utm.get("easting_m")), _pretty_number(utm.get("northing_m"))))
+    if result.get("mgrs"):
+        parts.append("MGRS {}".format(result["mgrs"]))
+    return _joined(parts)
+
+
+def _describe_coordinate_read(result):
+    return "{}, {}".format(_coord(result.get("lat")), _coord(result.get("lon")))
+
+
+def _describe_geoid_height(result):
+    parts = []
+    for key, label in (("geoid_separation_m", "geoid separation"),
+                       ("orthometric_height_m", "orthometric height"),
+                       ("ellipsoidal_height_m", "ellipsoidal height")):
+        if result.get(key) is not None:
+            parts.append("{} {} m".format(label, _pretty_number(result[key])))
+    return _joined(parts) or "geoid height"
+
+
+def _describe_processing_started(result):
+    # Started, not finished, and it says so: the algorithm runs on QGIS's task
+    # queue and the layer appears when it lands.
+    return "started the {} in QGIS; the result appears as a new layer when it finishes".format(
+        str(result.get("operation") or "operation").replace("_", " "))
+
+
+def _describe_processing_catalog(result):
+    available = result.get("available") or []
+    labels = [str(op.get("label") or op.get("operation") or "") for op in available if isinstance(op, dict)]
+    labels = [label for label in labels if label]
+    return _joined(["{} operation(s) available here".format(len(available)),
+                    ", ".join(labels[:6])])
+
+
+RESULT_DESCRIBERS = {
+    "numeric": _describe_numeric,
+    "categorical": _describe_categorical,
+    "histogram": _describe_histogram,
+    "top_n": _describe_top_n,
+    "outliers": _describe_outliers,
+    "group_aggregate": _describe_group,
+    "comparison": _describe_comparison,
+    "breaks": _describe_breaks,
+    "layer_profile": _describe_layer_profile,
+    "field_profile": _describe_field_profile,
+    "project_profile": lambda result: "{} layers in the project".format(len(result.get("layers") or [])),
+    # Measurements and computations that used to reach the transcript as their
+    # own key - "geometry measurement" - or, with no key at all, as "Done."
+    "geometry_measurement": _describe_geometry_measurement,
+    "crs_diagnosis": _describe_crs_diagnosis,
+    "datum_transformations": _describe_datum_transformations,
+    "nearest": _describe_nearest,
+    "legend": _describe_legend,
+    "scale_range_applied": lambda result: str(
+        result.get("description")
+        or "drawn between 1:{} and 1:{}".format(
+            _pretty_number(result.get("minimum_scale")), _pretty_number(result.get("maximum_scale")))),
+    "processing_started": _describe_processing_started,
+    "processing_catalog": _describe_processing_catalog,
+    "survey_inverse": _describe_survey_inverse,
+    "survey_forward": _describe_survey_forward,
+    "survey_traverse": _describe_survey_traverse,
+    "survey_closure": _describe_survey_closure,
+    "survey_scale_factor": _describe_survey_scale_factor,
+    "survey_intersect": _describe_survey_intersect,
+    "survey_trilaterate": _describe_survey_trilaterate,
+    "survey_resection": _describe_survey_resection,
+    "survey_station_offset": _describe_survey_station_offset,
+    "coordinate_written": _describe_coordinate_written,
+    "coordinate_read": _describe_coordinate_read,
+    "geoid_height": _describe_geoid_height,
+    "selection_applied": lambda result: "selected {} of {} features".format(
+        _pretty_number(result.get("selected")), _pretty_number(result.get("requested"))),
+    "visibility_applied": lambda result: "layer {}".format("shown" if result.get("visible") else "hidden"),
+    "opacity_applied": lambda result: "opacity {}%".format(_pretty_number(result.get("opacity"))),
+    # A single symbol has no classes to count, and saying "with None classes"
+    # put a Python value in front of the user.
+    "style_applied": lambda result: _joined([
+        "{} style".format(result.get("style")),
+        ("{} classes".format(_pretty_number(result["classes"]))
+         if result.get("classes") else ""),
+    ]),
+    "labels_applied": lambda result: "labelled by {}".format(result.get("field")),
+    "filter_applied": lambda result: "{} matched {} features".format(
+        result.get("expression"), _pretty_number(result.get("matched"))),
+    "measurement": lambda result: "{} m ({})".format(
+        _pretty_number(result.get("metres")), result.get("method") or "measured"),
+    "export": lambda result: "wrote {} features to {}".format(
+        _pretty_number(result.get("features")), result.get("path")),
+    "field_calculated": lambda result: "added '{}' over {} rows, {} empty".format(
+        result.get("field"), _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
+    "field_preview": lambda result: "preview only: {} rows, {} empty".format(
+        _pretty_number(result.get("rows")), _pretty_number(result.get("nulls"))),
+    "jobs": _describe_jobs,
+    "jobs_requested": _describe_jobs_requested,
+    "review_opened": _describe_review_opened,
+    "reorder_applied": lambda result: "moved to {}".format(result.get("position")),
+    "basemap_added": lambda result: "added {}".format(result.get("name")),
+    # The CRS is in the line on purpose. A drawn shape is data, and a layer whose
+    # frame the user cannot see is one they cannot check against anything else.
+    "geometry_drawn": lambda result: "drew a {} into '{}' from {} point(s), in {}".format(
+        result.get("geometry"), result.get("layer_name"),
+        _pretty_number(result.get("vertices")), result.get("crs")),
+    "undone": lambda result: "undid the last {} change".format(result.get("change")),
+    "undo_failed": lambda result: "could not undo that: {}".format(result.get("reason")),
+}
+
+
+def describe_capability_result(summary, result):
+    """One line for the transcript, built only from what the result carries."""
+    headline = str(summary or "").strip()
+    if not isinstance(result, dict):
+        return headline or "Done."
+    # An analysis that was also drawn on the map arrives wrapped; report the
+    # measurement, which is the part the user asked about.
+    if "analysis" in result and isinstance(result["analysis"], dict):
+        detail = describe_capability_result("", result["analysis"])
+        applied = result.get("map") if isinstance(result.get("map"), dict) else {}
+        if applied.get("kind") == "style_applied":
+            detail = _joined([detail, "shown on the map"])
+        elif applied.get("kind") == "selection_applied":
+            detail = _joined([detail, "selected on the map"])
+        return _joined([headline, detail]) if headline else detail
+    if "layer" in result and "fields" in result and isinstance(result["layer"], dict):
+        detail = _joined([
+            describe_capability_result("", result["layer"]),
+            describe_capability_result("", result["fields"]),
+        ])
+        return _joined([headline, detail]) if headline else detail
+    kind = str(result.get("kind") or "")
+    phrase = SIMPLE_RESULT_PHRASES.get(kind)
+    if phrase:
+        return phrase
+    describer = RESULT_DESCRIBERS.get(kind)
+    if describer is None:
+        # An unrecognised kind must not be dressed up as a measurement.
+        return headline or (kind.replace("_", " ") if kind else "Done.")
+    try:
+        detail = describer(result)
+    except Exception:  # noqa: BLE001 - a transcript line must never break a turn
+        detail = ""
+    if not detail:
+        return headline or kind.replace("_", " ")
+    return "{}: {}".format(headline, detail) if headline else detail
 
 
 class _WorkTask(QgsTask):
@@ -97,7 +1040,7 @@ class _WorkTask(QgsTask):
         super().__init__(description, flags)
         self._work = work
         self.result = None
-        self.error = None  # type: Optional[BaseException]
+        self.error: Optional[BaseException] = None
 
     def run(self):
         try:
@@ -108,6 +1051,33 @@ class _WorkTask(QgsTask):
             return False
 
 
+class _ConnectorUiBridge(QObject):
+    """Queue connector UI work onto the thread that constructed the plugin.
+
+    A zero-delay QTimer created from a QgsTask worker belongs to that worker.
+    QgsTask workers do not run a Qt event loop, so its callback never fires —
+    exactly why the authorization URL was built but the browser never opened.
+    A queued signal to this main-thread QObject crosses that boundary reliably.
+    """
+
+    open_url = pyqtSignal(str)
+    show_status = pyqtSignal(str)
+
+    def __init__(self, status_callback: Callable[[str], None]):
+        super().__init__()
+        self._status_callback = status_callback
+        self.open_url.connect(self._open_url)
+        self.show_status.connect(self._show_status)
+
+    @pyqtSlot(str)
+    def _open_url(self, target: str) -> None:
+        QDesktopServices.openUrl(QUrl(target))
+
+    @pyqtSlot(str)
+    def _show_status(self, message: str) -> None:
+        self._status_callback(message)
+
+
 class MapdexPlugin:
     def __init__(self, iface):
         self.iface = iface
@@ -115,7 +1085,26 @@ class MapdexPlugin:
         self.dock = None
         settings = QSettings()
         self.token_store = qgis_token_store(settings)
-        persisted_token = self.token_store.load() if self.token_store is not None else ""
+        # The stored session, which for a connector is three things that must
+        # travel together: the access token, the refresh token that replaces it,
+        # and when it stops working. An older device-grant install reports its
+        # bearer token here with no refresh token, which is exactly true of it.
+        stored_session = (
+            self.token_store.load_session() if self.token_store is not None else {}
+        )
+        persisted_token = str(stored_session.get("access_token") or "")
+        self._refresh_token = str(stored_session.get("refresh_token") or "")
+        self._token_expires_at = float(stored_session.get("expires_at") or 0.0)
+        self._connection_kind = str(stored_session.get("kind") or "device")
+        # Whether the credential survived to the authentication database. A
+        # session-only connection is a real state and the person is told about
+        # it; assuming it persisted is how somebody restarts QGIS and finds
+        # themselves signed out with no explanation.
+        self._connection_persisted = bool(persisted_token)
+        # Has the reader opened Settings from the first-open choice? While
+        # onboarding, the tab bar and the page stack are hidden, so this is what
+        # lets the second route actually arrive somewhere. Not persisted: it
+        # describes this sitting at the panel, not the install.
         # Never continue using the historical plaintext setting. Existing users
         # reconnect once and receive encrypted QGIS Authentication DB storage.
         settings.remove(LEGACY_TOKEN_SETTING)
@@ -131,22 +1120,53 @@ class MapdexPlugin:
         )
         if stale_endpoint:
             # The stored session belongs to another deployment.
-            persisted_token = ""
+            # Clearing the stored session, not assigning a password.
+            persisted_token = ""  # nosec B105
             if self.token_store is not None:
                 self.token_store.clear()
             settings.setValue("mapdex/base_url", api_base)
             settings.setValue("mapdex/web_base", web_base)
         self.api = MapdexAPI(api_base, persisted_token)
+        # A connector access token lives an hour and a QGIS session does not.
+        # Reactive rather than scheduled: the server's own 401 is the only
+        # authority on whether a token still works, because a locally computed
+        # expiry cannot know that somebody pressed Disconnect in the browser.
+        self.api.on_token_expired = self._renew_connector_token
         self.web_base = web_base.rstrip("/")
         self.device_code = ""
         self.batch_id = ""
         self.project_id = str(settings.value("mapdex/project_id", "") or "")
         self.imported_layer_ids = set()  # type: set[str]
-        self.selected_paths = []  # type: list[str]
-        self._last_batch = None  # type: Optional[dict]
-        self._source_label = ""
+        # The sheets this task will run over. A LIST, because a batch is what
+        # more than one of them IS - the old single `selected_paths` could
+        # hold several files only because the file dialog happened to be
+        # multi-select, and could never hold a layer beside them at all.
+        self.selected_sources = []  # type: list[task_sources.Source]
+        # What the server says a sheet of each batch kind costs. Empty
+        # until `/v1/plans` answers, and empty means the panel says nothing
+        # about price rather than saying zero.
+        self._sheet_prices = {}  # type: dict
+        # What the workspace has left to spend, read from `/v1/credits`.
+        # None means UNREAD, which is not zero: a build that cannot read a
+        # balance blocks nothing and claims nothing, and the server's own
+        # refusal at reservation stays the authority.
+        self._balance = None  # type: Optional[dict]
+        # The resolved assistant runtime, held so the Nivo header does not open
+        # the encrypted authentication database on every layer click.
+        self._assistant_runtime_cache = None
+        self._last_batch: Optional[dict] = None
+        # file id -> the name the user chose in the file dialog. The server
+        # answers with ids, and an item list reading "Item 3" for a sheet the
+        # person picked by name is one they cannot match to their own work.
+        # Empty after a resume, which is honest: this session did not send it.
+        self._batch_file_names: dict = {}
         self._pending_is_batch = False
         self._busy = False
+        self._connect_task = None
+        self._connect_cancel = threading.Event()
+        # Constructed on the QGIS UI thread; worker signals therefore arrive
+        # here as queued main-thread calls.
+        self._connector_ui = _ConnectorUiBridge(self._set_status)
         self._panel_root = None
         # Background tasks in flight; QGIS crashes if Python collects one early.
         self._tasks = []
@@ -155,10 +1175,18 @@ class MapdexPlugin:
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._poll_batch)
         self.progress_pending = False
+        # A plan the panel ran directly. It belongs to no batch, so it needs its
+        # own follow: without one, a turn that needed a Run showed the work,
+        # started it, and then went quiet until the user thought to look in the
+        # browser.
+        self.plan_timer = QTimer()
+        self.plan_timer.timeout.connect(self._poll_plan_run)
+        self.plan_run_id = ""
+        self.plan_run_pending = False
         # Whether the server has actually started the child run, and since when
         # it has been waiting. None means "not reported"; the panel then keeps
         # its neutral wording instead of guessing.
-        self._backend_started = None  # type: Optional[bool]
+        self._backend_started: Optional[bool] = None
         self._waiting_since = 0.0
         self._start_probe_countdown = 0
         # Which terminal beat has already been announced in the QGIS message bar.
@@ -170,6 +1198,13 @@ class MapdexPlugin:
         self.web_url_input = None
         self.save_settings_button = None
         self.connect_button = None
+        self.connect_promise = None
+        self.sign_in = None
+        self.tail = None
+        self.body_layout = None
+        self.first_open_prompt = None
+        self.first_open_title = None
+        self.segment_bar = None
         self.disconnect_button = None
         self.workspace = None
         self.batch_group = None
@@ -179,28 +1214,410 @@ class MapdexPlugin:
         self.guidance_label = None
         self.project_box = None
         self.workflow_box = None
-        self.input_box = None
+        self._layer_menu_actions = []
+        self._measure_action = None
+        self._measure_tool = None
+        self._draw_action = None
+        self._draw_tool = None
+        self._previous_map_tool = None
         self.source_summary = None
+        self.drop_zone = None
+        self.source_list = None
+        self.options = None
+        self.expand_pages_check = None
+        self.skip_completed_check = None
+        self.concurrency_box = None
+        self.price_label = None
+        self.balance_row = None
+        self.balance_notice = None
+        self.top_up_button = None
         self.run_button = None
         self.cancel_button = None
         self.retry_button = None
         self.import_button = None
         self.review_button = None
+        self.open_batch_button = None
+        self.item_list = None
         self.recent = None
         self.recent_box = None
         self.resume_button = None
+        self.tabs = None
+        self.switch_page = None
+        self.workspace_body = None
+        self.workspace_locked = None
+        self.jobs_locked = None
+        self.assistant_key_state = None
+        self.nivo_context = None
+        self.nivo_runtime = None
+        self.nivo_reply = None
+        self.nivo_status = None
+        self.nivo_input = None
+        self.nivo_send_button = None
+        self.composer = None
+        self.nivo_stop_button = None
+        self.nivo_new_button = None
+        self.nivo_history_button = None
+        self._nivo_turns = []
+        # The opening reading, rebuilt on every draw. Kept apart from the
+        # conversation because it describes the layer that is active now,
+        # and because clearing the transcript must bring it back.
+        self._nivo_opening = []
+        # A multi-step objective: what was asked, what the actions reported, and
+        # how many round trips it has taken.
+        self._nivo_objective = ""
+        self._nivo_action_results = []
+        self._nivo_round_trips = 0
+        self._nivo_state = "idle"
+        self._executed_nivo_actions = set()
+        self._nivo_compose_task = None
+        self._nivo_request_id = 0
+        # The conversation this panel is continuing. Restored only when it was
+        # opened in the project we are about to talk to; threads are
+        # project-scoped on the server, so carrying one across would ask the
+        # API to continue something that project cannot see.
+        self._nivo_thread_id = remembered_thread(
+            settings.value(THREAD_ID_SETTING, ""),
+            settings.value(THREAD_PROJECT_SETTING, ""),
+            self.project_id,
+        )
+        self._nivo_thread_project = self.project_id if self._nivo_thread_id else ""
+        # The History dialog's widget handles while it is open, and the thread
+        # rows currently listed in it, in the order they are displayed.
+        self._history_refs = None
+        self._history_rows = []
+        self._history_request_id = 0
 
+    @guarded
     def initGui(self):
-        self.action = QAction(plugin_icon(), "Mapdex", self.iface.mainWindow())
+        self.action = QAction(mapdex_mark_icon(), "Mapdex", self.iface.mainWindow())
         self.action.setToolTip("Open Mapdex for QGIS")
         self.action.triggered.connect(self.show)
         self.iface.addPluginToWebMenu("&Mapdex", self.action)
-        self.iface.addToolBarIcon(self.action)
+        # Mapdex owns a toolbar rather than one icon on the shared Plugins bar.
+        self.toolbar = self.iface.addToolBar("Mapdex")
+        self.toolbar.setObjectName("MapdexToolbar")
+        self.toolbar.addAction(self.action)
+        self._install_measure_action()
+        self._install_draw_action()
+        self._install_layer_menu_actions()
         # Register the dock immediately so QGIS places it in the right rail,
         # not as a floating overlay over the menu bar.
         self._ensure_dock()
         self.dock.hide()
 
+    def _install_measure_action(self):
+        """Let a person point at two places, rather than already know them.
+
+        `measure.distance@1` takes a pair of coordinates, so until this action
+        existed the capability could be invoked by an agent holding numbers and
+        by nobody else. `MeasureMapTool` was written for exactly this and was
+        never connected to anything: measuring by pointing is how measuring is
+        done, and it was the one canvas-native interaction the plugin had.
+
+        The tool is checkable and puts the previous tool back when the
+        measurement finishes, because a modal state the user has to remember to
+        leave is a trap: the next click on the map would otherwise start a
+        measurement they did not ask for.
+        """
+        self._measure_action = QAction(mapdex_mark_icon(), "Measure with Mapdex", self.iface.mainWindow())
+        self._measure_action.setToolTip("Click two points on the map to measure the distance between them")
+        self._measure_action.setCheckable(True)
+        self._measure_action.triggered.connect(self._toggle_measure_tool)
+        self.iface.addPluginToWebMenu("&Mapdex", self._measure_action)
+
+    @guarded
+    def _toggle_measure_tool(self, checked=True):
+        if not checked:
+            self._restore_map_tool()
+            return
+        from .maptools import MeasureMapTool  # noqa: PLC0415 - Qt-only import
+
+        # Put any Mapdex tool away first, so "previous" is the tool the user
+        # chose rather than our other one. Without it, starting a measurement
+        # while drawing makes the draw tool the thing measuring returns to, and
+        # the user is left in a mode whose menu item reads unchecked.
+        self._restore_map_tool()
+        canvas = self.iface.mapCanvas()
+        self._previous_map_tool = canvas.mapTool()
+        self._measure_tool = MeasureMapTool(canvas, self._measured_two_points, self._set_status)
+        canvas.setMapTool(self._measure_tool)
+        if self._measure_action is not None:
+            self._measure_action.setChecked(True)
+        self._set_status("Click the first point to measure from.")
+
+    @guarded
+    def _measured_two_points(self, from_lon, from_lat, to_lon, to_lat):
+        """Hand the two clicked positions to the registry-validated capability.
+
+        Deliberately routed through `_run_capability` rather than calling the
+        runtime directly: a measurement started from the canvas and one asked
+        for in words must produce the same validated request, the same ellipsoid
+        decision and the same transcript line.
+        """
+        self._restore_map_tool()
+        self._run_capability(
+            "measure.distance@1",
+            {"from_lon": from_lon, "from_lat": from_lat, "to_lon": to_lon, "to_lat": to_lat},
+            "Measure between two clicked points",
+        )
+
+    def _install_draw_action(self):
+        """Let a person draw the shape, rather than describe it.
+
+        `features.py` will place points and refuses to invent a polygon, which
+        is the right refusal - corners nobody supplied are fabricated geometry -
+        but it left the product unable to accept a boundary either. Asking for
+        an area of interest created an empty layer and told the user to toggle
+        editing, so the third release-gate scenario, draw an AOI then analyse it,
+        had no first step.
+
+        Checkable and self-restoring for the same reason the measure action is:
+        a modal canvas state the user has to remember to leave turns their next
+        click into a vertex of a shape they were not drawing.
+        """
+        self._draw_action = QAction(mapdex_mark_icon(), "Draw with Mapdex", self.iface.mainWindow())
+        self._draw_action.setToolTip(
+            "Draw a point, line or area on the map and keep it as a layer")
+        self._draw_action.setCheckable(True)
+        self._draw_action.triggered.connect(self._toggle_draw_tool)
+        self.iface.addPluginToWebMenu("&Mapdex", self._draw_action)
+
+    @guarded
+    def _toggle_draw_tool(self, checked=True):
+        if not checked:
+            self._restore_map_tool()
+            return
+        # The geometry cannot be defaulted: someone drawing parcels gets nothing
+        # from a point layer. The picker is the existing one, so "what kind of
+        # shape" is asked the same way whether a layer is being created or drawn.
+        geometry = self._ask_geometry_type()
+        if not geometry or geometry not in DRAWABLE_GEOMETRIES:
+            self._restore_map_tool()
+            self._set_status("Nivo did not start drawing.")
+            return
+        from .maptools import DrawMapTool  # noqa: PLC0415 - Qt-only import
+
+        # As the measure action: put any Mapdex tool away first so "previous" is
+        # the tool the user picked, not our other one.
+        self._restore_map_tool()
+        canvas = self.iface.mapCanvas()
+        self._previous_map_tool = canvas.mapTool()
+        self._draw_tool = DrawMapTool(
+            canvas, geometry, self._drew_geometry, self._draw_cancelled, self._set_status)
+        canvas.setMapTool(self._draw_tool)
+        if self._draw_action is not None:
+            self._draw_action.setChecked(True)
+        self._set_status(
+            "Click to place points for the {}. Right-click or press Enter to finish, "
+            "Esc to cancel.".format(geometry))
+
+    @guarded
+    def _drew_geometry(self, geometry, vertices, crs):
+        """Hand the drawn shape to the registry-validated capability.
+
+        Routed through `_run_capability` for the reason the measure tool is: a
+        shape drawn on the canvas and one arriving from the server must be
+        validated by the same registry and produce the same transcript line.
+        """
+        self._restore_map_tool()
+        if not crs:
+            # Refused here rather than at the registry, which would only be able
+            # to say "crs is required". The user needs the reason, and the reason
+            # is their project, not their request.
+            self._set_status(
+                "This map is in a coordinate system with no authority code, so Mapdex "
+                "cannot state where that shape is. Set a project CRS such as EPSG:4326 "
+                "and draw it again.")
+            return
+        self._run_capability(
+            "draw.geometry@1",
+            {"geometry": geometry, "vertices": vertices, "crs": crs},
+            "Draw {} on the map".format("an area" if geometry == "polygon" else "a " + geometry),
+        )
+
+    @guarded
+    def _draw_cancelled(self, discarded):
+        self._restore_map_tool()
+        self._set_status(
+            "Drawing cancelled; {} point(s) discarded.".format(discarded) if discarded
+            else "Drawing cancelled.")
+
+    def _draw_geometry_capability(self, params):
+        """Turn validated vertices into a real layer, in the CRS they were drawn in.
+
+        The registry has already proved the vertices are pairs of finite numbers
+        and bounded in count. What it cannot check is whether that many of them
+        make the requested shape, because the answer depends on a second
+        parameter - so `refusal_for` is asked here, and a request that arrived
+        from the capability channel with two corners for a polygon is refused
+        with the reason rather than stored as a shape with no area.
+
+        A memory layer, deliberately: it appears immediately and needs no path or
+        format decision from someone who is in the middle of drawing. Nothing the
+        user already had is touched, which is why this is safe rather than
+        consequential.
+        """
+        from .maptools import refusal_for  # noqa: PLC0415 - keeps the import graph honest
+
+        geometry = str(params.get("geometry") or "")
+        vertices = list(params.get("vertices") or [])
+        authid = str(params.get("crs") or "").strip()
+        refusal = refusal_for(geometry, vertices)
+        if refusal:
+            raise CapabilityError(refusal)
+        crs = QgsCoordinateReferenceSystem(authid)
+        if not crs.isValid():
+            raise CapabilityError("{} is not a coordinate reference system QGIS knows".format(
+                authid or "that CRS"))
+        name = str(params.get("name") or "").strip()[:120] or self._unique_layer_name(geometry)
+        layer = QgsVectorLayer("{}?crs={}&index=yes".format(geometry, authid), name, "memory")
+        if not layer.isValid():
+            raise CapabilityError("QGIS could not create a {} layer in {}".format(geometry, authid))
+        feature = QgsFeature(layer.fields())
+        feature.setGeometry(self._drawn_geometry(geometry, vertices))
+        added, _features = layer.dataProvider().addFeatures([feature])
+        if not added:
+            raise CapabilityError("QGIS rejected the drawn geometry")
+        layer.updateExtents()
+        QgsProject.instance().addMapLayer(layer)
+        self.iface.setActiveLayer(layer)
+        layer.triggerRepaint()
+        # The assistant has to learn about the layer in this turn, or the next
+        # question ("how big is it?") is asked about a layer it cannot see.
+        self._refresh_nivo_context()
+        return {
+            "kind": "geometry_drawn",
+            "layer_id": layer.id(),
+            "layer_name": layer.name(),
+            "geometry": geometry,
+            "crs": authid,
+            "vertices": len(vertices),
+        }
+
+    @staticmethod
+    def _drawn_geometry(geometry, vertices):
+        """Build the QGIS geometry, closing a polygon ring if the user did not.
+
+        A ring left open is the ordinary case: the user right-clicks to finish
+        rather than clicking exactly on their first corner, and a ring whose
+        ends do not meet is not a polygon.
+        """
+        points = [QgsPointXY(float(x), float(y)) for x, y in vertices]
+        if geometry == "point":
+            return QgsGeometry.fromPointXY(points[0])
+        if geometry == "linestring":
+            return QgsGeometry.fromPolylineXY(points)
+        ring = list(points)
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        return QgsGeometry.fromPolygonXY([ring])
+
+    def _restore_map_tool(self):
+        canvas = self.iface.mapCanvas()
+        for attribute in ("_measure_tool", "_draw_tool"):
+            tool = getattr(self, attribute, None)
+            if tool is None:
+                continue
+            try:
+                canvas.unsetMapTool(tool)
+            except (AttributeError, RuntimeError):
+                pass
+            setattr(self, attribute, None)
+        if self._previous_map_tool is not None:
+            try:
+                canvas.setMapTool(self._previous_map_tool)
+            except (AttributeError, RuntimeError):
+                pass
+            self._previous_map_tool = None
+        for attribute in ("_measure_action", "_draw_action"):
+            action = getattr(self, attribute, None)
+            if action is not None:
+                action.setChecked(False)
+
+    def _install_layer_menu_actions(self):
+        """Offer the paid work where the user already is: the layer tree.
+
+        Georeferencing a scan by hand in QGIS is control-point placement, tens
+        of minutes a sheet. That is the work worth paying to skip, and until now
+        the only way to reach it was to open a panel, pick a workflow from a
+        combo box and pick a source. Three steps between the user and the thing
+        they came for, none of which they were thinking about: they were
+        right-clicking the scan.
+
+        The action starts the work. Clicking a menu item that says
+        "Georeference with Mapdex" on a named layer IS the consent: the panel it
+        used to open only restated what the menu item already said, so the
+        second click bought no information and cost the user a step. Cancel
+        after the fact is the safeguard, not confirm before it, because cancel
+        does not tax the case that goes right.
+
+        It falls back to preparing and stopping when the run genuinely cannot
+        start — no session, no project, something already running — because
+        those need a decision the menu cannot make.
+        """
+        add = getattr(self.iface, "addCustomActionForLayerType", None)
+        if add is None:
+            # An older or stubbed interface. The panel is still the way in.
+            return
+        window = self.iface.mainWindow()
+        for title, kind, layer_type in self._layer_menu_entries():
+            if layer_type is None:
+                continue
+            action = QAction(mapdex_mark_icon(), title, window)
+            action.triggered.connect(partial(self._prepare_from_layer_menu, kind))
+            try:
+                add(action, "Mapdex", layer_type, True)
+            except (AttributeError, TypeError):
+                continue
+            self._layer_menu_actions.append(action)
+
+    def _layer_menu_entries(self):
+        """The workflows worth a right-click, against the layer type each needs.
+
+        Deliberately not all four. A context menu earns its place by being
+        short, and offering a raster workflow on a vector layer teaches the user
+        that the menu does not know what they clicked.
+        """
+        raster = getattr(QgsMapLayer, "RasterLayer", None)
+        vector = getattr(QgsMapLayer, "VectorLayer", None)
+        return (
+            ("Georeference with Mapdex", BatchKind.GEOREFERENCE, raster),
+            ("Digitize parcels with Mapdex", BatchKind.DIGITIZE_PARCELS, raster),
+            ("Validate and deliver with Mapdex", BatchKind.VALIDATE_DELIVER, vector),
+        )
+
+    @guarded
+    def _prepare_from_layer_menu(self, kind, *_args):
+        """Open the panel with the clicked layer and workflow already chosen."""
+        layer = self.iface.activeLayer()
+        self.show()
+        if self.workflow_box is not None:
+            index = self.workflow_box.findData(kind)
+            if index >= 0:
+                self.workflow_box.setCurrentIndex(index)
+        # The clicked layer becomes a source rather than selecting a mode.
+        # Adding rather than replacing is deliberate: right-clicking a second
+        # sheet and choosing the same workflow now builds a batch, which is the
+        # thing this menu could not express before.
+        source = self._layer_source(layer.id()) if layer is not None else None
+        if source is not None:
+            self._add_sources([source])
+        name = layer.name() if layer is not None else ""
+        # Only start when the Start button itself would have been available.
+        # That check already knows about the session, the busy flag and a run
+        # in flight, so reusing it keeps one answer to "can this go now".
+        can_start = self.run_button is not None and self.run_button.isEnabled()
+        if not can_start:
+            self._set_status(
+                "{} is ready to send. Press Start when you want to.".format(name)
+                if name else "Ready to send. Press Start when you want to."
+            )
+            return
+        if name:
+            self._set_status("Sending {}. Press Cancel to stop it.".format(name))
+        self.run_input()
+
+    @guarded
     def _on_current_layer_changed(self, _layer=None):
         """React to the QGIS active layer only while this instance is alive.
 
@@ -209,16 +1626,48 @@ class MapdexPlugin:
         Touching those widgets raises RuntimeError, which QGIS shows as a
         Python error on every layer click.
         """
-        if self.dock is None or self.input_box is None:
+        if self.dock is None:
             return
         try:
-            if self.input_box.currentData() == "active_layer":
-                self._summarize_active_layer()
+            # The source list no longer follows the active layer: a layer is
+            # added by name and stays until it is removed, so changing the
+            # selection in the Layers panel must not rewrite what is queued.
+            # The reading describes the ACTIVE layer, so it is stale the moment
+            # that changes. This is the signal that makes it feel like a
+            # companion rather than a splash screen.
+            self._refresh_nivo_context()
         except RuntimeError:
             # The panel this instance owned is gone; stay quiet.
             return
 
+    @guarded
     def unload(self):
+        # Take the context-menu entries back off first. QGIS keeps them on the
+        # interface, not on the plugin, so a reload without this leaves a second
+        # "Georeference with Mapdex" behind on every reload.
+        remove = getattr(self.iface, "removeCustomActionForLayerType", None)
+        if remove is not None:
+            for action in self._layer_menu_actions:
+                try:
+                    remove(action)
+                except (AttributeError, TypeError, RuntimeError):
+                    pass
+        self._layer_menu_actions.clear()
+        # A map tool outlives the plugin that set it: leaving it active means
+        # clicking the canvas after an unload calls into a dead plugin.
+        self._restore_map_tool()
+        for attribute in ("_measure_action", "_draw_action"):
+            action = getattr(self, attribute, None)
+            if action is not None:
+                self.iface.removePluginWebMenu("&Mapdex", action)
+                setattr(self, attribute, None)
+        # The toolbar is ours, so it goes with us. QGIS keeps it on the main
+        # window otherwise, and every reload leaves another empty Mapdex bar
+        # behind, the same way the layer context entries did.
+        toolbar = getattr(self, "toolbar", None)
+        if toolbar is not None:
+            toolbar.setParent(None)
+            self.toolbar = None
         self.poll_timer.stop()
         self.progress_timer.stop()
         for task in list(self._tasks):
@@ -246,6 +1695,72 @@ class MapdexPlugin:
         for name in PANEL_WIDGET_REFS:
             setattr(self, name, None)
 
+    def _report_unexpected(self, action, exc):
+        """The error boundary's reporter: log fully, tell the user plainly.
+
+        Never re-raises. An exception escaping a Qt slot aborts QGIS under
+        PyQt5.5+/PyQt6, so this is the last line before the user loses their
+        session.
+        """
+        try:
+            QgsMessageLog.logMessage(
+                "Nivo action '{}' failed:\n{}".format(action, format_traceback(exc)),
+                "Mapdex",
+                enum_member(Qgis, "MessageLevel", "Critical"),
+            )
+        except Exception:  # nosec B110
+            # The log is where a failure would be recorded, so there is nowhere
+            # left to record this one. The user channels below still run.
+            pass
+        # Reporting must not depend on our own panel. When the panel is what
+        # failed, telling the user through it silently reports nothing - which
+        # is how "the menu does nothing when I click it" happened: the boundary
+        # caught the real error and then had nowhere to put it. Each channel is
+        # tried in turn, independently, and the last one needs no plugin state.
+        summary = "Mapdex could not finish '{}': {}".format(action, describe_exception(exc))
+        delivered = False
+        try:
+            self._set_status("Mapdex hit a problem and stopped safely. See the Mapdex log for details.")
+            self._announce(summary, level=2)
+            delivered = True
+        except Exception:
+            delivered = False
+        if not delivered:
+            # QGIS' own message bar: alive even when our dock never built.
+            try:
+                self.iface.messageBar().pushMessage("Mapdex", summary, level=2, duration=10)
+                delivered = True
+            except Exception:
+                delivered = False
+        if not delivered:
+            # Last resort. A modal is intrusive, but silence during a failed
+            # start-up leaves the user clicking a menu entry that does nothing.
+            try:
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Mapdex",
+                    summary + "\n\nQGIS is unaffected. The full details are in the Mapdex log panel.",
+                )
+            except Exception:  # nosec B110
+                # The last of three independent channels has failed, and this is
+                # already the handler for a failure. There is nothing further to
+                # try and nothing that may be allowed to escape from here.
+                pass
+
+    @guarded
+    def _reicon_actions(self):
+        """Re-choose every Mapdex mark after the interface palette changed.
+
+        Guarded and tolerant: this runs from a Qt event, the actions may have
+        been removed by an unload already, and a wrong icon must never be able
+        to take QGIS down with it.
+        """
+        mark = mapdex_mark_icon()
+        for action in (self.action, self._measure_action, self._draw_action,
+                       *(self._layer_menu_actions or [])):
+            if action is not None:
+                action.setIcon(mark)
+
     def _ensure_dock(self):
         if self.dock is not None:
             return
@@ -268,26 +1783,51 @@ class MapdexPlugin:
         # dock as the C++ owner, no widget can be collected while the panel is
         # still being wired up.
         self._panel_root = root
+        # The mark on the toolbar and the menus is chosen from the palette, so
+        # it has to be re-chosen when the palette moves. The actions are not
+        # children of this panel, but the panel is a widget and receives the
+        # application palette change, which is the signal the actions need.
+        root.on_palette_change = self._reicon_actions
         self.dock.setWidget(root)
         for key, value in refs.items():
             setattr(self, key if key != "batch" else "batch_group", value)
 
         self._load_connection_fields()
+        self._load_assistant_fields()
         self.connect_button.clicked.connect(self.connect)
         self.disconnect_button.clicked.connect(self.disconnect)
         self.save_settings_button.clicked.connect(self.save_connection_settings)
+        self.provider_box.currentIndexChanged.connect(self._assistant_provider_changed)
+        self.clear_key_button.clicked.connect(self.clear_assistant_key)
         self.run_button.clicked.connect(self.run_input)
-        self.input_box.currentIndexChanged.connect(self._source_changed)
+        self.drop_zone.choose_button.clicked.connect(self.choose_files)
+        self.drop_zone.layers_button.clicked.connect(self.add_qgis_layers)
+        # A drop is the same action as the Choose button, so it lands in the
+        # same place rather than in a second code path that can drift.
+        self.drop_zone.on_files = self._add_file_paths
+        self.expand_pages_check.toggled.connect(self._options_changed)
+        self.skip_completed_check.toggled.connect(self._options_changed)
+        self.concurrency_box.currentIndexChanged.connect(self._options_changed)
+        if self.top_up_button is not None:
+            self.top_up_button.clicked.connect(self.open_billing)
         self.workflow_box.currentIndexChanged.connect(self._workflow_changed)
         self.cancel_button.clicked.connect(self.cancel_batch)
         self.retry_button.clicked.connect(self.retry_failed)
         self.import_button.clicked.connect(self.import_results)
         self.review_button.clicked.connect(self.open_review)
+        if self.open_batch_button is not None:
+            self.open_batch_button.clicked.connect(self.open_batch_in_mapdex)
         if hasattr(self, "open_project_button") and self.open_project_button:
             self.open_project_button.clicked.connect(self.open_project)
         self.resume_button.clicked.connect(self.resume_recent)
+        self.nivo_send_button.clicked.connect(self.ask_nivo)
+        self.nivo_stop_button.clicked.connect(self.stop_nivo)
+        self.nivo_input.returnPressed.connect(self.ask_nivo)
+        self.nivo_new_button.clicked.connect(self.new_nivo_task)
+        self.nivo_history_button.clicked.connect(self.open_nivo_history)
         self._workflow_changed(self.workflow_box.currentIndex())
         self._load_recent_tasks()
+        self._load_sheet_prices()
         # A bound method, never a lambda: unload() has to be able to take this
         # connection back off the QGIS interface. A lambda cannot be
         # disconnected reliably, so every reload used to leave one more
@@ -329,10 +1869,24 @@ class MapdexPlugin:
             # Older Qt without resizeDocks: the widget size hint still applies.
             self.dock.resize(PREFERRED_WIDTH, self.dock.height())
 
-    def show(self):
+    @guarded
+    def show(self, _checked: bool = False):
         self._ensure_dock()
+        if hasattr(self.dock, "setUserVisible"):
+            # Same narrow set as resizeDocks above: a missing or re-signatured
+            # method, or a wrapper whose C++ dock has already gone. `show` is
+            # guarded, so anything else still reaches the error boundary instead
+            # of being swallowed here.
+            try:
+                self.dock.setUserVisible(True)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
         self.dock.show()
         self.dock.raise_()
+        try:
+            self.dock.activateWindow()
+        except (AttributeError, RuntimeError):
+            pass
         # If QGIS restored it as floating over the chrome, re-dock on the right.
         if self.dock.isFloating():
             self.dock.setFloating(False)
@@ -356,8 +1910,12 @@ class MapdexPlugin:
         """
         try:
             self.iface.messageBar().pushMessage("Mapdex", text, level=level, duration=duration)
-        except Exception:  # noqa: BLE001 — never let a notice break the task
-            pass
+        except (AttributeError, RuntimeError, TypeError) as error:
+            # No message bar (unloaded plugin, headless run). A notice must
+            # never break the task, but it should not vanish either.
+            QgsMessageLog.logMessage(
+                "{} [message bar unavailable: {}]".format(text, error), "Mapdex"
+            )
 
     def _load_connection_fields(self):
         if self.api_url_input is None:
@@ -365,8 +1923,191 @@ class MapdexPlugin:
         self.api_url_input.setEditText(self.api.base_url or DEFAULT_API)
         self.web_url_input.setEditText(self.web_base or DEFAULT_WEB)
 
+    # -- Nivo assistant runtime (hosted by default, BYOK when a key is set) --
+
+    def _credential_store(self):
+        """The encrypted key store, created lazily so start-up stays cheap."""
+        if getattr(self, "_credentials", None) is None:
+            try:
+                manager = QgsApplication.authManager()
+            except Exception:
+                manager = None
+            self._credentials = ProviderCredentialStore(auth_manager=manager)
+        return self._credentials
+
+    def assistant_settings(self) -> dict:
+        """Non-secret assistant preferences, plus the key for the transport.
+
+        The key is read here and handed straight to the provider. It is never
+        stored on the plugin object, put in a companion context, or logged.
+        """
+        settings = QSettings()
+        stored = {
+            "provider": str(settings.value("mapdex/nivo/provider", "") or ""),
+            "model": str(settings.value("mapdex/nivo/model", "") or ""),
+            "base_url": str(settings.value("mapdex/nivo/base_url", "") or ""),
+            "auth_config_id": str(settings.value("mapdex/nivo/auth_config_id", "") or ""),
+            # The vendored package deliberately knows no vendor name, so the host
+            # names the service a hosted turn would actually reach.
+            "hosted_provider_name": HOSTED_PROVIDER_NAME,
+        }
+        if stored["provider"]:
+            stored["api_key"] = self._credential_store().load(stored["auth_config_id"])
+        return stored
+
+    @guarded
+    def _load_assistant_fields(self):
+        if getattr(self, "provider_box", None) is None:
+            return
+        stored = QSettings()
+        provider = str(stored.value("mapdex/nivo/provider", "") or "")
+        index = self.provider_box.findData(provider)
+        self.provider_box.setCurrentIndex(index if index >= 0 else 0)
+        self.model_input.setText(str(stored.value("mapdex/nivo/model", "") or ""))
+        self.base_url_input.setText(str(stored.value("mapdex/nivo/base_url", "") or ""))
+        # The key field is deliberately left blank even when one is stored: a
+        # secret is written, never read back into the interface.
+        self.api_key_input.clear()
+        if provider and str(stored.value("mapdex/nivo/auth_config_id", "") or ""):
+            self.api_key_input.setPlaceholderText("A key is stored. Type a new one to replace it.")
+        self._assistant_provider_changed()
+
+    @guarded
+    def _assistant_provider_changed(self, _index=None):
+        if getattr(self, "provider_box", None) is None:
+            return
+        provider = self.provider_box.currentData() or ""
+        needs_endpoint = provider in {"openai_compatible", "ollama"}
+        self.base_url_input.setEnabled(needs_endpoint)
+        self.api_key_input.setEnabled(bool(provider) and provider != "ollama")
+        self.model_input.setEnabled(bool(provider))
+        # Name the model a blank field actually resolves to. `build_provider`
+        # substitutes it, so "Provider default" was describing a real value the
+        # user could not see - and for a custom gateway there is no default at
+        # all, which is a thing to say before the first call fails on it.
+        default_model = default_model_for(provider)
+        if provider:
+            self.model_input.setPlaceholderText(
+                default_model or "Required: this endpoint has no default model"
+            )
+        else:
+            self.model_input.setPlaceholderText("Provider default")
+        if needs_endpoint and not self.base_url_input.text().strip() and provider == "ollama":
+            self.base_url_input.setPlaceholderText("http://127.0.0.1:11434")
+        self._refresh_assistant_privacy()
+
+    @guarded
+    def _refresh_assistant_privacy(self):
+        """State where this install currently sends the assistant turn."""
+        if getattr(self, "assistant_privacy", None) is None:
+            return
+        provider = self.provider_box.currentData() or ""
+        typed_key = self.api_key_input.text().strip() if self.api_key_input is not None else ""
+        stored_key = str(QSettings().value("mapdex/nivo/auth_config_id", "") or "")
+        runtime = resolve_runtime({
+            "provider": provider,
+            "api_key": typed_key or stored_key,
+            "base_url": self.base_url_input.text().strip() if self.base_url_input is not None else "",
+            "hosted_provider_name": HOSTED_PROVIDER_NAME,
+        })
+        self.assistant_privacy.setText(describe_privacy(runtime))
+        # The stored key as TEXT. It showed only in the field's placeholder,
+        # which is grey and reads as "this is empty, type here" - which is why
+        # a user with a working stored key reported configuring no provider.
+        if self.assistant_key_state is not None:
+            self.assistant_key_state.setText(
+                panel_state.key_state_line(provider, bool(typed_key or stored_key))
+            )
+        # Remove had nothing to remove for most of its life on screen. getattr,
+        # because this handle is not in PANEL_WIDGET_REFS and so is not nulled
+        # on unload; a late callback must meet None, not a dead wrapper.
+        clear_button = getattr(self, "clear_key_button", None)
+        if clear_button is not None:
+            clear_button.setVisible(bool(stored_key))
+        # This function is the last act of both save and clear, so it is the
+        # one place the runtime decision can have changed. Drop the cache, then
+        # restate the engine in the Nivo header from the fresh answer.
+        self._forget_assistant_runtime()
+        self._refresh_assistant_state()
+
+    @guarded
+    def save_assistant_settings(self) -> bool:
+        """Persist assistant preferences; store any new key in the auth DB."""
+        if getattr(self, "provider_box", None) is None:
+            return True
+        provider = str(self.provider_box.currentData() or "")
+        settings = QSettings()
+        if not provider:
+            # Back to the hosted path: forget the key rather than leaving a
+            # secret behind for a provider that is no longer in use.
+            self.clear_assistant_key(announce=False)
+            settings.setValue("mapdex/nivo/provider", "")
+            self._refresh_assistant_privacy()
+            return True
+        base_url = self.base_url_input.text().strip()
+        if provider in {"openai_compatible"} and not base_url:
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Mapdex",
+                "An OpenAI-compatible provider needs an endpoint URL.",
+            )
+            return False
+        typed_key = self.api_key_input.text().strip()
+        stored_id = str(settings.value("mapdex/nivo/auth_config_id", "") or "")
+        if typed_key:
+            try:
+                result = self._credential_store().store(provider, typed_key)
+            except Exception as exc:
+                self._show_error("Nivo could not store that key", exc)
+                return False
+            stored_id = result.get("auth_config_id", "")
+            if result.get("storage") == "session":
+                self._announce(
+                    "QGIS has no unlocked authentication database, so the key is kept for this "
+                    "session only and is not written to disk.",
+                    level=1,
+                )
+            self.api_key_input.clear()
+            self.api_key_input.setPlaceholderText("A key is stored. Type a new one to replace it.")
+        elif provider != "ollama" and not stored_id:
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Mapdex",
+                "Paste an API key for {}, or choose Mapdex (hosted).".format(provider),
+            )
+            return False
+        clean = public_settings({
+            "provider": provider,
+            "model": self.model_input.text().strip(),
+            "base_url": base_url,
+            "auth_config_id": stored_id,
+        })
+        for key in ("provider", "model", "base_url", "auth_config_id"):
+            settings.setValue("mapdex/nivo/" + key, clean.get(key, ""))
+        self._refresh_assistant_privacy()
+        return True
+
+    @guarded
+    def clear_assistant_key(self, *args, announce: bool = True):
+        settings = QSettings()
+        self._credential_store().clear(str(settings.value("mapdex/nivo/auth_config_id", "") or ""))
+        settings.setValue("mapdex/nivo/auth_config_id", "")
+        if getattr(self, "api_key_input", None) is not None:
+            self.api_key_input.clear()
+            self.api_key_input.setPlaceholderText("Paste a key to use your own provider")
+        self._refresh_assistant_privacy()
+        if announce:
+            self._set_status("Removed the stored provider key. Nivo will use your Mapdex plan.")
+
     def _reject_insecure_endpoint(self, url: str) -> bool:
-        """Block a plaintext endpoint that is not this machine."""
+        """Block an endpoint this build must not use.
+
+        Two reasons, checked in this order: a released build never talks to a
+        server on this computer, and nothing sends the token over plain http to
+        anywhere else.
+        """
+        refusal = endpoint_refusal(url)
+        if refusal:
+            QMessageBox.warning(self.iface.mainWindow(), "Mapdex", refusal)
+            return True
         if is_transport_secure(url):
             return False
         QMessageBox.warning(
@@ -395,8 +2136,14 @@ class MapdexPlugin:
             self.disconnect()
             self._set_status("Endpoint changed. Connect again to authorize this QGIS.")
 
-    def save_connection_settings(self):
+    @guarded
+    def save_connection_settings(self, *args):
+        # One Save button covers both sections. Assistant settings are saved
+        # even in a released build, where the endpoint fields are pinned.
+        if not self.save_assistant_settings():
+            return
         if not self._endpoints_unlocked:
+            self._set_status("Saved Nivo assistant settings.")
             return
         api_url = normalize_api_base(self.api_url_input.currentText())
         web_url = (self.web_url_input.currentText() or DEFAULT_WEB).strip().rstrip("/")
@@ -431,18 +2178,25 @@ class MapdexPlugin:
         detail = str(exc)
         if isinstance(exc, MapdexAPIError):
             bits = [detail]
-            if exc.url:
+            # Request URLs are useful while developing a local stack, but the
+            # hosted endpoint is implementation detail in a production dialog.
+            if exc.url and not is_production():
                 bits.append("\n\n{method} {url}".format(method=exc.method or "HTTP", url=exc.url))
             if exc.correlation_id:
                 bits.append("\ncorrelation_id: {cid}".format(cid=exc.correlation_id))
-            if exc.status == 404 and "api.mapdex.ai" in (exc.url or ""):
+            if (
+                not is_production()
+                and exc.status == 404
+                and "api.mapdex.ai" in (exc.url or "")
+            ):
                 bits.append(
                     "\n\nProduction may not expose device auth yet. "
                     "Set API URL to http://127.0.0.1:8080 while the local API is running."
                 )
             detail = "".join(bits)
             if exc.status == 401:
-                self.api.token = ""
+                # Clearing the rejected session, not assigning a password.
+                self.api.token = ""  # nosec B105
                 if self.token_store is not None:
                     self.token_store.clear()
                 detail += "\n\nYour Mapdex session expired. Connect again to continue."
@@ -450,6 +2204,7 @@ class MapdexPlugin:
         self._set_status(str(exc).split("\n")[0])
         QMessageBox.warning(self.iface.mainWindow(), title, detail)
 
+    @guarded
     def _refresh_ui(self):
         # Nothing to refresh once the panel is gone; a late callback must not
         # walk destroyed widgets.
@@ -466,22 +2221,159 @@ class MapdexPlugin:
         total = int(counts.get("total", 0) or 0)
         completed = succeeded + needs_review + failed + int(counts.get("cancelled", 0) or 0)
 
+        # First open: neither a session nor a provider, so nothing can be asked
+        # yet and the panel is nine controls a stranger cannot rank. Derived,
+        # never a stored flag - a flag goes stale and, once spent, cannot come
+        # back. The reading above it needed neither, which is what lets this
+        # screen say something true before it asks for anything.
+        first = panel_state.is_first_open(connected)
         if self.connection_label is not None:
-            self.connection_label.setText("Connected to Mapdex" if connected else "Not connected")
+            self.connection_label.setText(
+                "Connected to Mapdex" if connected else ("Meet Nivo" if first else "Not connected")
+            )
 
+        connecting = self._connect_task is not None
+        cancelling = connecting and self._connect_cancel.is_set()
         self.connect_button.setVisible(not connected)
-        self.connect_button.setEnabled(not self._busy)
+        self.connect_button.setEnabled(not cancelling and (connecting or not self._busy))
         self.disconnect_button.setVisible(connected)
         self.disconnect_button.setEnabled(connected and not self._busy)
+        if self.connect_button is not None and hasattr(self.connect_button, "set_tone"):
+            if hasattr(self.connect_button, "set_label"):
+                self.connect_button.set_label(
+                    "Cancelling…" if cancelling
+                    else ("Cancel connection" if connecting else "Connect Mapdex")
+                )
+            # Connect is the one filled action while nothing has been chosen.
+            # To somebody already answering from their own model it is an
+            # upgrade, not the thing to press, so it drops a rank rather than
+            # sitting under their composer as a permanent indigo block.
+            #
+            # The SENTENCE drops with it. Losing the fill while keeping
+            # "Recommended. Free to start." left a de-emphasised card telling
+            # somebody who had already started that they should start.
+            self.connect_button.set_tone("primary" if first and not connecting else "quiet")
+            if hasattr(self.connect_button, "set_sublabel"):
+                self.connect_button.set_sublabel(
+                    "Stop waiting for Mapdex and the browser."
+                    if connecting else (
+                        panel_state.CONNECT_PROMISE if first
+                        else panel_state.CONNECT_PROMISE_UPGRADE
+                    )
+                )
+        for widget, shown in (
+            # First open is a decision screen, not a disabled conversation.
+            # The connection label already states the state; repeating it in
+            # the status banner and again inside Nivo made three competing
+            # messages before the reader reached either choice.
+            (self.status, not first),
+            (self.sign_in, not connected),
+            (self.connect_promise, not connected),
+            # Disconnected onboarding has one route. Model routing appears in
+            # Settings only after a Mapdex session exists.
+            (self.first_open_prompt, first),
+            (self.first_open_title, first),
+            # Nothing can be asked yet, and a disabled field above the choice
+            # is dead weight where the eye lands last.
+            (self.composer, not first),
+            (self.nivo_status, not first),
+            (self.tail, first),
+            # One page and no tab bar while nothing has been chosen: Task and
+            # Jobs are Mapdex session surfaces and cannot do anything yet.
+            #
+            # Unless the reader has asked for Settings. Onboarding's second
+            # route ends on that page, and while the stack is hidden, moving to
+            # it is a no-op - pressing "use my own model" did nothing at all,
+            # which is how it was reported. Task and Jobs come with it and say
+            # they are locked, which they already knew how to do.
+            (self.segment_bar, not first),
+            (self.tabs, not first),
+            # Conversation management and Settings are connected-session
+            # controls, not alternate ways around the connection gate.
+            (self.nivo_new_button, not first),
+            (self.nivo_history_button, not first),
+        ):
+            if widget is not None:
+                widget.setVisible(shown)
+        if first and self.switch_page is not None:
+            # Forced back to the conversation while onboarding, EXCEPT when the
+            # reader opened Settings from the choice above. Without the
+            # exception this refresh undoes that move on the very next repaint.
+            self.switch_page(0)
+        if self.body_layout is not None and self.tabs is not None:
+            self.body_layout.setStretchFactor(self.tabs, 0 if first else 1)
+        if self.nivo_reply is not None:
+            # With no stretch the transcript falls back to its minimum, which
+            # put a scrollbar on a reading that had room to sit whole. Give it
+            # the height its content asks for, bounded so a long reading still
+            # leaves the choice on screen.
+            content = self.nivo_reply.widget()
+            wanted = content.sizeHint().height() + 12 if content is not None else 0
+            if first:
+                # Fixed to its content, so a reading that fits shows whole. A
+                # minimum alone left the scroll area at that minimum and put a
+                # scrollbar on a reading with room to sit.
+                exact = min(max(wanted, 120), 520)
+                self.nivo_reply.setMinimumHeight(exact)
+                self.nivo_reply.setMaximumHeight(exact)
+            else:
+                self.nivo_reply.setMinimumHeight(170)
+                self.nivo_reply.setMaximumHeight(16777215)
 
-        self.workspace.setVisible(connected)
-        self.workspace.setEnabled(connected and not self._busy)
-        self.run_button.setEnabled(connected and not self._busy and not active)
+        # The page stays mounted so its segment button is never a dead end;
+        # the BODY and the notice swap. Setting the page itself invisible was
+        # fought by the segment switch, which shows the page it moves to, so a
+        # disconnected user clicking Task got the previous session's project,
+        # workflow and source in greyed-out controls - a signed-out product
+        # reading as a broken one.
+        self.workspace.setVisible(True)
+        self.workspace.setEnabled(not self._busy)
+        if self.workspace_body is not None:
+            self.workspace_body.setVisible(connected)
+            self.workspace_body.setEnabled(connected and not self._busy)
+        if self.workspace_locked is not None:
+            self.workspace_locked.setVisible(not connected)
+        if self.jobs_locked is not None:
+            self.jobs_locked.setVisible(not connected)
+        # The three have to agree: an enabled Start above a summary that
+        # states a refusal is the panel disagreeing with itself at the one
+        # moment it costs the user something.
+        sources_ready = bool(self.selected_sources) and task_sources.summary(
+            self.selected_sources,
+            str(self.workflow_box.currentData() or "") if self.workflow_box else "",
+        )["valid"]
+        # A refusal we can see before the press is a disabled control, not a
+        # dialog after it. docs/UX.md 13 asks for the block AND the route out;
+        # the block is here, the reason and the route are the balance row.
+        affordable = self.can_afford_batch()["enough"]
+        self.run_button.setEnabled(
+            connected and not self._busy and not active and sources_ready and affordable
+        )
+
+        # History needs a session and a project to list anything; New chat is
+        # local and stays available so a transcript can always be cleared.
+        if self.nivo_history_button is not None:
+            self.nivo_history_button.setEnabled(connected and bool(self.project_id))
+        if self.nivo_new_button is not None:
+            self.nivo_new_button.setEnabled(True)
 
         self.batch_group.setVisible(connected and has_batch)
         self.cancel_button.setVisible(active)
         self.cancel_button.setEnabled(active and not self._busy)
-        self.retry_button.setVisible(has_batch and failed > 0 and not active)
+        # Seeing the task in the browser is available for as long as there is a
+        # task, including after it failed - that is exactly when somebody wants
+        # to look. It needs a real batch on the server, not the placeholder the
+        # panel shows itself while the upload is still in flight.
+        if self.open_batch_button is not None:
+            self.open_batch_button.setVisible(
+                connected and has_batch and self.batch_id not in ("", "uploading")
+            )
+            self.open_batch_button.setEnabled(not self._busy)
+        # Retry re-sends the identical request, so it is hidden when every
+        # failure was a refusal that request cannot satisfy. The route to the
+        # prerequisite takes its place on the action button below.
+        unsatisfiable = every_failure_needs_placement(self._last_batch or {})
+        self.retry_button.setVisible(has_batch and failed > 0 and not active and not unsatisfiable)
         self.retry_button.setEnabled(not self._busy)
         self.retry_button.setText(
             "Retry failed item" if failed == 1 else "Retry {} failed items".format(failed)
@@ -509,6 +2401,7 @@ class MapdexPlugin:
                 counts,
                 backend_started=self._backend_started,
                 waiting_seconds=self._waiting_seconds(),
+                failure_code=batch_failure(self._last_batch or {}).get("code", ""),
             )
             self.review_button.setText(guidance["action"])
             self.review_button.setVisible(bool(guidance["action"]))
@@ -525,6 +2418,26 @@ class MapdexPlugin:
                 self.batch_title.setText("Processing {} of {} files".format(completed, total))
             else:
                 self.batch_title.setText("Task in progress" if active else "Latest task")
+        # The sheets. Offered for a batch of more than one, and for a single
+        # sheet only once it needs a person - one row saying "Running" under a
+        # progress bar that already says so is a line of noise, while one row
+        # naming why the sheet failed is the answer.
+        if self.item_list is not None:
+            items = (self._last_batch or {}).get("items") or []
+            worth_listing = has_batch and connected and (
+                len(items) > 1 or failed > 0 or needs_review > 0
+            )
+            self.item_list.set_items(
+                items if worth_listing else [],
+                self._batch_file_names,
+                self._job_item_action,
+            )
+        if self.recent is not None and self.recent_box is not None:
+            self.recent.setVisible(self.recent_box.count() > 0 and connected)
+        # Which engine answers, and the reading of the open project, are both
+        # functions of the connection state that just changed.
+        self._refresh_assistant_state()
+        self._render_nivo_turns()
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
@@ -570,99 +2483,3024 @@ class MapdexPlugin:
         task.taskCompleted.connect(finished)
         task.taskTerminated.connect(finished)
         QgsApplication.taskManager().addTask(task)
+        return task
 
     def _active_project_id(self) -> str:
         data = self.project_box.currentData() if self.project_box is not None else None
         return str(data or self.project_id or "")
 
-    def _source_changed(self, _index):
-        mode = self.input_box.currentData()
-        if mode != "file":
-            self.selected_paths = []
-            if mode == "active_layer":
-                self._summarize_active_layer()
-            elif self.source_summary is not None:
-                self.source_summary.setText("No source selected")
-            return
-        # Let the combo popup close before opening the native Windows dialog.
-        # Opening it synchronously from currentIndexChanged can leave it behind
-        # the QGIS window on some Qt5 builds.
-        QTimer.singleShot(0, lambda selected_mode=mode: self._choose_source(selected_mode))
+    # -- The source list ---------------------------------------------------
+    #
+    # Two ways in, one list. Both ADD rather than replace, which is the whole
+    # of what makes a batch expressible here: eight scans from disk plus the
+    # two already open in QGIS is one task with ten sheets, and the combo this
+    # replaces could hold exactly one answer.
 
-    def _choose_source(self, mode):
-        if self.input_box.currentData() != mode:
-            return
+    @guarded
+    def choose_files(self, *_args):
         file_filter = (
             "Spatial files (*.gpkg *.geojson *.json *.shp *.tif *.tiff *.pdf);;"
             "All files (*.*)"
         )
-        path, _ = QFileDialog.getOpenFileName(
-            self.iface.mainWindow(), "Choose a spatial file", "", file_filter
+        paths, _ = QFileDialog.getOpenFileNames(
+            self.iface.mainWindow(), "Choose spatial files", "", file_filter
         )
-        paths = [path] if path else []
+        self._add_file_paths([path for path in paths if path])
+
+    @guarded
+    def _add_file_paths(self, paths):
+        """Add files chosen from the dialog, or dropped onto the zone.
+
+        One method for both, so a drop cannot drift into a second code path
+        with its own idea of what a valid source is.
+        """
         if not paths:
-            self.input_box.blockSignals(True)
-            self.input_box.setCurrentIndex(0)
-            self.input_box.blockSignals(False)
-            self.selected_paths = []
             return
-        self.selected_paths = list(paths)
-        label = (
-            os.path.basename(paths[0])
-            if len(paths) == 1
-            else "{} files selected".format(len(paths))
+        added, duplicates = self._add_sources(
+            [task_sources.file_source(path) for path in paths]
         )
-        self.input_box.setItemText(self.input_box.currentIndex(), label)
-        self._source_label = label
-        report = inspect_paths(self.selected_paths, str(self.workflow_box.currentData() or ""))
-        self.source_summary.setText(
-            report["summary"] if report["valid"] else "{} · {}".format(report["summary"], report["error"])
-        )
-        self._set_status(
-            "Ready to start a task with {}.".format(label)
-            if len(paths) == 1
-            else "Ready to start a batch with {} files.".format(len(paths))
-        )
+        self._report_added(added, duplicates, "file")
 
-    def _summarize_active_layer(self):
-        layer = self.iface.activeLayer()
-        if layer is None or not layer.isValid():
-            self.source_summary.setText("No valid active QGIS layer")
+    @guarded
+    def add_qgis_layers(self, *_args):
+        """Tick the open layers to send.
+
+        Explicit selection, and that is the design rather than a nicety.
+        docs/UX.md keeps a desktop action from expanding into an unexpected
+        export of arbitrary project layers; what it forbids is IMPLICIT
+        expansion - a control that quietly covers work nobody chose. A dialog
+        that lists the project, opens with nothing ticked, and sends exactly
+        what was ticked is the multi-file picker again, which the same rule
+        already permits.
+        """
+        entries = self._layer_picker_entries()
+        if not entries:
+            self._set_status("This QGIS project has no layers to send.")
             return
-        kind = "Raster" if isinstance(layer, QgsRasterLayer) else "Vector" if isinstance(layer, QgsVectorLayer) else "Unsupported"
-        crs = layer.crs().authid() if hasattr(layer, "crs") and layer.crs().isValid() else "No CRS"
-        self._source_label = layer.name()
-        self.source_summary.setText("{} · {} · {}".format(layer.name(), kind, crs))
+        title = ""
+        if self.workflow_box is not None:
+            title = self.workflow_box.itemText(self.workflow_box.currentIndex())
+        dialog, refs = build_layer_picker_dialog(
+            entries, workflow_title=title, parent=self.iface.mainWindow()
+        )
+        if not dialog.exec():
+            return
+        added, duplicates = self._add_sources(
+            [self._layer_source(layer_id) for layer_id in refs["selected_ids"]()]
+        )
+        self._report_added(added, duplicates, "layer")
 
-    def _workflow_changed(self, _index):
-        kind = self.workflow_box.currentData()
-        current = self.input_box.currentData()
-        self.input_box.blockSignals(True)
-        self.input_box.clear()
-        self.input_box.addItem("Select source…", "")
-        self.input_box.addItem("Active QGIS layer", "active_layer")
-        self.input_box.addItem("Choose a file…", "file")
-        target = self.input_box.findData(current)
-        self.input_box.setCurrentIndex(target if target >= 0 else 0)
-        self.input_box.blockSignals(False)
-        self.selected_paths = []
-        self._source_label = ""
-        self.source_summary.setText("No source selected")
-        if kind == BatchKind.VALIDATE_DELIVER:
-            self._set_status("Use the active vector layer or choose one file.")
+    def _layer_picker_entries(self):
+        """Every layer in the project, with why an ineligible one cannot go.
+
+        Ineligible layers are LISTED and disabled, not filtered out. Filtered,
+        somebody looking straight at the layer they want has no way to learn
+        that the workflow is the reason it is absent - the same argument
+        DESIGN.md makes for showing a disabled extraction target.
+        """
+        wanted = task_sources.wanted_data_kind(str(self.workflow_box.currentData() or ""))
+        entries = []
+        for layer in QgsProject.instance().mapLayers().values():
+            kind = self._layer_data_kind(layer)
+            detail = ""
+            reason = ""
+            eligible = False
+            if not layer.isValid():
+                reason = "not loaded"
+            elif kind == task_sources.DATA_UNKNOWN:
+                reason = "unsupported layer type"
+            elif kind != wanted:
+                reason = "needs a {} source".format(
+                    "vector" if wanted == task_sources.DATA_VECTOR else "raster"
+                )
+            elif kind == task_sources.DATA_RASTER and not self._local_raster_path(layer):
+                # A remote raster has no bytes we may upload, and discovering
+                # that at submit time is a failure after the decision was made.
+                reason = "remote raster, save it locally first"
+            else:
+                eligible = True
+            if layer.isValid():
+                crs = layer.crs().authid() if layer.crs().isValid() else "No CRS"
+                detail = "{} - {}".format(kind.title(), crs)
+            entries.append({
+                "id": layer.id(),
+                "name": layer.name(),
+                "kind": kind,
+                "detail": detail,
+                "eligible": eligible,
+                "reason": reason,
+            })
+        entries.sort(key=lambda entry: (not entry["eligible"], entry["name"].lower()))
+        return entries
+
+    def _layer_data_kind(self, layer):
+        if isinstance(layer, QgsRasterLayer):
+            return task_sources.DATA_RASTER
+        if isinstance(layer, QgsVectorLayer):
+            return task_sources.DATA_VECTOR
+        return task_sources.DATA_UNKNOWN
+
+    def _local_raster_path(self, layer):
+        """The raster's own file on disk, or "" when it has none."""
+        source = str(layer.source() or "").split("|", 1)[0]
+        if source.startswith("file:"):
+            source = QUrl(source).toLocalFile()
+        if not source:
+            return ""
+        path = os.path.normpath(source)
+        return path if os.path.isfile(path) else ""
+
+    def _layer_source(self, layer_id):
+        layer = QgsProject.instance().mapLayer(layer_id)
+        if layer is None:
+            return None
+        kind = self._layer_data_kind(layer)
+        crs = layer.crs().authid() if layer.crs().isValid() else ""
+        path = self._local_raster_path(layer) if kind == task_sources.DATA_RASTER else ""
+        return task_sources.layer_source(layer.id(), layer.name(), kind, crs=crs, path=path)
+
+    def _add_sources(self, incoming):
+        sources, added, duplicates = task_sources.add_sources(
+            self.selected_sources, [source for source in incoming if source is not None]
+        )
+        self.selected_sources = sources
+        self._render_sources()
+        return added, duplicates
+
+    def _report_added(self, added, duplicates, noun):
+        """Say what happened, repeats included.
+
+        A count that does not move after a selection reads as the picker having
+        lost it, so a duplicate is reported rather than silently absorbed.
+        """
+        if not added and not duplicates:
+            return
+        if added and duplicates:
+            self._set_status(
+                "Added {} {}. {} were already in the list.".format(
+                    added, self._plural(noun, added), duplicates
+                )
+            )
+        elif duplicates:
+            self._set_status(
+                "Already in the list: {} {}.".format(
+                    duplicates, self._plural(noun, duplicates)
+                )
+            )
         else:
-            self._set_status("Use the active raster layer or choose one file.")
+            self._set_status(
+                task_sources.ready_notice(self.selected_sources, self._workflow_title())
+            )
 
-    def connect(self):
+    def _workflow_title(self):
+        if self.workflow_box is None:
+            return ""
+        return self.workflow_box.itemText(self.workflow_box.currentIndex())
+
+    @staticmethod
+    def _plural(noun, count):
+        return noun if count == 1 else noun + "s"
+
+    @guarded
+    def _remove_source(self, kind, key):
+        self.selected_sources = task_sources.remove_source(self.selected_sources, kind, key)
+        self._render_sources()
+
+    def _render_sources(self):
+        """Redraw the list, its summary line and the Start control together.
+
+        One method, because those three have to agree: a Start control that is
+        enabled while the summary beside it states a refusal is the pair
+        disagreeing in the one place it matters.
+        """
+        if self.source_list is None or self.source_summary is None:
+            return
+        self.source_list.set_sources(self.selected_sources, self._remove_source)
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        report = task_sources.summary(self.selected_sources, workflow)
+        self.source_summary.setText(
+            report["summary"] if report["valid"]
+            else "{} - {}".format(report["summary"], report["error"])
+        )
+        if self.drop_zone is not None:
+            self.drop_zone.set_hint(
+                "Add more to run them as one batch"
+                if self.selected_sources
+                else "TIFF, JPG, PNG, PDF - single or several"
+            )
+        self._render_pdf_option()
+        # The Start label carries the money, so it is written by the one method
+        # that knows the money. Setting it here as well was two writers of one
+        # string, which is how a button comes to state a total the line beside
+        # it has already stopped agreeing with.
+        self._render_price()
+        self._refresh_ui()
+
+    # -- What it costs -----------------------------------------------------
+
+    def _load_sheet_prices(self):
+        """Ask the server what a sheet of each batch kind costs.
+
+        `GET /v1/plans` is the public pricing ladder and needs no session, so
+        this runs at start-up rather than after connecting - the estimate is
+        useful while choosing a workflow, which happens before Start.
+
+        On the worker, because it is a network round trip and this is called
+        from `initGui`. A failure is silence: `_sheet_prices` stays empty, the
+        line stays hidden, and nothing invents a number.
+        """
+
+        def work():
+            return self.api.sheet_prices()
+
+        def done(exception, payload):
+            if exception is not None:
+                log_debug("Could not read sheet prices", exception)
+                return
+            self._sheet_prices = task_price.read_sheet_prices(payload)
+            self._render_price()
+
+        self._task("Read Mapdex pricing", work, done, busy=False)
+
+    def _batch_kind(self):
+        return str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+
+    def _batch_total_cents(self):
+        """What the whole list costs at the published rate, 0 when unpriced."""
+        return task_price.total_cents(
+            task_price.kinds_from(self._sheet_prices),
+            self._batch_kind(),
+            len(self.selected_sources),
+        )
+
+    def can_afford_batch(self):
+        """Whether the balance covers this list. Named, because Start reads it.
+
+        {"known", "enough", "short_cents", "available_cents"}. `known` is False
+        when the balance was never read or the deployment does not enforce
+        credits, and in that case nothing is blocked - refusing a customer who
+        has the money is a worse failure than a batch the server stops.
+        """
+        return task_price.afford(self._balance, self._batch_total_cents())
+
+    def _render_price(self):
+        """State the estimate, put the total on Start, and say when it cannot run.
+
+        Three things that have to agree and are therefore written together: the
+        rate sentence, the figure on the control that spends it, and the
+        refusal when the balance will not cover it.
+
+        Nothing at all is a real outcome and is not a zero: a build talking to a
+        server that did not price this workflow must not print "$0", which is
+        the one wrong number that costs a customer money while looking correct.
+        The same rule governs the balance - unread is silence, never "empty".
+        """
+        if self.price_label is None:
+            return
+        kind = self._batch_kind()
+        line = task_price.price_line(
+            task_price.kinds_from(self._sheet_prices),
+            kind,
+            len(self.selected_sources),
+            trace_beta=bool((self._sheet_prices or {}).get("trace_beta")),
+        )
+        self.price_label.setText(line)
+        self.price_label.setVisible(bool(line))
+
+        total = self._batch_total_cents()
+        if self.run_button is not None:
+            # The money goes on the control that spends it. Somebody who
+            # presses without reading the sentence above it has still been told.
+            self.run_button.setText(
+                task_sources.start_label(
+                    self.selected_sources,
+                    task_price.total_label(
+                        task_price.kinds_from(self._sheet_prices), kind,
+                        len(self.selected_sources),
+                    ),
+                )
+            )
+
+        notice = task_price.balance_refusal(
+            self._balance, total, len(self.selected_sources)
+        )
+        if self.balance_notice is not None:
+            self.balance_notice.setText(notice)
+        if self.balance_row is not None:
+            self.balance_row.setVisible(bool(notice))
+
+    def _load_balance(self):
+        """Ask what is left to spend, so a batch is refused before it uploads.
+
+        Authenticated, so it runs on connecting rather than at start-up like
+        the price ladder, and again after a task ends because that task has
+        just spent some of it. A failure leaves `_balance` as it was: replacing
+        a figure we had with None over one bad round trip would drop the gate
+        for the rest of the session.
+        """
+        if not self.api.token:
+            return
+
+        def work():
+            return self.api.credits()
+
+        def done(exception, payload):
+            if exception is not None:
+                log_debug("Could not read the workspace balance", exception)
+                return
+            balance = task_price.read_balance(payload)
+            if balance is None:
+                log_debug("The /v1/credits response was not one this build reads")
+                return
+            self._balance = balance
+            self._render_price()
+            self._refresh_ui()
+
+        self._task("Read Mapdex balance", work, done, busy=False)
+
+    @guarded
+    def open_billing(self, *args):
+        """The one route out of an empty balance.
+
+        The authenticated application has one URL tree, so no locale prefix -
+        `/tr/workspace/billing` is a stale route that 404s or bounces through
+        the public host.
+        """
+        QDesktopServices.openUrl(QUrl("{}/workspace/billing".format(self.web_base)))
+
+    def _show_balance_dialog(self, notice):
+        """Say it again where it cannot be missed, and offer the way out."""
+        dialog = build_balance_dialog(notice, self._workflow_title(), self.dock)
+        if dialog.exec():
+            self.open_billing()
+
+    # -- Batch options -----------------------------------------------------
+
+    def task_options(self):
+        """What the options row currently says, as the value the API sends.
+
+        Filtered through `applicable`, so an option that cannot act on THIS
+        list never reaches the wire. The user's tick is not erased - it is
+        stored in the checkbox and comes back the moment a PDF joins the list.
+        """
+        if self.expand_pages_check is None:
+            return TaskOptions()
+        return task_options_module.applicable(
+            TaskOptions(
+                expand_pdf_pages=self.expand_pages_check.isChecked(),
+                skip_completed=self.skip_completed_check.isChecked(),
+                max_concurrency=normalise_concurrency(self.concurrency_box.currentData()),
+            ),
+            task_sources.has_pdf(self.selected_sources),
+        )
+
+    def _render_pdf_option(self):
+        """Offer "every PDF page" only when a PDF is in the list.
+
+        A ticked checkbox naming a file type nothing in the list has is not
+        clutter, it is a promise about work that cannot happen - and it was
+        reported as exactly that. Disabled and told why, rather than hidden:
+        somebody looking for the option they used last time otherwise has no
+        way to learn where it went, which is the argument docs/UX.md already
+        makes for a disabled layer row over a filtered one.
+        """
+        if self.expand_pages_check is None:
+            return
+        has_pdf = task_sources.has_pdf(self.selected_sources)
+        self.expand_pages_check.setEnabled(has_pdf)
+        self.expand_pages_check.setToolTip(
+            "" if has_pdf else "No PDF in this list, so there are no pages to split."
+        )
+        self._options_changed()
+
+    @guarded
+    def _options_changed(self, *_args):
+        if self.options is not None:
+            self.options.set_summary(task_options_module.summary(self.task_options()))
+
+    def _nivo_snapshot(self):
+        """Return only measured QGIS metadata for the untrusted context envelope."""
+        layer = self._active_qgis_layer()
+        active = {}
+        if layer is not None and layer.isValid():
+            active = {
+                "id": layer.id(),
+                "name": layer.name(),
+                "kind": (
+                    "raster" if isinstance(layer, QgsRasterLayer)
+                    else "vector" if isinstance(layer, QgsVectorLayer)
+                    else "other"
+                ),
+                "crs": layer.crs().authid() if layer.crs().isValid() else "",
+                "feature_count": layer.featureCount() if isinstance(layer, QgsVectorLayer) else 0,
+                "geometry_type": layer.wkbType() if isinstance(layer, QgsVectorLayer) else "raster",
+                "fields": [field.name() for field in layer.fields()] if isinstance(layer, QgsVectorLayer) else [],
+            }
+        canvas = self.iface.mapCanvas()
+        extent = canvas.extent()
+        project = QgsProject.instance()
+        return {
+            "bbox": [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
+            "crs": canvas.mapSettings().destinationCrs().authid(),
+            "active_layer": active,
+            "selection_count": layer.selectedFeatureCount() if isinstance(layer, QgsVectorLayer) else 0,
+            "visible_layer_count": len([item for item in project.layerTreeRoot().findLayers() if item.isVisible()]),
+            # Name-only references. The projection in connections.py has no
+            # field for a host, database, user, password or authcfg id, so a
+            # DSN cannot reach a compose payload even by accident.
+            "connections": discover_connections(qgis_connection_names),
+            "qgis_version": qgis_version(QgsApplication, Qgis),
+            "plugin_version": PLUGIN_VERSION,
+        }
+
+    @guarded
+    def _refresh_nivo_context(self):
+        if self.nivo_context is None:
+            return
+        context = companion_context(self._nivo_snapshot())
+        layer = context.get("active_layer") or {}
+        label = layer.get("name") or layer.get("id") or "No active QGIS layer"
+        self.nivo_context.setText("{} · {} selected · {}".format(
+            label, context.get("selection_count", 0), context.get("crs", "No CRS")
+        ))
+        self._refresh_assistant_state()
+        self._render_nivo_turns()
+
+    # ----------------------------------------------------------------------
+    # The opening reading: what Nivo says before it is asked anything
+    # ----------------------------------------------------------------------
+
+    def _first_look_state(self):
+        """Measured QGIS metadata for `first_look`, read in O(1).
+
+        Deliberately NOT `companion_context`: that envelope is versioned, is
+        posted to a server and is bounded for that reason. This one never
+        leaves the machine, and it needs two things that envelope has no field
+        for - whether a raster is placed, and which layers disagree with the
+        project CRS.
+
+        Nothing here walks a feature. Anything that would (validity, field
+        profiles) is offered as a one-click action instead, so introducing
+        itself cannot make the panel hang on a large layer.
+        """
+        from qgis.core import QgsProject
+
+        project = QgsProject.instance()
+        layer = self._active_qgis_layer()
+        described = {}
+        if layer is not None and layer.isValid():
+            try:
+                is_vector = isinstance(layer, QgsVectorLayer)
+                described = {
+                    "name": layer.name(),
+                    "kind": "vector" if is_vector else "raster" if isinstance(layer, QgsRasterLayer) else "other",
+                    "crs": layer.crs().authid() if layer.crs().isValid() else "",
+                    "feature_count": layer.featureCount() if is_vector else 0,
+                }
+                if described["kind"] == "raster":
+                    described["width"] = getattr(layer, "width", lambda: 0)()
+                    described["height"] = getattr(layer, "height", lambda: 0)()
+                    described["georeferenced"] = raster_is_georeferenced(layer)
+                    # Which provider drew it. A tile service has a valid CRS and a
+                    # real extent exactly like a placed scan does, so without this
+                    # the reading offered to digitize parcels out of an
+                    # OpenStreetMap basemap that Nivo had added a turn earlier.
+                    described["provider"] = str(getattr(layer, "providerType", lambda: "")() or "")
+            except (AttributeError, RuntimeError) as error:
+                # Remote/tile providers can invalidate their C++ wrapper while
+                # the layer still reports valid. The opening card is optional
+                # orientation UI; losing one metadata field must not raise the
+                # plugin-wide crash banner or blank the conversation.
+                log_debug("Could not read active layer for Nivo opening", error)
+                described = {}
+
+        # Layers QGIS is silently reprojecting on the fly. The map looks right
+        # and every measurement crossing them is not, which is the most common
+        # invisible defect in a working project and free to detect.
+        project_crs = project.crs().authid() if project.crs().isValid() else ""
+        mismatched = []
+        layers = list(project.mapLayers().values())
+        for candidate in layers:
+            try:
+                if not candidate.isValid():
+                    continue
+                authid = candidate.crs().authid() if candidate.crs().isValid() else ""
+            except (AttributeError, RuntimeError):
+                continue
+            if project_crs and authid and authid != project_crs:
+                mismatched.append(candidate.name())
+        return {
+            "layer": described,
+            "layer_id": layer.id() if layer is not None and layer.isValid() else "",
+            "layer_count": len(layers),
+            "crs_mismatch": mismatched,
+        }
+
+    def _refresh_opening(self):
+        """Rebuild the opening reading as turns, ahead of the conversation.
+
+        Not appended to `_nivo_turns`: it describes the layer that is active
+        NOW, so it is recomputed on every draw rather than accumulated. Once
+        the user has said something it steps aside entirely - an opening is not
+        a status bar, and on a 396 px dock it would push the answer they are
+        reading off the top.
+        """
+        if self._nivo_turns:
+            self._nivo_opening = []
+            return
+        try:
+            opening = opening_turns(self._first_look_state())
+        except Exception as error:  # noqa: BLE001 - optional presentation fallback
+            # Do not route an empty-state reading through the global error
+            # boundary. It is not a failed task and should never replace the
+            # user's status with "Mapdex hit a problem". Keep the panel usable
+            # with a truthful, layer-neutral opening and retain the traceback
+            # in the Mapdex log for diagnosis.
+            log_debug("Could not build Nivo opening", error)
+            opening = opening_turns({
+                "layer": {}, "layer_id": "", "layer_count": 0, "crs_mismatch": []
+            })
+        self._nivo_opening = opening
+
+    def _action_chip(self, action):
+        """One thing to do, attached to the turn that earned it.
+
+        The panel's one row shape, so a choice here looks like a choice
+        anywhere else in it. Free work and Mapdex work are told apart by the
+        glyph and by the tone, not by inventing a second control language:
+        two chips in one strip used to come out 364 px and 280 px wide with
+        different heights, which is most of what read as unfinished.
+        """
+        paid = action.get("kind") == first_look.MAPDEX
+        icon = self._action_icon(str(action.get("workflow") or "")) if paid else None
+        button = action_row(
+            str(action.get("label") or ""),
+            icon=icon,
+            tone=str(action.get("tone") or ("normal" if paid else "quiet")),
+        )
+        if action.get("promise"):
+            button.setToolTip(str(action["promise"]))
+        button.clicked.connect(
+            lambda _checked=False, chosen=dict(action):
+            self._first_look_action(chosen, str(chosen.get("layer_id") or "")))
+        return button
+
+    def _severity_icon(self, severity):
+        """The state glyph, from QGIS's own theme set.
+
+        Measured in QGIS 4.0.2: all four paint at 24 px and follow the user's
+        theme without any work from us, which is also why the panel looks like
+        part of the host rather than a web card dropped into it.
+        """
+        name = branding.SEVERITY_ICONS.get(str(severity or ""), "")
+        return QgsApplication.getThemeIcon(name) if name else QIcon()
+
+    def _action_icon(self, workflow):
+        """The glyph for one piece of Mapdex work, or None if it has none.
+
+        QGIS has no equivalent that paints - mIconGeoreferencer.svg resolves to
+        an empty pixmap here - so these four are ours, generated on the same
+        24-unit grid by scripts/make_panel_icons.py.
+
+        Chosen for the panel's surface, not for the interface: this chip is
+        drawn on #191919 whatever theme QGIS is wearing.
+        """
+        asset = branding.ACTION_ICONS.get(str(workflow or ""), "")
+        return surface_asset_icon(asset) if asset else None
+
+    @guarded
+    def _first_look_action(self, action, layer_id):
+        """Act on a finding.
+
+        Three kinds, and the difference between them is the whole design: a
+        local capability runs here and now for free, a question goes to
+        whichever engine is configured, and Mapdex work is routed rather than
+        pretended.
+        """
+        kind = str(action.get("kind") or "")
+        if kind == "capabilities":
+            self._say_capabilities()
+            return
+        if kind == "connect":
+            self.connect()
+            return
+        if kind == first_look.LOCAL:
+            capability = str(action.get("capability") or "")
+            params = {}
+            if "layer_id" in (get_capability(capability).params if get_capability(capability) else {}):
+                if not layer_id:
+                    self._set_status("Select a layer first.")
+                    return
+                params["layer_id"] = layer_id
+            self._run_capability(capability, params, summary=str(action.get("label") or ""))
+            self._render_nivo_turns()
+            return
+        if kind == first_look.ASK:
+            # A menu of starting points is temporary UI, not conversation
+            # history. Remove it before the selected prompt is sent so the
+            # choice does not remain above the user's message as if it were a
+            # previous Nivo answer.
+            self._nivo_turns = [
+                turn for turn in self._nivo_turns if not turn.get("opening")
+            ]
+            if self.nivo_input is not None:
+                self.nivo_input.setText(str(action.get("prompt") or ""))
+                self.ask_nivo()
+            return
+        if kind == first_look.MAPDEX:
+            self._offer_mapdex_work(action)
+
+    @guarded
+    def _offer_mapdex_work(self, action):
+        """Route a measured finding to the Mapdex work that answers it.
+
+        Connected, this preselects the workflow on the Task page so the user
+        lands on a form already filled in rather than on three empty
+        dropdowns. Disconnected, it states what the work would do and offers
+        the connection, because a button that silently does nothing is worse
+        than an honest ask.
+        """
+        workflow = str(action.get("workflow") or "")
+        promise = str(action.get("promise") or "")
+        if not self.api.token:
+            # A turn, not a dialog. The offer was a QMessageBox that covered
+            # the panel, asked once and took its reason away with it when
+            # dismissed - so the argument for connecting was gone the moment
+            # somebody said "not now". In the transcript it stays on screen.
+            self._say(
+                promise or "This part runs on Mapdex.",
+                fact="Needs a Mapdex account. Creating one is free.",
+                actions=[
+                    {"label": "Create an account", "kind": "connect"},
+                    {"label": "I already have one", "kind": "connect"},
+                ],
+            )
+            return
+        self._preselect_workflow(workflow)
+
+    def _preselect_workflow(self, workflow):
+        """Open the Task page with this workflow and the active layer chosen."""
+        if self.workflow_box is None or self.tabs is None:
+            return
+        for index in range(self.workflow_box.count()):
+            data = self.workflow_box.itemData(index)
+            if str(getattr(data, "value", data) or "") == workflow:
+                self.workflow_box.setCurrentIndex(index)
+                break
+        layer = self._active_qgis_layer()
+        if layer is not None and layer.isValid():
+            source = self._layer_source(layer.id())
+            if source is not None:
+                self._add_sources([source])
+        # Through the panel's own switcher, never setCurrentIndex: the stack
+        # index is one of three things a page change owns, and setting it alone
+        # left the tab bar on one page and the content on another.
+        if self.switch_page is not None:
+            self.switch_page(1)
+
+    # What a person wants to do, mapped onto the registry's own domains.
+    # Grouping by task reads far better than "analytics / geoprocessing /
+    # inspect / selection / field / filter", but a hand-written grouping goes
+    # stale the moment a domain is added - so this is a MAP and a test asserts
+    # every domain is in it. A new domain fails the build instead of vanishing
+    # from the answer.
+    CAPABILITY_GROUPS = (
+        ("Understand a layer", ("analytics", "measure", "inspect", "spatial", "field", "filter", "postgis"),
+         "Help me understand a layer: profile it, measure it and show what stands out."),
+        ("Make or refine a map", ("geoprocessing", "processing", "terrain", "draw", "map", "style",
+                                  "layer", "selection", "sheet"),
+         "Help me clean, reshape or present my GIS data as a useful map."),
+        ("Survey and coordinates", ("survey", "coordinates", "crs"),
+         "Help me with a survey, coordinate or reference-system task."),
+        ("Export or deliver", ("export", "report", "publish"),
+         "Help me prepare and export a GIS result for delivery."),
+        ("Run a verified workflow", ("mapdex",),
+         "Help me choose a verified Mapdex workflow for this project."),
+    )
+
+    @guarded
+    def _say_capabilities(self):
+        """Answer "what can Nivo do?" as a turn, from the registry.
+
+        Not a dialog. A modal here is the product stepping out of its own
+        conversation to hand somebody a manual, and it covers the panel it is
+        describing. A turn scrolls, it stays, and the next question is already
+        in the box below it.
+
+        This is an outcome map, not the registry dumped into the transcript.
+        The registry decides which groups exist and which require a connection;
+        the copy explains those groups in language a GIS user can scan.
+        """
+        offline = session_allowance(CLIENT_QGIS)
+        by_domain = {}
+        for capability in for_client(CLIENT_QGIS):
+            by_domain.setdefault(capability.domain, []).append(
+                (capability.summary, capability.id not in offline))
+        actions = []
+        for title, domains, prompt in self.CAPABILITY_GROUPS:
+            rows = sorted(row for domain in domains for row in by_domain.get(domain, []))
+            if not rows:
+                continue
+            actions.append({
+                "label": title,
+                "kind": first_look.ASK,
+                "prompt": prompt,
+                "tone": "normal",
+                "promise": "Requires Mapdex" if all(paid for _summary, paid in rows) else "Runs in QGIS",
+            })
+        self._say(
+            "Choose a starting point. Nivo will ask for what it needs and explain each operation.",
+            fact="What would you like to do?",
+            actions=actions,
+            opening=True,
+        )
+
+    @guarded
+    def _refresh_assistant_state(self):
+        """State which engine answers the next turn, where the user is standing.
+
+        One resolution, shared with the turn itself. The panel used to hold
+        this fact only inside a settings section that is collapsed by default,
+        so a disconnected session answering from the user's own key read as a
+        leak rather than as the design it is.
+        """
+        if self.nivo_runtime is None:
+            return
+        engine = panel_state.assistant_engine(
+            self.assistant_runtime(), bool(self.api.token), self.project_id
+        )
+        self.nivo_runtime.setText(engine["line"])
+        if self.nivo_send_button is not None:
+            self.nivo_send_button.setEnabled(engine["can_ask"] and not self._busy)
+        if self.nivo_input is not None:
+            self.nivo_input.setEnabled(engine["can_ask"])
+        # Deliberately does NOT write nivo_status. That line is a transient
+        # reply to what the user just did, and this method runs on every layer
+        # click and every connection refresh; writing a standing reason there
+        # overwrote whatever the last action had reported - measured, it was
+        # "New chat" losing its own "the old conversation is in History"
+        # message. The reason lives in the header line above instead, which is
+        # why `assistant_engine` states it there in every blocked state.
+
+    def _active_qgis_layer(self):
+        layer = self.iface.activeLayer()
+        if layer is not None and layer.isValid():
+            return layer
+        try:
+            view = self.iface.layerTreeView()
+        except Exception:
+            view = None
+        # Four independent routes to "the layer the user means". Each may be
+        # absent or broken on a given QGIS build, so a failure moves to the next
+        # one - but it is recorded, because "Nivo says no layer is active" with
+        # a layer plainly selected is otherwise unanswerable.
+        if view is not None:
+            try:
+                layer = view.currentLayer()
+                if layer is not None and layer.isValid():
+                    return layer
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the current layer from the layer tree", exc)
+            try:
+                for candidate in view.selectedLayers():
+                    if candidate is not None and candidate.isValid():
+                        return candidate
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the selected layers from the layer tree", exc)
+            try:
+                node = view.currentNode()
+                layer = node.layer() if node is not None and hasattr(node, "layer") else None
+                if layer is not None and layer.isValid():
+                    return layer
+            except Exception as exc:  # noqa: BLE001 - the layer tree may raise anything
+                log_debug("reading the current layer tree node", exc)
+        try:
+            project = QgsProject.instance()
+            root = project.layerTreeRoot()
+            for node in root.findLayers():
+                if not node.isVisible():
+                    continue
+                layer = node.layer()
+                if layer is not None and layer.isValid():
+                    return layer
+        except Exception as exc:  # noqa: BLE001 - the project tree may raise anything
+            log_debug("scanning the project for a visible layer", exc)
+        return None
+
+    def _nivo_layer_for_action(self, target):
+        if target:
+            return QgsProject.instance().mapLayer(target)
+        return self._active_qgis_layer()
+
+    def _set_nivo_compose_busy(self, busy):
+        """Busy always disables; not busy ASKS whether this state can ask.
+
+        Two owners of one control disagree eventually. Re-enabling
+        unconditionally meant that finishing a turn switched Ask back on in a
+        disconnected hosted session that cannot take one, so the button was
+        live and the next press produced only a status line.
+        """
+        if busy:
+            if self.nivo_send_button is not None:
+                self.nivo_send_button.setEnabled(False)
+            if self.nivo_input is not None:
+                self.nivo_input.setEnabled(False)
+        else:
+            self._refresh_assistant_state()
+        self._refresh_stop_button()
+
+    def _refresh_stop_button(self):
+        """Stop is offered whenever there is something to stop.
+
+        Two things now qualify: a compose stream, and a plan run this panel
+        started. They used to be one, and the run begins after the stream ends,
+        so the control vanished at exactly the moment a person watching credits
+        drain would reach for it.
+        """
+        if self.nivo_stop_button is None:
+            return
+        stoppable = self._nivo_compose_task is not None or bool(self.plan_run_id)
+        self.nivo_stop_button.setVisible(stoppable)
+        self.nivo_stop_button.setEnabled(stoppable)
+
+    def assistant_runtime(self) -> dict:
+        """Which runtime this turn will actually take, from stored settings.
+
+        One resolution for the label and for the turn. Reading it twice from
+        two different places is how the panel came to promise a direct path
+        that the turn never took.
+
+        Cached, because `assistant_settings` loads the stored key and that
+        opens the encrypted QGIS authentication database. Once per turn is
+        right; once per layer click - which is how often the header line now
+        asks - is not. It is dropped at the only two places the answer can
+        change, so it is never stale rather than merely usually fresh.
+        """
+        if getattr(self, "_assistant_runtime_cache", None) is None:
+            self._assistant_runtime_cache = resolve_runtime(self.assistant_settings())
+        return self._assistant_runtime_cache
+
+    def _has_provider(self):
+        """Is a model provider configured at all?
+
+        Presence, from the non-secret preference, so this never opens the
+        encrypted authentication database - `_refresh_ui` runs on every
+        connection change and every layer click.
+        """
+        settings = QSettings()
+        return bool(str(settings.value("mapdex/nivo/provider", "") or "").strip())
+
+    def _forget_assistant_runtime(self):
+        """Drop the cached decision after the settings behind it moved."""
+        self._assistant_runtime_cache = None
+
+    @guarded
+    def ask_nivo(self, *args):
+        if self._nivo_compose_task is not None:
+            self._set_status("Nivo is already working. Use Stop to cancel that request.")
+            return
+        # One resolution, used for the gate and for the branch below. Every
+        # runtime requires a Mapdex connection; model routing is a connected
+        # Settings choice, not a second signed-out product lifecycle.
+        runtime = self.assistant_runtime()
+        engine = panel_state.assistant_engine(
+            runtime, bool(self.api.token), self.project_id
+        )
+        if not engine["can_ask"]:
+            self._set_status(engine["blocked_reason"])
+            return
+        if needs_mapdex_account(runtime) and (not self.api.token or not self.project_id):
+            # The same sentence the header already shows, from the same place,
+            # so the reason a press did nothing matches the reason on screen.
+            self._set_status(panel_state.assistant_engine(
+                runtime, bool(self.api.token), self.project_id
+            )["blocked_reason"])
+            return
+        message = self.nivo_input.text().strip() if self.nivo_input is not None else ""
+        if not message:
+            return
+        self._set_nivo_compose_busy(True)
+        self._nivo_state = transition(self._nivo_state, "send")
+        self._nivo_turns.append(transcript_turn("user", message))
+        self._say("Thinking…")
+        self.nivo_status.setText("Nivo AI is reading your map context…")
+        self.nivo_input.clear()
+        self._refresh_nivo_context()
+        self._nivo_request_id += 1
+        request_id = self._nivo_request_id
+        # Build the context HERE, on the main thread. QgsTask.run() executes on a
+        # worker thread, and iface.activeLayer(), the map canvas and the layer
+        # tree are main-thread only: reading them from the task returned an empty
+        # snapshot, so Nivo answered "no layer is active yet" while a layer was
+        # plainly open. Only the HTTP call belongs in the background. The BYOK
+        # loop obeys the same rule for the same reason - it reads the same
+        # canvas and runs capabilities against the same layer tree.
+        # The objective a continuation re-sends. A continuation is the same
+        # question one step on, so re-deriving it from the input box would send
+        # whatever the user has since typed there.
+        self._nivo_objective = message
+        self._nivo_round_trips = 0
+        context = companion_context(self._nivo_snapshot())
+        if is_byok(runtime):
+            self._start_byok_turn(message, context, request_id)
+            return
+        self._start_hosted_turn(message, context, request_id)
+
+    def _start_hosted_turn(self, message, context, request_id):
+        """Ask Mapdex: one HTTP round trip, on a worker thread."""
+        project_id = self.project_id
+        # The active project can have moved since the conversation was opened
+        # (starting a task switches it). A thread from another project cannot
+        # be continued here, so it is dropped rather than sent.
+        thread_id = remembered_thread(self._nivo_thread_id, self._nivo_thread_project, project_id)
+        title = thread_title(message)
+        self._set_nivo_compose_busy(True)
+        self._nivo_compose_task = self._task(
+            "Nivo compose",
+            lambda: self._compose_in_thread(project_id, message, context, thread_id, title),
+            lambda exception, outcome: self._nivo_composed(request_id, exception, outcome),
+            busy=False,
+        )
+        self._refresh_stop_button()
+
+    # -- the BYOK turn -----------------------------------------------------
+
+    def _start_byok_turn(self, message, context, request_id):
+        """Ask the user's own provider, and run the answer's steps here.
+
+        The provider is built and the session is constructed at this line
+        deliberately: this is where a turn stops being a Mapdex request, so it
+        is where the decision should be readable. The capability allowance is
+        the offline subset - a turn that never contacts Mapdex cannot perform a
+        Mapdex Run, so georeference, digitization, validation, batch and review
+        stay account-gated rather than being offered and then refused.
+
+        Each turn gets a fresh session, so a BYOK conversation has no memory of
+        earlier turns the way the hosted path does through its Mapdex thread.
+        That is a stated limitation, not an oversight: `AgentSession` counts its
+        step budget and its repeat-call guard per instance, so simply keeping
+        one across turns would leave the second question with a spent budget.
+        Carrying `history` forward without those two is the change, and it is
+        not this one.
+        """
+
+        def retry_hosted():
+            self._start_hosted_turn(message, context, request_id)
+
+        try:
+            provider = build_provider(self.assistant_settings())
+            session = AgentSession(
+                provider,
+                self._capability_executor(),
+                client=CLIENT_QGIS,
+                confirm=self._confirm_byok_step,
+                allowed=session_allowance(CLIENT_QGIS),
+            )
+        except ProviderError as error:
+            self._byok_failed(request_id, error, retry_hosted)
+            return
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._byok_failed(request_id, error, retry_hosted)
+            return
+        turn = ByokTurn(session, self._offer_hosted_path, retry_hosted).start(message, context)
+        if self.nivo_status is not None:
+            # Deliberately not the vendor's name. Which company answers a turn
+            # is our routing, not the user's business, and printing it here
+            # reads as Mapdex announcing where the question was sent. The one
+            # routing fact a user does need - that this turn did NOT go to
+            # Mapdex - is a settings-panel claim, not a per-turn caption.
+            self.nivo_status.setText("Nivo is working on that…")
+        self._byok_step(turn, request_id)
+
+    def _byok_step(self, turn, request_id):
+        """Hand the next model call to a worker thread, and only that."""
+        prompt = turn.next_prompt()
+        if prompt is None:
+            self._byok_finished(request_id, turn.exhausted())
+            return
+        system, messages = prompt
+        self._nivo_compose_task = self._task(
+            "Nivo (your provider)",
+            lambda: turn.provider_reply(system, messages),
+            lambda exception, reply: self._byok_replied(turn, request_id, exception, reply),
+            busy=False,
+        )
+        self._refresh_stop_button()
+
+    @guarded
+    def _byok_replied(self, turn, request_id, exception, reply):
+        """Back on the main thread: run what the model chose, then loop."""
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        if exception is not None:
+            self._byok_failed(request_id, exception, turn.run_hosted, turn=turn)
+            return
+        try:
+            outcome = turn.deliver(reply)
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._byok_failed(request_id, error, turn.run_hosted, turn=turn)
+            return
+        if outcome is None:
+            self._byok_step(turn, request_id)
+            return
+        self._byok_finished(request_id, outcome)
+
+    @guarded
+    def _byok_failed(self, request_id, error, retry_hosted, turn=None):
+        """A provider that could not answer ends the turn here.
+
+        It must not quietly become a Mapdex request: that would upload the map
+        context the settings panel had just promised to keep off Mapdex. The
+        hosted path is offered through one function that always asks first.
+        """
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._nivo_state = transition(self._nivo_state, "error")
+        if turn is not None:
+            outcome = turn.provider_failed(error)
+        else:
+            outcome = provider_failed(error, self._offer_hosted_path, retry_hosted)
+        self._replace_last_assistant_turn(outcome["message"])
+        if outcome["handed_to_mapdex"]:
+            # The hosted turn owns the busy state and the transcript from here.
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Asking Mapdex instead…")
+            return
+        self._set_nivo_compose_busy(False)
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Your provider could not answer")
+        self._set_status(outcome["message"])
+
+    @guarded
+    def _byok_finished(self, request_id, outcome):
+        """Render a terminal BYOK outcome. Capabilities have already run."""
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
+        outcome = outcome if isinstance(outcome, dict) else {}
+        kind = str(outcome.get("kind") or "")
+        self._replace_last_assistant_turn(str(outcome.get("message") or "Nivo returned no message."))
+        if kind == "clarify":
+            self._nivo_state = transition(self._nivo_state, "clarify")
+            status = "Waiting for your answer"
+        elif kind == "confirmation_required":
+            self._nivo_state = transition(self._nivo_state, "confirm")
+            status = "Not run — confirmation declined"
+        elif kind == "incomplete":
+            self._nivo_state = transition(self._nivo_state, "error")
+            status = "Ran out of steps"
+        else:
+            status = "Ready"
+        if self.nivo_status is not None:
+            self.nivo_status.setText(status)
+        if outcome.get("map_effects"):
+            self.iface.mapCanvas().refresh()
+
+    def _confirm_byok_step(self, decision):
+        """The registry's confirmation gate, asked from inside the loop.
+
+        The model's own view of risk is not consulted: the decision carries the
+        capability id and the registry decides whether it needs a person.
+        """
+        return self._confirm_capability(
+            str((decision or {}).get("capability") or ""), "", (decision or {}).get("params"))
+
+    def _offer_hosted_path(self, notice):
+        """Ask whether to send this question to Mapdex after a provider failure.
+
+        Returns False without a dialog when there is no Mapdex session to offer:
+        a question promising a fallback that cannot happen is worse than none.
+        """
+        if not self.api.token or not self.project_id:
+            return False
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Ask Mapdex instead?",
+            "{}\n\nNothing has been sent to Mapdex. Asking Mapdex sends your bounded map "
+            "context to Mapdex and uses your plan. Ask Mapdex now?".format(notice),
+            yes | no,
+            no,
+        )
+        return answer == yes
+
+    def _replace_last_assistant_turn(self, text, steps=None):
+        """Overwrite the pending "Thinking…" bubble, or add one.
+
+        Four call sites wrote this by hand, each reading the entry by position,
+        which is how they all went on building tuples after the entry became a
+        dict. One helper, and `steps` is a parameter because the composed reply
+        brings its own while a stop or a failure keeps whatever was there.
+        """
+        if self._nivo_turns and self._nivo_turns[-1]["sender"] == "assistant":
+            last = self._nivo_turns[-1]
+            self._nivo_turns[-1] = transcript_turn(
+                "assistant", text, steps if steps is not None else last["steps"],
+                last["actions"], last["severity"], last["fact"])
+            self._render_nivo_turns()
+            return
+        self._say(str(text), steps)
+
+    def _compose_in_thread(self, project_id, message, context, thread_id, title, companion_results=None):
+        """One conversational turn. Network only — runs on a worker thread.
+
+        Both calls belong here rather than in the caller: opening a
+        conversation is an HTTP round trip, and doing it on the main thread
+        would freeze QGIS before the question was even sent.
+
+        A remembered thread the server no longer has answers 404. That is not
+        an error the user can act on — they never knew the conversation had an
+        id — so it opens a fresh one and asks the question again. The turn
+        succeeds; only the memory of earlier turns is lost, which is already
+        true whatever we do.
+        """
+        notice = ""
+        if not thread_id:
+            thread_id, notice = self._open_conversation(project_id, title)
+        try:
+            response = self.api.compose(
+                project_id, message, context, thread_id=thread_id,
+                companion_results=companion_results)
+        except MapdexAPIError as exc:
+            if not thread_id or not thread_is_gone(exc.status):
+                # A conversation we just opened is still ours even though this
+                # turn failed. Carrying it back on the exception keeps the next
+                # attempt in the same thread instead of leaving an orphan
+                # behind and opening another one.
+                exc.mapdex_thread_id = thread_id
+                raise
+            thread_id, notice = self._open_conversation(project_id, title)
+            try:
+                response = self.api.compose(
+                    project_id, message, context, thread_id=thread_id,
+                    companion_results=companion_results)
+            except MapdexAPIError as retry_error:
+                retry_error.mapdex_thread_id = thread_id
+                raise
+        return {"thread_id": thread_id, "response": response, "notice": notice}
+
+    def _open_conversation(self, project_id, title):
+        """Open a thread, or report why this turn has no memory. Worker thread.
+
+        A deployment whose thread store is unavailable must still be able to
+        answer a question. Continuity degrades, and the panel says so rather
+        than leaving the user to discover that follow-ups stopped working.
+        """
+        try:
+            created = self.api.create_thread(project_id, title)
+        except MapdexAPIError:
+            return "", "Answered without conversation history: Mapdex did not open a conversation."
+        thread_id = str((created or {}).get("id") or "")
+        if not thread_id:
+            return "", "Answered without conversation history: Mapdex did not open a conversation."
+        return thread_id, ""
+
+    @guarded
+    def stop_nivo(self, *args):
+        if self.plan_run_id:
+            self._cancel_plan_run()
+            return
+        if self._nivo_compose_task is None:
+            return
+        self._nivo_request_id += 1
+        try:
+            self._nivo_compose_task.cancel()
+        except RuntimeError:
+            pass
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
+        self._nivo_state = transition(self._nivo_state, "error")
+        self._replace_last_assistant_turn("Stopped.")
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Stopped")
+        self._set_status("Nivo request stopped.")
+
+    @guarded
+    def _nivo_composed(self, request_id, exception, outcome):
+        if request_id != self._nivo_request_id:
+            return
+        self._nivo_compose_task = None
+        self._set_nivo_compose_busy(False)
+        if exception:
+            self._nivo_state = transition(self._nivo_state, "error")
+            # Adopt only a conversation this turn actually opened. Re-stamping
+            # the remembered one would bind it to whatever project is active
+            # now, which is not necessarily the project it belongs to.
+            carried = getattr(exception, "mapdex_thread_id", "")
+            if carried:
+                self._adopt_conversation(carried)
+            self._replace_last_assistant_turn("I couldn't complete that request.")
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Request failed")
+            self._show_error("Nivo could not compose a response", exception)
+            return
+        outcome = outcome if isinstance(outcome, dict) else {}
+        response = outcome.get("response")
+        # Adopt whichever conversation actually carried this turn: the
+        # remembered one, or the replacement opened after the remembered one
+        # turned out to be gone.
+        self._adopt_conversation(outcome.get("thread_id") or "")
+        if not isinstance(response, dict):
+            self._nivo_state = transition(self._nivo_state, "error")
+            self._show_error("Nivo could not compose a response", RuntimeError("Invalid compose response"))
+            return
+        if self.nivo_reply is not None:
+            reply = str(response.get("text") or response.get("message") or "Nivo returned no message.")
+            # The steps are what the turn actually did. Rendering only the reply
+            # is what made a turn that ran four capabilities and a turn that
+            # answered from memory look identical.
+            steps = step_rows(response)
+            self._replace_last_assistant_turn(reply, steps)
+        if self.nivo_status is not None:
+            notice = str(outcome.get("notice") or "")
+            # The turn is OVER here, so the step counter is a spent budget and
+            # not a status. It used to be written unconditionally and left on
+            # screen, which is why the panel sat reading "Step 2 of 32" with
+            # nothing running. Only a turn that was cut short still has
+            # something to say.
+            self.nivo_status.setText(notice or budget_notice(response) or "Ready")
+        # A computed answer whose output is POSITIONS goes on the canvas. A
+        # bearing is a number and stays in the reply; a traverse is a walk
+        # between stations, and handing somebody six coordinate pairs in a chat
+        # bubble makes them copy the work in by hand, which is the work this
+        # plugin exists to remove.
+        self._draw_survey_result(response)
+        self._nivo_action_results = []
+        for action in allowed_actions(response):
+            self._nivo_state = transition(self._nivo_state, "action")
+            self._apply_nivo_action(action)
+        confirmations = confirmation_actions(response)
+        if not confirmations:
+            snapshot = self._nivo_snapshot()
+            active = snapshot.get("active_layer") if isinstance(snapshot, dict) else None
+            target = active.get("id") if isinstance(active, dict) else ""
+            local_action = local_processing_action(self._nivo_objective, target)
+            if local_action:
+                confirmations = [local_action]
+        for action in confirmations:
+            self._nivo_state = transition(self._nivo_state, "confirm")
+            self._confirm_nivo_action(action)
+        if not confirmations:
+            problem = confirmation_action_problem(response)
+            if problem:
+                self._nivo_state = transition(self._nivo_state, "error")
+                self._say(problem)
+                self._set_status(problem)
+        self._continue_objective(response)
+        # Last, because everything above is what the turn ALREADY did and this
+        # is what it is asking to do next. Offering first would put a dialog in
+        # front of an answer the person has not read.
+        self._offer_plan_run(response)
+
+    @guarded
+    def _draw_survey_result(self, response):
+        """Put a survey answer's positions on the canvas as memory layers.
+
+        Everything that can be wrong with the payload was decided in
+        `survey_drawing`, which is pure and tested; what is left here is
+        creating the layers. A memory layer, deliberately, for the same reason
+        a drawn shape uses one: it appears immediately and asks nobody for a
+        path or a format while they are in the middle of a question.
+
+        Nothing the user already had is touched, so this is safe rather than
+        consequential and needs no confirmation.
+        """
+        from .survey_drawing import layer_specs  # noqa: PLC0415
+
+        if not isinstance(response, dict):
+            return
+        self._create_survey_layers(layer_specs(response.get("spatial_tool_result")))
+
+    @guarded
+    def _create_survey_layers(self, specs):
+        """Create one memory layer per geometry type a survey answer produced.
+
+        Shared by the two ways an answer arrives: a conversational turn and a
+        planned run. A user who asks for a traverse should get the same picture
+        whichever way they asked, and one creation path is how that stays true.
+        """
+        from qgis.core import (  # noqa: PLC0415 - Qt-only import
+            QgsFeature,
+            QgsField,
+            QgsGeometry,
+            QgsJsonUtils,
+            QgsProject,
+            QgsVectorLayer,
+        )
+        from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415 - Qt-only import
+
+        from .survey_drawing import attribute_names  # noqa: PLC0415
+
+        if not specs:
+            return
+
+        created = []
+        for spec in specs:
+            layer = QgsVectorLayer(
+                "{}?crs=EPSG:4326&index=yes".format(spec.geometry_type),
+                self._unique_layer_name(spec.name), "memory")
+            if not layer.isValid():
+                continue
+            names = attribute_names(spec.features)
+            if names:
+                # Declared before the features go in, and from the UNION of the
+                # properties: a traverse labels its stations unevenly, and
+                # taking the first feature's keys would drop a label.
+                #
+                # Every property is carried as text. A station number is a
+                # number and a label is not, and guessing per column would make
+                # the schema depend on which answer arrived first.
+                text_type = enum_member(QVariant, "Type", "String")
+                layer.dataProvider().addAttributes(
+                    [QgsField(name, text_type) for name in names])
+                layer.updateFields()
+            features = []
+            for entry in spec.features:
+                geometry = QgsGeometry.fromWkt(
+                    QgsJsonUtils.geometryFromGeoJson(json.dumps(entry["geometry"])).asWkt())
+                if geometry.isEmpty():
+                    continue
+                feature = QgsFeature(layer.fields())
+                feature.setGeometry(geometry)
+                for name in names:
+                    value = entry["properties"].get(name)
+                    feature.setAttribute(name, "" if value is None else str(value))
+                features.append(feature)
+            if not features:
+                continue
+            layer.dataProvider().addFeatures(features)
+            layer.updateExtents()
+            QgsProject.instance().addMapLayer(layer)
+            layer.triggerRepaint()
+            created.append(layer)
+
+        if not created:
+            return
+        self.iface.setActiveLayer(created[-1])
+        # The assistant has to learn about the layers in this turn, or the next
+        # question is asked about something it cannot see.
+        self._refresh_nivo_context()
+
+    @guarded
+    def _continue_objective(self, response):
+        """Tell the server what the actions did, so the objective can go on.
+
+        This is the client half of a multi-step turn. Without it a desktop
+        objective ends after one action however many the question needed, which
+        is what taught users to type one small command at a time.
+
+        The user's message is re-sent unchanged: the objective has not changed,
+        only what is known about it. Nothing here decides anything about GIS -
+        the server chooses the next capability and the registry still validates
+        it before it runs.
+        """
+        results = list(getattr(self, "_nivo_action_results", []))
+        if not should_continue(response, results, getattr(self, "_nivo_round_trips", 0)):
+            self._nivo_round_trips = 0
+            return
+        self._nivo_round_trips = getattr(self, "_nivo_round_trips", 0) + 1
+        message = self._nivo_objective
+        if not message:
+            self._nivo_round_trips = 0
+            return
+        used, total = continuation_budget(response)
+        if self.nivo_status is not None and total:
+            self.nivo_status.setText("Step {} of {}".format(used + 1, total))
+        context = companion_context(self._nivo_snapshot())
+        self._nivo_request_id += 1
+        request_id = self._nivo_request_id
+        project_id = self._active_project_id()
+        thread_id = self._nivo_thread_id
+        self._set_nivo_compose_busy(True)
+
+        def work():
+            return self._compose_in_thread(
+                project_id, message, context, thread_id, message, companion_results=results)
+
+        self._nivo_compose_task = self._task(
+            "Nivo is continuing", work,
+            lambda error, outcome: self._nivo_composed(request_id, error, outcome))
+        self._refresh_stop_button()
+
+    @staticmethod
+    def _plain(label, text):
+        """Put text into a QLabel as text, not as markup.
+
+        QLabel defaults to Qt::AutoText, which sniffs the string and renders
+        anything that looks like HTML as HTML. Assistant replies and stored
+        history are data: a `<b>` in a layer name, or an `<img>` in a message
+        replayed from the server, must appear as those characters.
+        """
+        label.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        label.setText(str(text))
+        return label
+
+    def _step_widget(self, row_data):
+        """One step of the turn: what ran, with what, and how it ended.
+
+        Status is a word, never a colour on its own: the panel is themed by
+        QGIS and a reader on a monochrome theme or a screen reader must get the
+        same answer as everyone else.
+        """
+        line = "{}. {}".format(row_data.get("index", 1), row_data.get("title", ""))
+        tail = [part for part in (row_data.get("status_label"), row_data.get("duration")) if part]
+        if tail:
+            line += "  (" + ", ".join(tail) + ")"
+        # Successful execution details and raw parameters belong to the trace,
+        # not to the conversation's reading path. They used to render as TASK
+        # tokens and long key=value dumps beneath every answer. Keep actionable
+        # failure/waiting detail visible; a completed step needs only its human
+        # title, status and duration.
+        status = row_data.get("status") or ""
+        show_detail = status in {
+            "failed", "refused", "awaiting_input", "awaiting_confirmation"
+        }
+        detail = (row_data.get("detail") or "") if show_detail else ""
+        widget = QWidget()
+        column = QVBoxLayout(widget)
+        column.setContentsMargins(2, 1, 2, 1)
+        column.setSpacing(1)
+        head = self._plain(QLabel(), line)
+        head.setWordWrap(True)
+        tone = row_data.get("tone")
+        head.setStyleSheet(
+            "color:#F2B8B5;" if tone == "danger" else "color:#8F96A8;"
+        )
+        column.addWidget(head)
+        if detail:
+            body = self._plain(QLabel(), "     " + detail)
+            body.setWordWrap(True)
+            body.setStyleSheet("color:#A9B0C0;")
+            column.addWidget(body)
+        widget.setStyleSheet("background:transparent; border:0;")
+        return widget
+
+    @guarded
+    def _render_nivo_turns(self):
+        """Render sender-distinct native widget bubbles; no model HTML.
+
+        Ends by letting every wrapping label it just created be as narrow as
+        the dock. The rule is applied at build time too, and that alone was not
+        enough: these widgets are created later, so the panel could be narrowed
+        and the conversation inside it could not - which is where most of the
+        text lives, so the column stayed 614 px wide in a 300 px dock.
+        """
+        if self.nivo_reply is None:
+            return
+        transcript = self.nivo_reply.widget()
+        layout = transcript.layout() if transcript is not None else None
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # `deleteLater` alone leaves the widget parented to the scroll
+                # viewport until Qt returns to its outer event loop. A provider
+                # failure opens a nested modal and then immediately hands the
+                # same turn to Mapdex, producing several renders before that
+                # happens. The retired user cards kept painting at their old
+                # geometry behind the new transcript, making the whole chat
+                # look like one giant overlapping purple bubble.
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        # The opening reading is drawn as turns, ahead of the conversation, and
+        # is recomputed rather than accumulated - it describes the layer that is
+        # active NOW. Once the user says something it steps aside, because on a
+        # narrow dock it would push the thing they are reading off the top.
+        self._refresh_opening()
+        for turn in list(self._nivo_opening) + list(self._nivo_turns):
+            layout.addWidget(self._turn_widget(turn))
+        layout.addStretch(1)
+        allow_narrow(transcript)
+        bar = self.nivo_reply.verticalScrollBar()
+        # A discovery/empty-state card belongs at the top. Forcing the scroll
+        # bar to its maximum after a tall resize could move that only card out
+        # of view and leave an apparently empty transcript above the composer.
+        # Real conversation turns still follow the newest message.
+        has_conversation = any(not turn.get("opening") for turn in self._nivo_turns)
+        # The transcript always owns the remaining height. Discovery content
+        # stays compact at its top because the transcript layout ends in a
+        # stretch; constraining the viewport itself left most of the Nivo page
+        # as dead space and made the chat look accidentally collapsed.
+        self.nivo_reply.setMinimumHeight(170)
+        self.nivo_reply.setMaximumHeight(16777215)
+        self.nivo_reply.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+        )
+        # A stale transient status (for example "Zoomed to the layer") must
+        # still not look like a second assistant reply in an empty transcript.
+        if self.nivo_status is not None:
+            self.nivo_status.setVisible(has_conversation or self._busy)
+        bar.setValue(bar.maximum() if has_conversation else bar.minimum())
+
+    def _turn_widget(self, turn):
+        """One transcript entry: a measured line, what was said, what to do."""
+        sender = turn.get("sender")
+        text = turn.get("text", "")
+        card = QWidget()
+        # Every transcript object occupies the same readable measure on a wide
+        # dock. Previously discovery filled the entire 720 px column, user
+        # bubbles stopped at 560 px, and assistant replies sized to their text;
+        # one conversation therefore looked like three unrelated columns.
+        card.setMaximumWidth(BUBBLE_WIDTH)
+        card.setSizePolicy(
+            enum_member(QSizePolicy, "Policy", "Expanding"),
+            enum_member(QSizePolicy, "Policy", "Preferred"),
+        )
+        row = QVBoxLayout(card)
+
+        if sender != "user" and str(text).startswith("Thinking"):
+            card.setObjectName("mapdexTurn")
+            row.setContentsMargins(2, 2, 2, 2)
+            body = self._plain(QLabel(), text)
+            body.setObjectName("mapdexTurnThinking")
+            body.setWordWrap(True)
+            row.addWidget(body)
+            return card
+
+        row.setContentsMargins(8, 7, 8, 7)
+        row.setSpacing(3)
+        if not text and not turn.get("fact"):
+            # A turn that carries only actions: no name, no empty body line.
+            card.setObjectName("mapdexTurn")
+            strip = QVBoxLayout()
+            strip.setContentsMargins(0, 0, 0, 0)
+            strip.setSpacing(5)
+            for action in turn.get("actions") or []:
+                strip.addWidget(self._action_chip(action))
+            row.addLayout(strip)
+            return card
+        if not turn.get("opening"):
+            # The fixed header already introduces Nivo. Repeating the sender
+            # immediately underneath made the empty state look like two
+            # unrelated components; real conversation turns keep attribution.
+            label = QLabel("You" if sender == "user" else "Nivo")
+            label.setObjectName("mapdexTurnWhoUser" if sender == "user" else "mapdexTurnWho")
+            row.addWidget(label)
+
+        # The measurement, set apart from the sentence about it. Mono, because
+        # a file name, a pixel size and a CRS code are data and read as data.
+        if turn.get("fact"):
+            fact = self._plain(QLabel(), turn["fact"])
+            fact.setObjectName("mapdexTurnFact")
+            fact.setWordWrap(True)
+            row.addWidget(fact)
+
+        body = self._plain(QLabel(), text)
+        body.setWordWrap(True)
+
+        severity = turn.get("severity")
+        if severity and sender != "user":
+            # Icon AND wording, never colour alone: DESIGN.md section 8, and
+            # the coloured stripe this replaces broke exactly that rule.
+            said = QWidget()
+            said_row = QHBoxLayout(said)
+            said_row.setContentsMargins(0, 0, 0, 0)
+            said_row.setSpacing(7)
+            glyph = QLabel()
+            glyph.setFixedSize(16, 16)
+            glyph.setPixmap(self._severity_icon(severity).pixmap(15, 15))
+            said_row.addWidget(glyph, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+            said_row.addWidget(body, 1)
+            row.addWidget(said)
+        else:
+            row.addWidget(body)
+
+        if sender == "user":
+            card.setObjectName("mapdexTurnUser")
+            body.setObjectName("mapdexTurnBodyUser")
+        else:
+            card.setObjectName("mapdexOpeningTurn" if turn.get("opening") else "mapdexTurn")
+            body.setObjectName("mapdexTurnBody")
+            for row_data in turn.get("steps") or []:
+                row.addWidget(self._step_widget(row_data))
+            actions = turn.get("actions") or []
+            if actions:
+                strip = QVBoxLayout()
+                strip.setContentsMargins(0, 5, 0, 0)
+                strip.setSpacing(5)
+                for action in actions:
+                    strip.addWidget(self._action_chip(action))
+                row.addLayout(strip)
+        return card
+
+    # ----------------------------------------------------------------------
+    # Conversations: New chat, History, and the thread the panel is continuing
+    # ----------------------------------------------------------------------
+
+    def _adopt_conversation(self, thread_id, project_id=None):
+        """Make this the conversation the next question continues.
+
+        Persisted with the project it belongs to, so a QGIS restart resumes it
+        and a different project does not.
+        """
+        project = self.project_id if project_id is None else project_id
+        thread_id = str(thread_id or "")
+        self._nivo_thread_id = thread_id
+        self._nivo_thread_project = project if thread_id else ""
+        settings = QSettings()
+        if thread_id:
+            settings.setValue(THREAD_ID_SETTING, thread_id)
+            settings.setValue(THREAD_PROJECT_SETTING, self._nivo_thread_project)
+        else:
+            settings.remove(THREAD_ID_SETTING)
+            settings.remove(THREAD_PROJECT_SETTING)
+
+    @guarded
+    def new_nivo_task(self, *args):
+        """Clear the transcript and start a fresh conversation on the next turn.
+
+        Deliberately local: nothing is deleted on the server, so the
+        conversation being cleared away is still in History. The thread is
+        dropped rather than replaced because an empty conversation nobody ever
+        used is noise in that list - the next question opens one.
+        """
+        if self._nivo_compose_task is not None:
+            self._set_status("Nivo is still working. Use Stop before starting a new chat.")
+            return
+        # Reset the complete local turn, not only what is painted. Keeping the
+        # old objective/action results made the plus button look successful
+        # while the next request could still continue the previous work.
+        self._nivo_turns = []
+        self._nivo_opening = []
+        self._nivo_objective = ""
+        self._nivo_round_trips = 0
+        self._nivo_action_results = []
+        self._nivo_state = "idle"
+        self._adopt_conversation("")
+        if self.nivo_input is not None:
+            self.nivo_input.clear()
+        self._render_nivo_turns()
+        if self.nivo_status is not None:
+            self.nivo_status.setText("New chat. The previous conversation is in History.")
+        self._refresh_nivo_context()
+
+    @guarded
+    def open_nivo_history(self, *args):
+        """Open the History dialog for this project's conversations."""
+        if not self.api.token or not self.project_id:
+            self._set_status("Connect Mapdex and choose a project to see earlier conversations.")
+            return
+        if self._history_refs is not None:
+            return
+        dialog, refs = build_thread_history_dialog(self.iface.mainWindow())
+        self._history_refs = refs
+        self._history_rows = []
+        refs["retry_button"].clicked.connect(self._load_thread_history)
+        refs["open_button"].clicked.connect(self._open_selected_thread)
+        refs["delete_button"].clicked.connect(self._delete_selected_thread)
+        refs["close_button"].clicked.connect(dialog.reject)
+        # Lambdas are safe here in a way they are not on `iface`: these
+        # connections die with the dialog, which this method owns end to end.
+        refs["list"].itemDoubleClicked.connect(lambda _item: self._open_selected_thread())
+        refs["list"].currentRowChanged.connect(lambda _row: self._refresh_history_buttons())
+        self._load_thread_history()
+        # PyQt6 dropped `exec_`; PyQt5 (QGIS 3) has both. Resolved by name so
+        # the dialog opens on either binding rather than raising the first time
+        # a user clicks History.
+        run_modal = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        try:
+            run_modal()
+        finally:
+            self._history_refs = None
+            self._history_rows = []
+            dialog.deleteLater()
+
+    @guarded
+    def _load_thread_history(self, *args):
+        """Fetch this project's conversations and show the loading state."""
+        refs = self._history_refs
+        if refs is None:
+            return
+        project_id = self.project_id
+        self._history_request_id += 1
+        request_id = self._history_request_id
+        refs["state_label"].setVisible(True)
+        refs["state_label"].setText("Loading conversations…")
+        refs["list"].setVisible(False)
+        # Empty the row model BEFORE the widget: clear() emits
+        # currentRowChanged, and the handler that fires would otherwise read
+        # the rows of the listing that has just gone.
+        self._history_rows = []
+        refs["list"].clear()
+        refs["retry_button"].setVisible(False)
+        self._refresh_history_buttons()
+        self._task(
+            "Load Nivo conversations",
+            lambda: self.api.list_threads(project_id),
+            lambda exception, payload: self._thread_history_loaded(request_id, exception, payload),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_history_loaded(self, request_id, exception, payload):
+        refs = self._history_refs
+        if refs is None or request_id != self._history_request_id:
+            # The dialog was closed, or a reload has already superseded this.
+            return
+        if exception:
+            refs["state_label"].setVisible(True)
+            refs["state_label"].setText(
+                "Could not load conversations. {}".format(describe_exception(exception))
+            )
+            refs["retry_button"].setVisible(True)
+            self._refresh_history_buttons()
+            return
+        refs["retry_button"].setVisible(False)
+        self._history_rows = thread_list_items(payload)
+        if not self._history_rows:
+            refs["state_label"].setVisible(True)
+            refs["state_label"].setText(
+                "No earlier conversations in this project yet. Ask Nivo something and it will "
+                "appear here."
+            )
+            refs["list"].setVisible(False)
+            self._refresh_history_buttons()
+            return
+        refs["state_label"].setVisible(False)
+        refs["list"].setVisible(True)
+        for row in self._history_rows:
+            # Plain list text. A title is the user's own words returned by the
+            # server, and this transcript never renders such text as markup.
+            refs["list"].addItem(describe_thread(row))
+        current = 0
+        for index, row in enumerate(self._history_rows):
+            if row["id"] == self._nivo_thread_id:
+                current = index
+                break
+        refs["list"].setCurrentRow(current)
+        self._refresh_history_buttons()
+
+    def _refresh_history_buttons(self):
+        refs = self._history_refs
+        if refs is None:
+            return
+        try:
+            selected = 0 <= refs["list"].currentRow() < len(self._history_rows)
+        except RuntimeError:
+            return
+        refs["open_button"].setEnabled(selected)
+        refs["delete_button"].setEnabled(selected)
+
+    def _selected_thread(self):
+        refs = self._history_refs
+        if refs is None:
+            return None
+        row = refs["list"].currentRow()
+        if 0 <= row < len(self._history_rows):
+            return self._history_rows[row]
+        return None
+
+    @guarded
+    def _open_selected_thread(self, *args):
+        thread = self._selected_thread()
+        refs = self._history_refs
+        if thread is None or refs is None:
+            return
+        refs["dialog"].accept()
+        project_id = self.project_id
+        thread_id = thread["id"]
+        if self.nivo_status is not None:
+            self.nivo_status.setText("Loading that conversation…")
+        self._task(
+            "Load Nivo conversation",
+            lambda: self.api.thread_messages(thread_id, project_id),
+            lambda exception, payload: self._thread_opened(
+                thread_id, project_id, exception, payload
+            ),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_opened(self, thread_id, project_id, exception, payload):
+        if exception:
+            if isinstance(exception, MapdexAPIError) and thread_is_gone(exception.status):
+                # Deleted between listing it and opening it. Say so; do not
+                # adopt a conversation the server does not have.
+                if self.nivo_status is not None:
+                    self.nivo_status.setText("That conversation is no longer available.")
+                self._set_status("That Nivo conversation is no longer available.")
+                return
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Could not open that conversation.")
+            self._show_error("Could not open that conversation", exception)
+            return
+        turns = thread_turns(payload)
+        # A replayed conversation carries no execution trace: the server stores
+        # the messages, not the steps. Restoring it with an empty step list says
+        # "not recorded" rather than "nothing ran", which are different claims.
+        self._nivo_turns = [transcript_turn(sender, text) for sender, text in turns]
+        self._render_nivo_turns()
+        self._adopt_conversation(thread_id, project_id)
+        if self.nivo_status is not None:
+            if turns:
+                self.nivo_status.setText(
+                    "Continuing this conversation ({} messages).".format(len(turns))
+                )
+            else:
+                self.nivo_status.setText("That conversation has no messages yet.")
+
+    @guarded
+    def _delete_selected_thread(self, *args):
+        thread = self._selected_thread()
+        refs = self._history_refs
+        if thread is None or refs is None:
+            return
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            refs["dialog"],
+            "Delete conversation",
+            "Delete “{}” from Mapdex?\n\nThis cannot be undone.".format(thread["title"]),
+            yes | no,
+            no,
+        )
+        if answer != yes:
+            return
+        project_id = self.project_id
+        thread_id = thread["id"]
+        refs["state_label"].setVisible(True)
+        refs["state_label"].setText("Deleting…")
+        self._task(
+            "Delete Nivo conversation",
+            lambda: self.api.delete_thread(thread_id, project_id),
+            lambda exception, _result: self._thread_deleted(thread_id, exception),
+            busy=False,
+        )
+
+    @guarded
+    def _thread_deleted(self, thread_id, exception):
+        refs = self._history_refs
+        if exception:
+            if refs is not None:
+                refs["state_label"].setVisible(True)
+                refs["state_label"].setText(
+                    "Could not delete that conversation. {}".format(describe_exception(exception))
+                )
+                refs["retry_button"].setVisible(True)
+            return
+        if thread_id == self._nivo_thread_id:
+            # The conversation the panel was continuing no longer exists. The
+            # transcript stays readable; only the memory is dropped, so the
+            # next question opens a new conversation instead of a 404.
+            self._adopt_conversation("")
+            if self.nivo_status is not None:
+                self.nivo_status.setText("Conversation deleted. The next question starts a new one.")
+        if refs is not None:
+            self._load_thread_history()
+
+    def _say(self, text, steps=None, actions=None, severity="", fact="", opening=False):
+        """Append one assistant turn and draw it."""
+        self._nivo_turns.append(
+            transcript_turn("assistant", text, steps, actions, severity, fact, opening))
+        self._render_nivo_turns()
+
+    @guarded
+    def _apply_nivo_action(self, action):
+        """Dispatch one compose action through the capability registry.
+
+        There is a single path. A canonical `domain.name@1` id and the legacy
+        `qgis:*` id that means the same thing both resolve to one registered
+        capability, are validated by the registry, and are executed by the same
+        executor table - so an action behaves identically however the server
+        chose to spell it, and a consequential one is gated by the registry's own
+        risk metadata rather than by whichever branch happened to handle it.
+
+        Only the four legacy ids with no registered capability keep a
+        plugin-native handler, and those are a table lookup too.
+        """
+        action_id = action.get("id")
+        if not action_id or action_id in self._executed_nivo_actions:
+            self._set_status("Nivo ignored a duplicate or malformed action.")
+            return
+        self._executed_nivo_actions.add(action_id)
+        self._nivo_state = transition(self._nivo_state, "execute")
+        tool = action["tool"]
+        target = action.get("target")
+        layer = self._nivo_layer_for_action(target)
+        if target and (layer is None or not layer.isValid()):
+            self._action_failed(
+                "Nivo did not run the action because its target layer is no longer available.")
+            return
+
+        try:
+            resolved = self._capability_request(tool, action, layer)
+        except CapabilityError as error:
+            self._action_failed("Nivo could not run that: {}".format(error))
+            return
+        if resolved is not None:
+            capability_id, params = resolved
+            if self._run_capability(capability_id, params, action.get("summary") or tool, headline=""):
+                self._nivo_state = transition(self._nivo_state, "done")
+            return
+
+        handler = PLUGIN_NATIVE_ACTIONS.get(tool)
+        if handler is None:
+            # Filter/style/review/result commands the server can name but this
+            # build has no capability for. Never turn free-form model params
+            # into QGIS calls just because the id looked familiar.
+            #
+            # Said, not merely set: "Nivo prepared a QGIS action" followed by a
+            # map that never changes is the exact reading that makes this look
+            # like a broken assistant rather than a missing feature, and the
+            # reply above it has already promised the result.
+            self._action_failed("This build cannot carry out that action: {}".format(
+                action.get("summary") or tool))
+            return
+        if not getattr(self, handler)(action):
+            return
+        self._nivo_state = transition(self._nivo_state, "done")
+
+    def _capability_request(self, tool, action, layer):
+        """Resolve an action to a validated-capability request, or None.
+
+        Translation happens here and execution does not: a legacy id names the
+        same operation as its canonical capability, and routing both through the
+        registry is precisely what makes them behave the same. Returns None when
+        no registered capability covers the id, so the caller can fall back to
+        the plugin-native table.
+        """
+        # The translation itself lives in nivo.capability_request, where the
+        # server-contract test can run it without QGIS.
+        return capability_request(
+            tool, action, layer.id() if layer is not None else "", LEGACY_CAPABILITY_IDS)
+
+    def _confirm_capability(self, capability_id, summary="", params=None):
+        """Ask before running a capability the registry marks consequential.
+
+        The registry decides this, not the model and not the server. A compose
+        response that simply omits `requires_confirmation` must not be able to
+        make `field.calculate@1` write a column into the user's own data
+        silently - that write cannot be undone from here.
+
+        Any file the request names is shown in the question. A confirmation
+        that says "Read a coordinate list into a layer" without saying WHICH
+        file is not consent to reading a particular file; it is a button.
+        """
+        capability = get_capability(capability_id)
+        question = summary or (capability.summary if capability is not None else capability_id)
+        files = [str(value) for key, value in sorted(dict(params or {}).items())
+                 if str(key).endswith("path") and value]
+        if files:
+            question = "{}\n\nFile: {}".format(question, "\n".join(files))
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Confirm Nivo action",
+            "{}\n\nThis changes your data and cannot be undone from Mapdex. Run it?".format(question),
+            yes | no,
+            no,
+        )
+        return answer == yes
+
+    def _plugin_capability_handlers(self):
+        """Capabilities the QGIS runtime cannot own because they need the plugin.
+
+        `qgis_runtime` binds the effects that need only the project and the
+        canvas. A basemap layer and a server-supplied extent need this plugin's
+        own viewport resolution, so they are chained onto the runtime table
+        rather than duplicated inside it.
+        """
+        handlers = {
+            "map.basemap@1": self._add_osm_basemap,
+            "map.zoom_extent@1": self._apply_server_extent,
+            # Processing needs this plugin's async task runner and its output
+            # loading, so it cannot live in the runtime. It was reachable only
+            # through the legacy `qgis:processing_operation@1` id, which left
+            # the canonical capability refusing an operation its own legacy
+            # spelling performed.
+            "processing.run@1": self._run_processing_capability,
+            "processing.discover@1": self._discover_processing,
+            # The named operations. Each closes over its own operation name and
+            # reuses the one runner, so there is a single place that decides
+            # how a Processing algorithm is resolved, validated and loaded.
+            #
+            # Written out rather than comprehended from
+            # NAMED_GEOPROCESSING_OPERATIONS: the parity test reads this table
+            # STATICALLY, and a key it cannot read is a binding hidden from the
+            # guard that exists to check it.
+            "geoprocessing.buffer@1": self._named_processing_capability("buffer"),
+            "geoprocessing.clip@1": self._named_processing_capability("clip"),
+            "geoprocessing.intersection@1": self._named_processing_capability("intersection"),
+            "geoprocessing.union@1": self._named_processing_capability("union"),
+            "geoprocessing.difference@1": self._named_processing_capability("difference"),
+            "geoprocessing.dissolve@1": self._named_processing_capability("dissolve"),
+            "geoprocessing.merge@1": self._named_processing_capability("merge"),
+            "geoprocessing.centroid@1": self._named_processing_capability("centroid"),
+            "geoprocessing.convex_hull@1": self._named_processing_capability("convex_hull"),
+            "geoprocessing.reproject@1": self._named_processing_capability("reproject"),
+            "geoprocessing.spatial_join@1": self._named_processing_capability("spatial_join"),
+            "geoprocessing.simplify@1": self._named_processing_capability("simplify"),
+            "geoprocessing.repair@1": self._named_processing_capability("repair"),
+            "geoprocessing.validate@1": self._named_processing_capability("validate"),
+            "geoprocessing.split@1": self._named_processing_capability("split"),
+            "geoprocessing.zonal_statistics@1": self._named_processing_capability("zonal_statistics"),
+            # Terrain, through the same Processing task. Three of them refuse on
+            # a grid measured in degrees before the algorithm is reached.
+            "terrain.slope@1": self._named_processing_capability("slope"),
+            "terrain.aspect@1": self._named_processing_capability("aspect"),
+            "terrain.hillshade@1": self._named_processing_capability("hillshade"),
+            "terrain.ruggedness@1": self._named_processing_capability("ruggedness"),
+            "terrain.roughness@1": self._named_processing_capability("roughness"),
+            "terrain.contours@1": self._named_processing_capability("contours"),
+            "terrain.flow_accumulation@1": self._named_processing_capability("flow_accumulation"),
+            "terrain.watershed@1": self._named_processing_capability("watershed"),
+            "terrain.viewshed@1": self._named_processing_capability("viewshed"),
+            # Both read the project's runs through this plugin's API client, so
+            # neither can live in the runtime, which has no session and no
+            # project. Until they were bound, seeing a job list or opening a
+            # review meant leaving QGIS for a browser and finding the run again
+            # by hand.
+            "mapdex.jobs@1": self._list_mapdex_runs,
+            "mapdex.open_review@1": self._open_mapdex_review,
+            # The shape a person drew on the canvas becoming a layer. It needs
+            # the project, the active-layer change and the assistant context
+            # refresh, so it belongs on this side rather than in the runtime.
+            "draw.geometry@1": self._draw_geometry_capability,
+        }
+        # The declaration and the table must not drift: an id advertised here
+        # and missing from the table is the "Nivo prepared an action" and a
+        # canvas that never moves failure this whole surface exists to avoid.
+        #
+        # A raise rather than an assert, because assert statements are removed
+        # entirely under `python -O`. QGIS does not run optimised today, but an
+        # invariant that quietly stops being checked depending on how the host
+        # was started is not an invariant.
+        declared = set(PLUGIN_BOUND_CAPABILITIES)
+        bound = set(handlers)
+        if bound != declared:
+            raise RuntimeError(
+                "the plugin-bound declaration and its handler table disagree: "
+                "declared-not-bound {}, bound-not-declared {}".format(
+                    sorted(declared - bound), sorted(bound - declared)
+                )
+            )
+        return handlers
+
+    def _named_processing_capability(self, operation):
+        """A handler for one named operation.
+
+        The capability id IS the operation, so the caller never sends one and
+        cannot send a different one: `geoprocessing.buffer@1` can only buffer.
+        That is the difference from the generic bridge, which takes the
+        operation as an argument and therefore has to ask before every run.
+        """
+
+        def run(params):
+            request = dict(params)
+            request["operation"] = operation
+            # `other_layer_id` is what the capability declares, because that is
+            # the name every other two-layer capability on this surface uses;
+            # `target_layer` is what the Processing request carries. Translating
+            # here keeps one vocabulary facing the user and one facing QGIS.
+            if request.get("other_layer_id") and not request.get("target_layer"):
+                request["target_layer"] = request["other_layer_id"]
+            return self._run_processing_capability(request)
+
+        return run
+
+    def _run_processing_capability(self, params):
+        """Start a validated Processing operation.
+
+        Confirmation already happened: the registry marks this consequential and
+        `_run_capability` asks before it calls anything here. Asking twice for
+        one action buys no information and costs the user a step.
+        """
+        operation = str(params.get("operation") or "")
+        refusal = self._processing_refusal(
+            operation, self._nivo_layer_for_action(params.get("layer_id") or ""))
+        if refusal:
+            raise CapabilityError(refusal)
+        action = {
+            "target": params.get("layer_id") or "",
+            "params": dict(params),
+            "summary": "Run the {}".format(operation_label(operation)),
+        }
+        self._run_processing_operation(action)
+        # Deliberately not a result. The algorithm runs as a QGIS task and
+        # reports when it finishes; claiming an outcome here would describe work
+        # that has not happened yet.
+        return {"kind": "processing_started", "operation": operation}
+
+    @staticmethod
+    def _processing_refusal(operation, layer):
+        """Why this operation cannot run on this layer, or "".
+
+        One owner, called from BOTH ways a Processing run starts. These checks
+        lived only in the named-capability wrapper, while every operation the
+        server actually sends arrives behind a confirmation and runs through
+        `_run_processing_operation` directly - so on the path users take, a
+        slope on a parcel layer was started, and a hillshade on a grid in degrees
+        was computed, exactly as if the checks did not exist. Measured by
+        replaying the server's recorded responses (verify_qgis_end_to_end.py,
+        Part 4b).
+
+        A slope, aspect or hillshade on a grid measured in degrees is a ratio of
+        metres to degrees, which is not a slope: a 10% grade reads as 89.99
+        degrees. A DEM operation on a vector layer is not a hard question either.
+        """
+        if layer is None:
+            return ""
+        if operation in RASTER_INPUT_OPERATIONS and not is_raster_layer(layer):
+            return "the {} needs an elevation raster; '{}' is a vector layer".format(
+                operation_label(operation), layer.name())
+        if operation in UNIT_SENSITIVE_TERRAIN:
+            crs = layer.crs()
+            if crs is not None and crs.isValid() and crs.isGeographic():
+                return describe_geographic_terrain_refusal(operation, crs.authid())
+        return ""
+
+    def _metric_plan(self, operation, layer, params):
+        """How a length stated in metres reaches this layer (processing_units)."""
+        crs = layer.crs()
+        geographic = bool(crs.isValid() and crs.isGeographic())
+        factor = None
+        bbox = None
+        if geographic:
+            try:
+                transform = QgsCoordinateTransform(
+                    crs, QgsCoordinateReferenceSystem("EPSG:4326"), QgsProject.instance())
+                extent = transform.transformBoundingBox(layer.extent())
+                bbox = [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()]
+            except QgsCsException:
+                bbox = None
+        elif crs.isValid():
+            units = crs.mapUnits()
+            if units != enum_member(Qgis, "DistanceUnit", "Unknown"):
+                factor = QgsUnitTypes.fromUnitToUnitFactor(
+                    enum_member(Qgis, "DistanceUnit", "Meters"), units)
+        return plan_metric_operation(operation, params, geographic, factor, bbox)
+
+    @staticmethod
+    def _reprojected_copy(layer, crs, name=""):
+        """A memory copy of `layer` in `crs`, made by QGIS's own reprojection.
+
+        Synchronous: it runs before a buffer starts and after it finishes, on a
+        layer the user is already waiting on, and a second task would leave the
+        result in the wrong coordinate system until it reported.
+        """
+        algorithm = QgsApplication.processingRegistry().algorithmById("native:reprojectlayer")
+        if algorithm is None:
+            return None
+        target = crs if isinstance(crs, QgsCoordinateReferenceSystem) else QgsCoordinateReferenceSystem(crs)
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        results, ok = algorithm.run(
+            {"INPUT": layer, "TARGET_CRS": target, "OUTPUT": "TEMPORARY_OUTPUT"},
+            context, QgsProcessingFeedback())
+        if not ok or not isinstance(results, dict):
+            return None
+        copied = context.takeResultLayer(results.get("OUTPUT"))
+        if copied is None or not copied.isValid():
+            return None
+        if name:
+            copied.setName(name)
+        return copied
+
+    @staticmethod
+    def _textual_copy(layer):
+        """A memory copy of `layer` whose nested fields hold their JSON as text.
+
+        Returns ``(layer, names)``: the original and an empty list when nothing
+        needed changing, the copy and the changed field names otherwise, and
+        ``(None, names)`` when the copy could not be made. Every Processing
+        algorithm that writes a new layer - a reprojection included - fails on
+        a JSON field (processing_units.structured_field_names).
+        """
+        if not isinstance(layer, QgsVectorLayer):
+            return layer, []
+        names = structured_field_names(
+            (field.name(), field.typeName(), field.type()) for field in layer.fields())
+        if not names:
+            return layer, []
+        from qgis.core import QgsField, QgsFields, QgsMemoryProviderUtils
+
+        changed = set(names)
+        fields = QgsFields()
+        for field in layer.fields():
+            fields.append(QgsField(field.name(), field_type("text"))
+                          if field.name() in changed else QgsField(field))
+        copy = QgsMemoryProviderUtils.createMemoryLayer(
+            layer.name(), fields, layer.wkbType(), layer.crs())
+        if copy is None or not copy.isValid():
+            return None, names
+        indexes = [layer.fields().indexOf(name) for name in names]
+        features = []
+        for source in layer.getFeatures():
+            attributes = list(source.attributes())
+            for index in indexes:
+                attributes[index] = structured_value_as_text(attributes[index])
+            feature = QgsFeature(copy.fields())
+            feature.setGeometry(source.geometry())
+            feature.setAttributes(attributes)
+            features.append(feature)
+        if not copy.dataProvider().addFeatures(features):
+            return None, names
+        copy.updateExtents()
+        return copy, names
+
+    def _discover_processing(self, params):
+        """Which of the allowlisted operations this QGIS can actually run.
+
+        Answers from the live registry rather than from the catalog, because an
+        operation whose algorithm is not installed is not available however
+        confidently the allowlist names it.
+        """
+        available = []
+        for operation in PROCESSING_OPERATION_CATALOG:
+            _identifier, algorithm = resolve_processing_algorithm(
+                QgsApplication.processingRegistry(), operation
+            )
+            if algorithm is not None:
+                available.append({"operation": operation, "label": operation_label(operation)})
+        return {
+            "kind": "processing_catalog",
+            "objective": str(params.get("objective") or ""),
+            "available": available,
+            "unavailable": len(PROCESSING_OPERATION_CATALOG) - len(available),
+        }
+
+    def _require_mapdex_session(self):
+        """The project the server-side capabilities act on, or a refusal.
+
+        Refusing here names the missing precondition. Calling `/v1/runs` without
+        a session answers 401, which reaches the user as an HTTP failure for a
+        question whose real answer is "connect first".
+        """
+        if not self.api.token:
+            raise CapabilityError("connect to Mapdex first - these runs live in your workspace")
+        project_id = self._active_project_id()
+        if not project_id:
+            raise CapabilityError("choose a Mapdex project first")
+        return project_id
+
+    def _list_mapdex_runs(self, params):
+        """Start the run listing. The answer arrives in the transcript.
+
+        `/v1/runs` is a network round trip and this executes on the Qt main
+        thread, so the list is fetched as a task exactly the way Processing is
+        run. Returning a summary here would be a listing of runs nobody has
+        fetched yet.
+        """
+        project_id = self._require_mapdex_session()
+        state = str(params.get("state") or "all")
+        self._task(
+            "List Mapdex runs",
+            lambda: self.api.runs(project_id),
+            lambda exception, payload: self._mapdex_runs_listed(state, exception, payload),
+            busy=False,
+        )
+        return {"kind": "jobs_requested", "state": state}
+
+    @guarded
+    def _mapdex_runs_listed(self, state, exception, payload):
+        if exception:
+            self._nivo_report("Nivo could not read the run list: {}".format(describe_exception(exception)))
+            return
+        self._nivo_report(
+            describe_capability_result(
+                "", with_failure_guidance(summarize_runs(payload, state))
+            )
+        )
+
+    def _open_mapdex_review(self, params):
+        """Start resolving which run to review, then open it in the browser.
+
+        The run has to be fetched even when its id was supplied: a review link
+        is built from the run's SOURCE file, and the id alone cannot produce
+        one. Opening `/review/<run id>` resolves no run, so the Studio closes
+        the cockpit and returns the reviewer to the project map.
+        """
+        project_id = self._require_mapdex_session()
+        run_id = str(params.get("run_id") or "").strip()
+        self._task(
+            "Open Mapdex review",
+            lambda: self.api.runs(project_id),
+            lambda exception, payload: self._mapdex_review_resolved(
+                project_id, run_id, exception, payload
+            ),
+            busy=False,
+        )
+        return {"kind": "review_requested", "run_id": run_id}
+
+    @guarded
+    def _mapdex_review_resolved(self, project_id, run_id, exception, payload):
+        if exception:
+            self._nivo_report("Nivo could not reach the run list: {}".format(describe_exception(exception)))
+            return
+        run = select_review_run(payload, run_id)
+        if run is None:
+            # Two different absences, and the user can act on each: a named run
+            # that is not in this project, or a project with nothing waiting.
+            self._nivo_report(
+                "Mapdex has no run {} in this project.".format(run_id) if run_id
+                else "Nothing in this project is waiting for review."
+            )
+            return
+        locale = QLocale.system().name().split("_")[0]
+        prefix = "" if locale == "en" else "/{}".format(locale)
+        path = review_workspace_path(project_id, run)
+        QDesktopServices.openUrl(QUrl("{}{}{}".format(self.web_base, prefix, path)))
+        self._nivo_report(describe_capability_result("", {
+            "kind": "review_opened",
+            "run_id": str(run.get("id") or ""),
+            "state": run_state(run),
+        }))
+
+    def _nivo_report(self, line):
+        """Put a line from a finished background task into the transcript.
+
+        The turn that started the task already ended, so this also closes the
+        state machine: leaving it in `executing` wedges every later turn.
+        """
+        self._say(line)
+        self._set_status(line)
+        self._nivo_state = transition(self._nivo_state, "done")
+
+    def _add_osm_basemap(self, params):
+        provider = str(params.get("provider") or "osm")
+        if provider != "osm":
+            raise CapabilityError("{} is not a basemap this build can add".format(provider))
+        uri = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmin=0&zmax=19"
+        basemap = QgsRasterLayer(uri, "OpenStreetMap", "wms")
+        if not basemap.isValid():
+            raise CapabilityError("QGIS could not create the OpenStreetMap XYZ layer")
+        QgsProject.instance().addMapLayer(basemap)
+        return {"kind": "basemap_added", "name": basemap.name()}
+
+    def _apply_server_extent(self, params):
+        if not self._zoom_to_server_extent(params):
+            raise CapabilityError("that location could not be placed on the current map")
+        return {"kind": "zoomed_to_extent"}
+
+    def _run_add_features(self, action):
+        return bool(self._add_features(action.get("params") or {}, action.get("id") or ""))
+
+    def _run_create_layer(self, action):
+        return bool(self._create_scratch_layer(action.get("params") or {}))
+
+    def _run_open_processing(self, _action):
+        self.iface.showProcessingAlgorithmDialog("", {})
+        return True
+
+    def _run_next_extent(self, _action):
+        self.iface.mapCanvas().zoomToNextExtent()
+        return True
+
+    def _capability_executor(self):
+        """The executor table, built on first use.
+
+        Built lazily because it binds to the live project, and a plugin that
+        constructs it at load time fails to load at all when anything in that
+        chain raises. The plugin's own handlers are chained in front of the
+        runtime table so both halves answer to one `execute(request)` call.
+        """
+        executor = getattr(self, "_nivo_executor", None)
+        if executor is None:
+            from qgis.core import QgsProject
+
+            runtime = build_executor(QGISRuntime(self.iface, QgsProject.instance(), self._set_status))
+            local = self._plugin_capability_handlers()
+
+            def execute(request):
+                handler = local.get(str(request.get("capability") or ""))
+                if handler is not None:
+                    return handler(dict(request.get("params") or {}))
+                return runtime(request)
+
+            execute.capabilities = frozenset(runtime.capabilities) | frozenset(local)
+            self._nivo_executor = execute
+            executor = execute
+        return executor
+
+    def _run_capability(self, capability_id, params, summary="", headline=None):
+        """Validate a capability request and run it through the executor table.
+
+        Every failure becomes a status message. This runs inside QGIS, where an
+        escaping exception is not a stack trace in a log but a broken host
+        application, which is why the plugin grew an error boundary in the first
+        place. Returns True when the capability actually ran.
+
+        `summary` is the question a confirmation asks; `headline` prefixes the
+        result line and defaults to it. They differ for a server action, whose
+        summary is written BEFORE it runs ("Nivo prepared a QGIS action."):
+        used as the headline, every answer read "Nivo prepared a QGIS action.:
+        24 values - mean 10,416", a promise prefixed to its own proof.
+        """
+        try:
+            request = validate_request(capability_id, params)
+        except CapabilityError as error:
+            return self._capability_refused(error)
+        if request.get("requires_confirmation") and not self._confirm_capability(
+                capability_id, summary, request.get("params")):
+            self._set_status("Nivo did not run {}.".format(summary or capability_id))
+            self._nivo_state = transition(self._nivo_state, "done")
+            return False
+        try:
+            result = self._capability_executor()(request)
+        except CapabilityError as error:
+            return self._capability_refused(error)
+        except RuntimeUnavailable as error:
+            # A missing precondition ("nothing is selected on that layer") is a
+            # refusal the user can act on, not a malfunction.
+            return self._capability_refused(error)
+        except Exception as error:  # noqa: BLE001 - the host must survive anything
+            self._set_status("Nivo failed to run {}: {}".format(
+                capability_id, describe_exception(error)))
+            self._say("Nivo failed to run {}: {}".format(
+                capability_id, describe_exception(error)), severity="blocking")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        if headline is None:
+            headline = summary or capability_id
+        described = self._describe_capability_result(headline, result)
+        # This action is part of the answer already on screen, not a second
+        # message from Nivo. Updating the pending answer also lets a continuation
+        # replace it with the final wording, so one user request produces one
+        # assistant result instead of "prepared" followed by the same result.
+        self._replace_last_assistant_turn(described)
+        self._report_action_result(capability_id, True, summary=described, result=result)
+        self.iface.mapCanvas().refresh()
+        return True
+
+    def _report_action_result(self, capability_id, ok, summary="", error="", result=None):
+        """Record what an action did, for the continuation to report.
+
+        Kept per turn rather than per session: a new question starts a new
+        objective, and carrying the previous one's outcomes into it would tell
+        the server work had just happened that had not.
+        """
+        if not hasattr(self, "_nivo_action_results"):
+            self._nivo_action_results = []
+        self._nivo_action_results.append(action_result(
+            capability_id, ok, summary=summary, error=str(error or ""),
+            result=result if isinstance(result, dict) else None))
+
+    def _capability_refused(self, error):
+        """A refusal is a finished turn, not a wedged one.
+
+        The turn state machine has no transition out of `executing` except done
+        or error, so returning early without one leaves every later turn stuck
+        in `executing`.
+
+        It is SAID, not merely set as a status. The reply was already appended
+        to the transcript before any action ran, and that reply is a claim -
+        "Showing X on the map" - so a refusal that goes only to the status line
+        leaves the claim standing beside a canvas that never moved, and the
+        status line is overwritten by the next layer click anyway. The
+        contradiction has to sit where the claim sits.
+        """
+        self._action_failed("Nivo could not run that: {}".format(error))
+        return False
+
+    def _action_failed(self, text):
+        """Report a failed action where the turn's own claim is, and finish it.
+
+        One helper rather than three call sites, because the three ways an
+        action can fail - refused, unimplemented, or an executor that raised -
+        are the same fact to the person reading: the sentence above this one did
+        not happen.
+        """
+        self._set_status(text)
+        self._say(text, severity="warning")
+        self._nivo_state = transition(self._nivo_state, "done")
+        return False
+
+    @staticmethod
+    def _describe_capability_result(summary, result):
+        """One line for the transcript, stating what the capability measured."""
+        return describe_capability_result(summary, result)
+
+    GEOMETRY_TYPES = ("point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon")
+
+    @guarded
+    def _add_features(self, params, seed=""):
+        """Place real features on a layer, creating one only if needed.
+
+        Asking for points used to resolve to "create an empty layer", which is
+        worse than refusing: the layer appeared, so the request looked handled.
+        """
+        geometry = str(params.get("geometry") or "point").strip().lower()
+        if geometry not in self.GEOMETRY_TYPES:
+            geometry = "point"
+        if not can_place(geometry):
+            # Refused BEFORE a layer exists. Honouring the requested type for the
+            # layer while always building point geometry made QGIS reject every
+            # feature and left an empty polygon layer behind - a request that
+            # looked answered, plus a raw provider error in the message bar.
+            self._say(describe_unplaceable_geometry(geometry))
+            self._set_status("Nivo did not place features.")
+            self._nivo_state = transition(self._nivo_state, "done")
+            return False
+        layer = self._layer_for_features(geometry, params)
+        if layer is None:
+            return False
+        target_crs = layer.crs()
+
+        if str(params.get("area") or "") == "viewport":
+            # The user meant what they can see. The canvas extent is already in
+            # the map CRS, so this needs no geocoding and no guessing.
+            canvas = self.iface.mapCanvas()
+            extent = canvas.extent()
+            positions = scatter_in_rectangle(
+                [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()],
+                params.get("count") or 1,
+                seed,
+            )
+            source_crs = canvas.mapSettings().destinationCrs()
+            where = "the current view"
+        else:
+            plan = plan_points(params, seed)
+            if not plan.get("points"):
+                self._set_status("Nivo had no area to place features in.")
+                return False
+            positions = plan["points"]
+            source_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            where = str(params.get("place") or "")
+
+        transform = None
+        if source_crs.isValid() and target_crs.isValid() and source_crs != target_crs:
+            try:
+                transform = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance())
+            except Exception:
+                self._set_status("Nivo could not place those features in the layer's CRS.")
+                return False
+
+        features = []
+        for x, y in positions:
+            point = QgsPointXY(float(x), float(y))
+            if transform is not None:
+                try:
+                    point = transform.transform(point)
+                except QgsCsException:
+                    continue
+            feature = QgsFeature(layer.fields())
+            feature.setGeometry(QgsGeometry.fromPointXY(point))
+            features.append(feature)
+        if not features:
+            self._set_status("Nivo could not place those features in the layer's CRS.")
+            return False
+
+        ok, _added = layer.dataProvider().addFeatures(features)
+        if not ok:
+            self._set_status("QGIS rejected the new features.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        layer.updateExtents()
+        layer.triggerRepaint()
+        self.iface.setActiveLayer(layer)
+        self._zoom_to_layers([layer])
+        self.iface.mapCanvas().refresh()
+        self._say(describe_placement(len(features), len(positions), where))
+        self._refresh_nivo_context()
+        self._set_status("Nivo added {} feature(s) to '{}'.".format(len(features), layer.name()))
+        return True
+
+    def _layer_for_features(self, geometry, params):
+        """Reuse a compatible editable layer, or make one for the features."""
+        active = self._active_qgis_layer()
+        if isinstance(active, QgsVectorLayer) and active.isValid():
+            # Only an in-memory scratch layer is written to without asking; a
+            # file or database layer is the user's data, not ours to append to.
+            if active.dataProvider().name() == "memory" and self._geometry_matches(active, geometry):
+                return active
+        created = self._create_scratch_layer({
+            "geometry": geometry,
+            "crs": params.get("layer_crs") or "",
+        })
+        if not created:
+            return None
+        return self._active_qgis_layer()
+
+    def _geometry_matches(self, layer, geometry):
+        try:
+            from qgis.core import QgsWkbTypes
+
+            from .qt_compat import enum_member
+
+            # PyQt6 requires the scoped ``GeometryType`` path; PyQt5 accepts
+            # the flat form.
+            point = enum_member(QgsWkbTypes, "GeometryType", "PointGeometry")
+            line = enum_member(QgsWkbTypes, "GeometryType", "LineGeometry")
+            polygon = enum_member(QgsWkbTypes, "GeometryType", "PolygonGeometry")
+            wanted = {
+                "point": point,
+                "multipoint": point,
+                "linestring": line,
+                "multilinestring": line,
+                "polygon": polygon,
+                "multipolygon": polygon,
+            }.get(geometry)
+            return wanted is not None and layer.geometryType() == wanted
+        except Exception:
+            return False
+
+    @guarded
+    def _create_scratch_layer(self, params):
+        """Create a new empty editable layer and make it the active one.
+
+        A scratch (memory) layer is the right default: it appears immediately,
+        needs no path or format decision, and the user can save it wherever they
+        want afterwards. Writing a file without being asked would put data on
+        their disk that they never chose a location for.
+        """
+        geometry = str(params.get("geometry") or "").strip().lower()
+        if geometry not in self.GEOMETRY_TYPES:
+            # The one decision that cannot be defaulted safely: a point layer is
+            # useless to someone who wanted to draw parcels. Ask with a picker,
+            # not a chat message - a question in the transcript has nowhere to
+            # go, because the user's answer starts a fresh turn where "polygon"
+            # is a bare word carrying no intent.
+            geometry = self._ask_geometry_type()
+            if not geometry:
+                self._set_status("Nivo did not create a layer.")
+                self._nivo_state = transition(self._nivo_state, "done")
+                return False
+        crs = str(params.get("crs") or "").strip()
+        if not crs:
+            crs = self.iface.mapCanvas().mapSettings().destinationCrs().authid()
+        name = str(params.get("name") or "").strip()[:120] or self._unique_layer_name(geometry)
+        uri = "{}?crs={}&index=yes".format(geometry, crs or "EPSG:4326")
+        layer = QgsVectorLayer(uri, name, "memory")
+        if not layer.isValid():
+            self._set_status("QGIS could not create that layer.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return False
+        QgsProject.instance().addMapLayer(layer)
+        self.iface.setActiveLayer(layer)
+        self.iface.mapCanvas().refresh()
+        self._say("Created '{}' ({}, {}). It is the active layer - toggle editing to start drawing.".format(
+            name, geometry, crs or "EPSG:4326"))
+        self._refresh_nivo_context()
+        self._set_status("Nivo created the layer '{}'.".format(name))
+        return True
+
+    @guarded
+    def _ask_geometry_type(self):
+        """Offer the geometry choice as a picker; "" when the user cancels."""
+        labels = [label for label, _geometry in GEOMETRY_CHOICES]
+        choice, accepted = QInputDialog.getItem(
+            self.iface.mainWindow(),
+            "New layer",
+            "What kind of layer should Nivo create?",
+            labels,
+            2,      # Polygon: the most common answer when drawing areas
+            False,  # not editable - only the closed set may be chosen
+        )
+        if not accepted:
+            return ""
+        return geometry_from_choice(choice)
+
+    def _unique_layer_name(self, geometry):
+        existing = {layer.name() for layer in QgsProject.instance().mapLayers().values()}
+        base = "New {} layer".format(geometry)
+        if base not in existing:
+            return base
+        for index in range(2, 100):
+            candidate = "{} {}".format(base, index)
+            if candidate not in existing:
+                return candidate
+        return base
+
+    @guarded
+    def _zoom_to_server_extent(self, params):
+        """Move the canvas to a server-supplied extent, converting its CRS.
+
+        The server geocodes in WGS84; this canvas is usually EPSG:3857 or a
+        national grid. Setting those degrees directly is what put "zoom to
+        Istanbul" a few metres from null island instead of on Istanbul.
+        """
+        resolved = resolve_extent(params)
+        if resolved is None:
+            self._set_status("Nivo rejected an invalid map extent.")
+            return False
+        canvas = self.iface.mapCanvas()
+        target = canvas.mapSettings().destinationCrs()
+        source = QgsCoordinateReferenceSystem(resolved["crs"])
+        if not source.isValid():
+            self._set_status("Nivo rejected an extent with an unknown CRS.")
+            return False
+        rectangle = QgsRectangle(*resolved["bbox"])
+        if target.isValid() and source != target:
+            try:
+                rectangle = QgsCoordinateTransform(
+                    source, target, QgsProject.instance()
+                ).transformBoundingBox(rectangle)
+            except QgsCsException:
+                self._set_status("Nivo could not place that location in the current map CRS.")
+                return False
+        if rectangle.isEmpty():
+            self._set_status("Nivo received an empty map extent.")
+            return False
+        canvas.setExtent(rectangle)
+        canvas.refresh()
+        return True
+
+    @guarded
+    def _confirm_nivo_action(self, action):
+        action_id = action.get("id")
+        if not action_id or action_id in self._executed_nivo_actions:
+            self._set_status("Nivo ignored a duplicate or malformed confirmation.")
+            return
+        operation = action.get("params", {}).get("operation")
+        message = "{}\n\nTarget layer: {}\nOperation: {}".format(
+            action.get("summary") or "Nivo prepared a QGIS Processing operation.",
+            action.get("target") or "active layer",
+            operation_label(operation),
+        )
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Confirm Nivo action",
+            message,
+            enum_member(QMessageBox, "StandardButton", "Yes") | enum_member(QMessageBox, "StandardButton", "No"),
+            enum_member(QMessageBox, "StandardButton", "No"),
+        )
+        if answer != enum_member(QMessageBox, "StandardButton", "Yes"):
+            self._set_status("Nivo action cancelled.")
+            self._nivo_state = transition(self._nivo_state, "done")
+            return
+        self._executed_nivo_actions.add(action_id)
+        self._nivo_state = transition(self._nivo_state, "apply")
+        self._run_processing_operation(action)
+
+    @guarded
+    def _run_processing_operation(self, action):
+        target = action.get("target")
+        layer = self._nivo_layer_for_action(target)
+        if layer is None or not layer.isValid():
+            self._set_status("Nivo did not run Processing because the target layer is no longer available.")
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        operation = action.get("params", {}).get("operation")
+        _algorithm_id, algorithm = resolve_processing_algorithm(QgsApplication.processingRegistry(), operation)
+        if algorithm is None:
+            # Names the missing provider and the route round it. "This
+            # installation has no algorithm" named nothing and offered no next
+            # move, which is the same failure as an unexplained error code. The
+            # route is ours to name: the vendored package is vendor-neutral.
+            self._set_status(describe_missing_algorithm(operation, service_name="Mapdex"))
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        source_name = layer.name() if hasattr(layer, "name") else ""
+        refusal = self._processing_refusal(operation, layer)
+        if refusal:
+            self._action_failed("Nivo could not run that: {}".format(refusal))
+            return
+        count = layer.featureCount() if hasattr(layer, "featureCount") else None
+        if count == 0:
+            # Only an exact zero counts as empty: several providers answer -1 for
+            # "unknown". Running anyway SUCCEEDS and writes an empty layer, which
+            # is how "buffer yap" ended with a new layer and no buffer in it.
+            self._say(describe_empty_input(operation, source_name))
+            self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
+            self._nivo_state = transition(self._nivo_state, "done")
+            return
+        # A length stated in metres is applied in metres (processing_units).
+        plan = self._metric_plan(operation, layer, action.get("params", {}))
+        if plan["strategy"] == "refuse":
+            self._action_failed("Nivo could not run that: {}".format(plan["reason"]))
+            return
+        # The second layer is resolved against this project and handed to QGIS
+        # as a layer object, never as text. Processing reads a string layer
+        # parameter as an id, then a name, then a data source it OPENS, so a
+        # request naming "CSV:/home/u/.pgpass" or "/vsicurl/https://host/?d=..."
+        # read a local file or made an outbound request - and the named
+        # two-layer operations ask no question first.
+
+        def project_layer(reference):
+            found = QgsProject.instance().mapLayer(reference)
+            return found if found is not None and found.isValid() else None
+
+        resolved_params = resolve_target_layer(plan["params"], project_layer)
+        if resolved_params is None:
+            self._action_failed(
+                "Nivo could not run that: the second layer it names is not a layer in this project")
+            return
+        plan = dict(plan, params=resolved_params)
+        # First, before any algorithm writes a layer: a JSON field stops every
+        # one of them, the reprojection below included.
+        working, textual = self._textual_copy(layer)
+        if working is None:
+            self._action_failed(
+                "Nivo could not run that: {} hold lists QGIS cannot copy into a new layer, "
+                "and they could not be converted to text".format(
+                    ", ".join("'{}'".format(name) for name in textual)))
+            return
+        restore_crs = None
+        if plan["strategy"] == "reproject":
+            working = self._reprojected_copy(working, plan["crs"], name=source_name)
+            if working is None:
+                self._action_failed(
+                    "Nivo could not run that: the {} is measured in metres and this layer is "
+                    "in degrees, and it could not be reprojected to {} to measure it".format(
+                        operation_label(operation), plan["crs"]))
+                return
+            restore_crs = layer.crs()
+        try:
+            parameters = build_algorithm_parameters(algorithm, operation, working, plan["params"])
+            parameters.update({
+                key: value for key, value in input_parameter_aliases(
+                    [definition.name() for definition in algorithm.parameterDefinitions()],
+                    working).items()
+                if key not in parameters
+            })
+        except Exception as exc:
+            self._show_error("Nivo Processing validation failed", exc)
+            self._nivo_state = transition(self._nivo_state, "error")
+            return
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        feedback = QgsProcessingFeedback()
+        task = QgsProcessingAlgRunnerTask(algorithm, parameters, context, feedback)
+        task._context = context
+        task._feedback = feedback
+        task._algorithm = algorithm
+        self._tasks.append(task)
+
+        @guarded
+        def completed(successful, results):
+            if task in self._tasks:
+                self._tasks.remove(task)
+            if self.dock is None:
+                return
+            if not successful:
+                # Said where the request is, not only on the status line. The
+                # status line is rewritten by the next layer click, and the
+                # transcript still shows the confirmation the user accepted, so a
+                # failure reported there alone reads as a run that is still going.
+                log = feedback.textLog() if hasattr(feedback, "textLog") else ""
+                self._say(describe_processing_failure(operation_label(operation), source_name, log),
+                          severity="warning")
+                self._set_status("Nivo Processing task failed or was cancelled.")
+                self._nivo_state = transition(self._nivo_state, "error")
+                return
+            output_layer = None
+            if isinstance(results, dict):
+                # From the shared order rather than a copy of it: this list and
+                # the one the parameters are built from have to name the same
+                # keys, or an output the algorithm was asked to write is never
+                # looked for.
+                for key in PROCESSING_OUTPUT_ORDER:
+                    if key in results:
+                        val = results[key]
+                        if hasattr(val, "isValid") and val.isValid():
+                            output_layer = val
+                            break
+                        if isinstance(val, str) and hasattr(context, "takeResultLayer"):
+                            try:
+                                output_layer = context.takeResultLayer(val)
+                                if output_layer is not None and output_layer.isValid():
+                                    break
+                            except Exception as exc:  # noqa: BLE001 - Processing may raise anything
+                                # The second route below still resolves most
+                                # outputs. Recorded because the visible symptom
+                                # of losing both is "the algorithm ran and
+                                # nothing appeared", with no other trace.
+                                log_debug("taking the Processing result layer for {}".format(key), exc)
+                        if isinstance(val, str):
+                            try:
+                                from qgis.core import QgsProcessingUtils
+                                output_layer = QgsProcessingUtils.mapLayerFromString(val, context, True)
+                                if output_layer is not None and output_layer.isValid():
+                                    break
+                            except Exception as exc:  # noqa: BLE001 - Processing may raise anything
+                                log_debug("resolving the Processing output {}".format(key), exc)
+            output_name = ""
+            produced = None
+            if restore_crs is not None and output_layer is not None and output_layer.isValid():
+                # The work ran on a metric copy; the result goes back into the
+                # coordinate system the user's layer is in.
+                returned = self._reprojected_copy(output_layer, restore_crs, name=output_layer.name())
+                if returned is not None:
+                    output_layer = returned
+            if output_layer is not None and output_layer.isValid():
+                QgsProject.instance().addMapLayer(output_layer)
+                self.iface.setActiveLayer(output_layer)
+                output_name = output_layer.name()
+                counter = getattr(output_layer, "featureCount", None)
+                if counter is not None:
+                    try:
+                        produced = int(counter())
+                    except Exception:
+                        produced = None
+                    if produced is not None and produced < 0:
+                        produced = None
+            if operation == "validate":
+                # A check, not a transformation: an empty result is the good
+                # answer, and an empty "invalid geometries" layer on the map
+                # would say nothing the sentence does not.
+                if produced == 0 and output_layer is not None:
+                    QgsProject.instance().removeMapLayer(output_layer.id())
+                    self.iface.setActiveLayer(layer)
+                self._say(describe_validation_outcome(source_name, produced))
+                self.iface.mapCanvas().refresh()
+                self._nivo_state = transition(self._nivo_state, "done")
+                self._set_status("Nivo finished the {}.".format(operation_label(operation)))
+                return
+            # An algorithm that finished is not the same as a result the user can
+            # see: "completed" over an empty or missing output is a claim the map
+            # contradicts. The algorithm id stays out of this line entirely.
+            outcome = describe_processing_outcome(operation, output_name, produced, source_name)
+            if output_name and produced != 0:
+                outcome += describe_textual_fields(textual)
+            self._say(outcome)
+            self.iface.mapCanvas().refresh()
+            self._nivo_state = transition(self._nivo_state, "done")
+            if output_name and produced != 0:
+                self._set_status("Nivo finished the {}.".format(operation_label(operation)))
+            else:
+                self._set_status("The {} finished without producing anything.".format(
+                    operation_label(operation)))
+
+        task.executed.connect(completed)
+        # Before the task is handed over, not after: a task that finishes
+        # before control returns here would otherwise have its outcome
+        # overwritten by "is running".
+        self._set_status("Nivo is running the {} on '{}'.".format(
+            operation_label(operation), source_name))
+        QgsApplication.taskManager().addTask(task)
+
+    @guarded
+    def _workflow_changed(self, _index):
+        """Keep the sheets and re-check them against the new workflow.
+
+        The combo this replaces cleared the selection on every change, which
+        was survivable when a selection was one file and is not when it is
+        twelve: someone comparing two workflows over the same archive would
+        lose the list for looking. `_render_sources` re-runs the compatibility
+        check, so a list that no longer suits says so and Start stays refused.
+        """
+        kind = self.workflow_box.currentData()
+        self._render_sources()
+        layer_kind = "vector" if kind == BatchKind.VALIDATE_DELIVER else "raster"
+        if self.selected_sources:
+            self._set_status(
+                task_sources.summary(self.selected_sources, str(kind or ""))["error"]
+                or task_sources.ready_notice(self.selected_sources, self._workflow_title())
+            )
+            return
+        self._set_status(
+            "Drop {} files here, choose them, or add open QGIS layers - "
+            "several become one batch.".format(layer_kind)
+        )
+
+    @guarded
+    def connect(self, *args):
+        if self._connect_task is not None:
+            self._connect_cancel.set()
+            self._set_status("Cancelling the Mapdex connection…")
+            self._refresh_ui()
+            return
         if not self._apply_connection_settings_from_fields():
             return
-        self._set_status("Starting browser connection via {url}…".format(url=self.api.base_url))
-        self._task("Mapdex device authorization", self.api.authorize_device, self._authorization_created)
+        # One status line before anything slow, then everything on the worker.
+        # The connector flow is preferred and the device grant is the fallback,
+        # but WHICH one runs takes three network round trips to decide, so that
+        # decision belongs on the worker too: made here, pressing Connect sat
+        # silent for seconds and read as a dead button.
+        self._connect_cancel.clear()
+        self._set_status("Connecting to {}…".format(self.api.base_url))
+        self._connect_task = self._task(
+            "Connect Mapdex", self._connect_work, self._connect_finished
+        )
+        self._refresh_ui()
 
-    def disconnect(self):
+    @guarded
+    def disconnect(self, *args):
         self.poll_timer.stop()
         self.progress_timer.stop()
-        self.api.token = ""
+        # Disconnecting while the browser approval is still outstanding leaves a
+        # pending authorization on the server that this plugin has stopped
+        # polling for. Cancel it, so a code the user abandoned cannot be
+        # approved afterwards by anyone who saw it on screen.
+        #
+        # Best effort: the session is ending either way, and a failure here must
+        # not leave the plugin half-disconnected with a token it has stopped
+        # using. Once a token has been issued the authorization is already
+        # `consumed` and there is nothing left to cancel, so this only matters
+        # for the pending case -- which is exactly when `device_code` is set.
+        if self.device_code:
+            try:
+                self.api.revoke_device(self.device_code)
+            except Exception as exc:  # noqa: BLE001 - disconnect must always complete
+                # Recorded rather than swallowed: the disconnect proceeds either
+                # way, but a code that could not be cancelled is worth knowing
+                # about, because it stays approvable until it expires.
+                QgsMessageLog.logMessage(
+                    "Could not cancel the pending device authorization: {}".format(exc),
+                    "Mapdex",
+                    enum_member(Qgis, "MessageLevel", "Warning"),
+                )
+        # Disconnecting clears the session, it does not assign a password.
+        self.api.token = ""  # nosec B105
         self.device_code = ""
         self.batch_id = ""
         self.project_id = ""
@@ -673,11 +5511,275 @@ class MapdexPlugin:
             self.token_store.clear()
         else:
             settings.remove(LEGACY_TOKEN_SETTING)
-        settings.remove("mapdex/project_id")
+        # Everything that belonged to the session, not only its token. The
+        # recent-task list used to survive, so the Jobs page kept offering
+        # Resume on batches the next token cannot read - and after connecting a
+        # different account, on another workspace's tasks. The provider key is
+        # deliberately not in this list: it is the user's own credential for
+        # their own account elsewhere.
+        for key in panel_state.SESSION_SCOPED_SETTINGS:
+            settings.remove(key)
+        # The conversation belonged to the session that just ended. Keeping its
+        # id would send the next connection's first question into a thread the
+        # new token may not be able to see.
+        self._adopt_conversation("", "")
+        self._nivo_turns = []
+        self._render_nivo_turns()
         self.project_box.clear()
-        self._set_status("Disconnected.")
+        # The Task page's own selections are session state too: a project's
+        # file left selected there reads as ready to submit when it is not.
+        self.selected_sources = []
+        self._render_sources()
+        self._load_recent_tasks()
+        # Reported before the refresh, so the panel and the sentence agree.
+        # "Disconnected." full stop, above an assistant that keeps answering
+        # from the user's own provider, is what read as a defect.
+        self._set_status(panel_state.disconnect_notice(self.assistant_runtime()))
         self._refresh_ui()
 
+    # ── Connecting as a connector ────────────────────────────────────────────
+    #
+    # QGIS used to authenticate with a device grant and receive a full Mapdex
+    # session token: it reached every route a signed-in person reaches, and it
+    # appeared on no screen the person could revoke it from. Now it runs the
+    # same authorization-code flow with PKCE that every other connector runs,
+    # and the token that comes back is confined to the workspace surface and
+    # listed under Settings -> Connectors beside the assistants.
+    #
+    # The device grant stays as a fallback for a machine that cannot receive a
+    # loopback redirect. That is honest degradation rather than a second
+    # product: it is offered only when the first flow genuinely cannot run, and
+    # the person is told which one they are on.
+
+    def _connect_work(self):
+        """The whole connection attempt, on the worker thread.
+
+        Every part of this reaches the network - discovery, the resource
+        document, the pre-flight, then the browser round trip - and it used to
+        run in the click handler. Three round trips before the first status
+        line meant pressing Connect did nothing visible for several seconds,
+        which is exactly how it was reported: it does not work.
+
+        The route is decided HERE rather than by the caller, because deciding
+        it is itself the slow part. The caller gets one answer: tokens, or a
+        reason to fall back to the device grant.
+        """
+        deadline = time.monotonic() + CONNECT_TOTAL_TIMEOUT
+        available, why = connector_auth.loopback_available()
+        if not available or connector_auth.is_headless():
+            return {"fallback": why or "this machine has no browser"}
+        try:
+            endpoints = connector_auth.discover_endpoints(
+                self.api.base_url,
+                timeout=self._connect_request_timeout(deadline),
+            )
+        except connector_auth.ConnectorAuthError as failure:
+            # No authorization server at this address at all. An older or
+            # self-hosted Mapdex, which the device grant still serves.
+            return {"fallback": str(failure)}
+
+        resource = self._connector_resource(self._connect_request_timeout(deadline))
+        verifier = connector_auth.make_verifier()
+        receiver = connector_auth.LoopbackReceiver()
+        url = connector_auth.build_authorization_url(
+            endpoints["authorize"],
+            receiver.redirect_uri,
+            receiver.state,
+            connector_auth.challenge_for(verifier),
+            resource,
+        )
+        # Asked BEFORE a browser opens. A plugin is distributed and a server is
+        # deployed, so the two are routinely different ages: a Mapdex that
+        # predates this work has an authorization server and no registration
+        # for this client, and without the check the person is sent to an error
+        # page and then waits five minutes for a redirect that never comes.
+        if not connector_auth.server_knows_this_client(
+            url, timeout=self._connect_request_timeout(deadline)
+        ):
+            receiver.close()
+            return {"fallback": "this Mapdex does not offer connector sign-in yet"}
+
+        receiver.start()
+        try:
+            # Through the main loop: QDesktopServices touches the GUI, and QGIS
+            # is not amused by that from a worker thread.
+            self._connector_ui.open_url.emit(url)
+            self._announce_from_worker(
+                "Approve the connection in your browser, then return to QGIS."
+            )
+            code = receiver.wait(
+                timeout=self._connect_remaining(deadline),
+                cancel_event=self._connect_cancel,
+            )
+            return {"tokens": connector_auth.exchange_code(
+                endpoints["token"], code, verifier, receiver.redirect_uri, resource,
+                timeout=self._connect_request_timeout(deadline),
+            )}
+        finally:
+            # Always. A listener left bound outlives the attempt, and the next
+            # one cannot explain why its port is taken.
+            receiver.close()
+
+    def _announce_from_worker(self, message: str):
+        """Set the status line from the worker thread, through the main loop."""
+        self._connector_ui.show_status.emit(message)
+
+    def _connect_remaining(self, deadline: float) -> float:
+        """Return this attempt's remaining budget, or stop it consistently."""
+        if self._connect_cancel.is_set():
+            raise connector_auth.ConnectorAuthError(
+                "The Mapdex connection was cancelled.", "cancelled"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise connector_auth.ConnectorAuthError(
+                "Mapdex did not connect within two minutes. Try connecting again.",
+                "timeout",
+            )
+        return remaining
+
+    def _connect_request_timeout(self, deadline: float) -> float:
+        """Bound each socket wait without exceeding the total attempt budget."""
+        return min(CONNECT_HTTP_TIMEOUT, self._connect_remaining(deadline))
+
+    @guarded
+    def _connect_finished(self, exception, outcome):
+        """Either a connection, or the reason to try the other route."""
+        self._connect_task = None
+        if exception:
+            if (
+                isinstance(exception, connector_auth.ConnectorAuthError)
+                and exception.code == "cancelled"
+            ):
+                self._set_status("Mapdex connection cancelled.")
+                return
+            self._show_error("Mapdex connection failed", exception)
+            return
+        outcome = outcome or {}
+        if outcome.get("tokens"):
+            self._connector_authorized(None, outcome["tokens"])
+            return
+        # Naming the reason matters: "connecting with a code" alone reads as an
+        # arbitrary second flow, and the person cannot tell whether something is
+        # wrong with their machine or with Mapdex.
+        self._set_status(
+            "Connecting with a code, because this machine cannot receive the "
+            "browser's reply directly ({}).".format(
+                outcome.get("fallback") or "no loopback listener"
+            )
+        )
+        self._connect_cancel.clear()
+        self._connect_task = self._task(
+            "Mapdex device authorization",
+            self._device_authorization_work,
+            self._device_authorization_finished,
+        )
+        self._refresh_ui()
+
+    def _device_authorization_work(self):
+        # The compatibility route is still a connection attempt: it gets the
+        # same short network bound and honors a cancellation requested while
+        # urllib was waiting for the socket.
+        self._connect_remaining(time.monotonic() + CONNECT_HTTP_TIMEOUT)
+        payload = self.api.authorize_device(timeout=CONNECT_HTTP_TIMEOUT)
+        self._connect_remaining(time.monotonic() + CONNECT_HTTP_TIMEOUT)
+        return payload
+
+    @guarded
+    def _device_authorization_finished(self, exception, outcome):
+        self._connect_task = None
+        if (
+            isinstance(exception, connector_auth.ConnectorAuthError)
+            and exception.code == "cancelled"
+        ):
+            self._set_status("Mapdex connection cancelled.")
+            return
+        self._authorization_created(exception, outcome)
+
+    def _connector_resource(self, timeout: float = 180.0) -> str:
+        """The resource indicator (RFC 8707): which Mapdex this token is for.
+
+        The server refuses a token whose audience does not name it, so omitting
+        this produces a token that authenticates nowhere. It is read from the
+        published metadata rather than assembled, for the same reason the
+        endpoints are.
+        """
+        try:
+            document = self.api.download_bytes(
+                "/.well-known/oauth-protected-resource", timeout=timeout
+            )
+            return str(json.loads(document.decode("utf-8")).get("resource") or "")
+        except Exception:  # noqa: BLE001 - the server may not publish one
+            return ""
+
+    @guarded
+    def _connector_authorized(self, exception, payload):
+        if exception:
+            self._show_error("Mapdex connection failed", exception)
+            return
+        payload = payload or {}
+        token = str(payload.get("access_token") or "")
+        if not token:
+            self._show_error("Mapdex connection failed", RuntimeError("No access token returned"))
+            return
+        self._adopt_connector_session(payload)
+        self._set_status(
+            "Connected to Mapdex."
+            if self._connection_persisted
+            else "Connected for this QGIS session."
+        )
+        self._refresh_ui()
+        self._load_projects()
+
+    def _adopt_connector_session(self, payload: dict) -> None:
+        """Take a token response and make it the live session.
+
+        Stored as one unit. The server ROTATES refresh tokens - the one that
+        comes back replaces the one that was sent, and re-presenting the old one
+        revokes the whole chain as a theft signal - so writing the access token
+        without the refresh token would end the connection at the next renewal.
+        """
+        self.api.token = str(payload.get("access_token") or "")
+        self._refresh_token = str(payload.get("refresh_token") or self._refresh_token)
+        self._token_expires_at = connector_auth.expiry_from(payload, time.time())
+        self._connection_kind = "connector"
+        self._connection_persisted = bool(
+            self.token_store
+            and self.token_store.save_session(
+                self.api.token,
+                self._refresh_token,
+                self._token_expires_at,
+            )
+        )
+
+    def _renew_connector_token(self) -> str:
+        """Trade the refresh token for a new access token, or give up cleanly.
+
+        Called by the API client when a request is refused, and by nothing else.
+        Returning "" means the original refusal reaches the person, which is the
+        correct outcome for a connection that was disconnected in the browser:
+        there is nothing to renew and they need to connect again.
+        """
+        if not self._refresh_token:
+            return ""
+        try:
+            endpoints = connector_auth.discover_endpoints(self.api.base_url)
+            payload = connector_auth.refresh_tokens(
+                endpoints["token"], self._refresh_token, self._connector_resource()
+            )
+        except connector_auth.ConnectorAuthError as failure:
+            # `invalid_grant` is the server saying this grant is finished -
+            # disconnected, revoked, or a rotated token presented twice. Holding
+            # on to it would mean retrying a credential that can never work, so
+            # it is dropped and the person is asked to connect again.
+            if failure.code == "invalid_grant":
+                self._refresh_token = str()
+                self._connection_kind = "device"
+            return ""
+        self._adopt_connector_session(payload)
+        return self.api.token
+
+    @guarded
     def _authorization_created(self, exception, response):
         if exception:
             self._show_error("Mapdex connection failed", exception)
@@ -698,6 +5800,7 @@ class MapdexPlugin:
         interval = max(5, int(response.get("interval") or 5))
         self.poll_timer.start(interval * 1000)
 
+    @guarded
     def _poll_token(self):
         if not self.device_code:
             return
@@ -727,22 +5830,26 @@ class MapdexPlugin:
         self.api.token = token
         self.project_id = str((response or {}).get("project_id") or self.project_id or "")
         settings = QSettings()
-        persisted = self.token_store is not None and self.token_store.save(self.api.token)
+        persisted = bool(
+            self.token_store and self.token_store.save(self.api.token)
+        )
         if self.project_id:
             settings.setValue("mapdex/project_id", self.project_id)
         if persisted:
             self._set_status("Connected securely to Mapdex.")
         else:
-            self._set_status(
-                "Connected for this QGIS session. Unlock the QGIS Authentication Database "
-                "to keep the connection after restart."
-            )
+            self._set_status("Connected for this QGIS session.")
         self._refresh_ui()
         self._load_projects()
 
     def _load_projects(self):
+        # The balance is read on the same hook as the projects, because both
+        # are "we are connected, load the workspace" and a third call site is
+        # how a new connection path comes to skip one of them.
+        self._load_balance()
         self._task("Load Mapdex projects", self.api.projects, self._projects_loaded)
 
+    @guarded
     def _projects_loaded(self, exception, projects):
         if exception:
             self._show_error("Could not load projects", exception)
@@ -761,14 +5868,12 @@ class MapdexPlugin:
             if index >= 0:
                 self.project_box.setCurrentIndex(index)
         if self.project_box.count() == 0:
-            self._set_status(
-                "Connected, but no projects were returned. "
-                "If the API requires admin scope for /v1/projects, use the project_id from the token."
-            )
+            self._set_status("Connected, but this workspace has no available projects.")
         else:
             self._set_status("Connected. Choose a project and send work.")
 
-    def run_input(self):
+    @guarded
+    def run_input(self, *args):
         project_id = self._active_project_id()
         if not project_id:
             QMessageBox.information(
@@ -777,87 +5882,142 @@ class MapdexPlugin:
                 "Select a Mapdex project first.",
             )
             return
-        mode = self.input_box.currentData()
-        if not mode:
+        if not self.selected_sources:
             QMessageBox.information(
-                self.iface.mainWindow(), "Mapdex", "Choose a source file first."
+                self.iface.mainWindow(),
+                "Mapdex",
+                "Add at least one source: drop files here, choose them, or add "
+                "open QGIS layers.",
             )
-            return
-        temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
-        paths = []
-        try:
-            if mode == "file":
-                if not self.selected_paths:
-                    self._choose_source(mode)
-                if not self.selected_paths:
-                    return
-                paths = list(self.selected_paths)
-            else:
-                layer = self.iface.activeLayer()
-                if layer is None or not layer.isValid():
-                    QMessageBox.information(
-                        self.iface.mainWindow(),
-                        "Mapdex",
-                        "Select a valid layer in the QGIS Layers panel first.",
-                    )
-                    return
-                kind = self.workflow_box.currentData()
-                if isinstance(layer, QgsVectorLayer):
-                    if kind != BatchKind.VALIDATE_DELIVER:
-                        raise RuntimeError(
-                            "This workflow needs a raster image. Select an open raster layer "
-                            "or choose an image file."
-                        )
-                    path = os.path.join(temp_dir, "active-layer.gpkg")
-                    options = QgsVectorFileWriter.SaveVectorOptions()
-                    options.driverName = "GPKG"
-                    options.layerName = "active_layer"
-                    result = QgsVectorFileWriter.writeAsVectorFormatV3(
-                        layer, path, QgsProject.instance().transformContext(), options
-                    )
-                    if result[0] != enum_member(QgsVectorFileWriter, "WriterError", "NoError"):
-                        raise RuntimeError("Could not export the active layer to GeoPackage.")
-                elif isinstance(layer, QgsRasterLayer):
-                    if kind == BatchKind.VALIDATE_DELIVER:
-                        raise RuntimeError(
-                            "Validate & deliver needs a vector layer. Select an open vector layer."
-                        )
-                    source = str(layer.source() or "").split("|", 1)[0]
-                    if source.startswith("file:"):
-                        source = QUrl(source).toLocalFile()
-                    path = os.path.normpath(source)
-                    if not os.path.isfile(path):
-                        raise RuntimeError(
-                            "The active raster is remote or has no local source file. "
-                            "Save it locally first, then choose that file."
-                        )
-                else:
-                    raise RuntimeError("The active QGIS layer type is not supported.")
-                paths = [path]
-        except Exception as exc:  # noqa: BLE001
-            self._show_error("Could not prepare input", exc)
             return
 
         kind = self.workflow_box.currentData()
-        report = inspect_paths(paths, str(kind or ""))
+        # Checked before anything is exported or uploaded. The list already
+        # shows this verdict, but a stale panel and a submit are two different
+        # moments and only one of them spends the user's credits.
+        report = task_sources.summary(self.selected_sources, str(kind or ""))
         self.source_summary.setText(report["summary"])
         if not report["valid"]:
-            QMessageBox.warning(self.iface.mainWindow(), "Source is not compatible", report["error"])
+            QMessageBox.warning(
+                self.iface.mainWindow(), "Source is not compatible", report["error"]
+            )
             return
+
+        # Money, before a single byte moves. Every sheet reserves its estimate
+        # as its own run starts, so a list the balance cannot cover does not
+        # fail cleanly - it runs until it stops, halfway through an archive the
+        # customer has already partly paid for. Blocking it here is the whole
+        # point; the modal is what makes the block actionable rather than a
+        # Start control that mysteriously refuses to move.
+        #
+        # Re-checked at submit even though the panel already shows it: a
+        # balance read three minutes ago and a press are two different moments,
+        # and another run in another window may have spent it in between.
+        notice = task_price.balance_refusal(
+            self._balance, self._batch_total_cents(), len(self.selected_sources)
+        )
+        if notice:
+            self._render_price()
+            self._set_status(notice)
+            self._show_balance_dialog(notice)
+            return
+
+        temp_dir = tempfile.mkdtemp(prefix="mapdex-qgis-")
+        try:
+            paths, names = self._materialise_sources(temp_dir)
+        except Exception as exc:  # noqa: BLE001
+            self._show_error("Could not prepare input", exc)
+            return
+        if not paths:
+            return
+
         self.imported_layer_ids.clear()
         self._announced_state = ""
         self._pending_is_batch = len(paths) > 1
         self._set_status("Uploading to Mapdex…")
         self.batch_id = "uploading"
-        self._last_batch = {"status": "created", "counts": {"total": 1}}
+        self._last_batch = {"status": "created", "counts": {"total": len(paths)}}
         self._refresh_ui()
+        options = self.task_options()
         self._task(
-            "Send layer to Mapdex",
-            lambda: self._upload_and_run(paths, project_id, kind),
+            "Send to Mapdex",
+            lambda: self._upload_and_run(
+                paths, project_id, kind, names=names, options=options
+            ),
             self._run_started,
         )
 
-    def _upload_and_run(self, paths, project_id, kind):
+    def _remembered_source_label(self):
+        """What to call this task in the Recent list.
+
+        One sheet is named; several are counted, because a batch listed under
+        the name of whichever file happened to be first is a batch nobody can
+        find again.
+        """
+        if not self.selected_sources:
+            return "QGIS source"
+        if len(self.selected_sources) == 1:
+            return self.selected_sources[0].label
+        return "{} sheets".format(len(self.selected_sources))
+
+    def _materialise_sources(self, temp_dir):
+        """Turn the chosen sheets into local files to upload, in list order.
+
+        A file is already one. A raster layer is the file it was loaded from -
+        never a re-render, which would upload a resampled copy of the sheet the
+        user is looking at. A vector layer has no single file we may upload, so
+        it is exported to GeoPackage here, one file each: the previous code
+        wrote every layer to `active-layer.gpkg`, which was correct while only
+        one layer could ever be sent and silently overwrites at two.
+
+        Returns (paths, names) paired by position. The name is the one the user
+        chose - a file's own basename or the layer's name in QGIS - because the
+        server answers with ids, and a batch item reading "Item 3" for a sheet
+        somebody picked by name is one they cannot match to their own work.
+        """
+        paths = []
+        names = []
+        for index, source in enumerate(self.selected_sources):
+            if source.kind == task_sources.KIND_FILE:
+                paths.append(source.path or source.key)
+                names.append(source.label)
+                continue
+            layer = QgsProject.instance().mapLayer(source.key)
+            if layer is None or not layer.isValid():
+                raise RuntimeError(
+                    "The layer '{}' is no longer open in QGIS. Remove it from "
+                    "the list or load it again.".format(source.label)
+                )
+            if isinstance(layer, QgsRasterLayer):
+                path = self._local_raster_path(layer)
+                if not path:
+                    raise RuntimeError(
+                        "'{}' is a remote raster with no local file. Save it "
+                        "locally first, then add that file.".format(source.label)
+                    )
+            elif isinstance(layer, QgsVectorLayer):
+                # One file per layer. The index keeps two layers with the same
+                # name from overwriting each other in the sandbox.
+                path = os.path.join(temp_dir, "layer-{}.gpkg".format(index))
+                options = QgsVectorFileWriter.SaveVectorOptions()
+                options.driverName = "GPKG"
+                options.layerName = "layer"
+                result = QgsVectorFileWriter.writeAsVectorFormatV3(
+                    layer, path, QgsProject.instance().transformContext(), options
+                )
+                if result[0] != enum_member(QgsVectorFileWriter, "WriterError", "NoError"):
+                    raise RuntimeError(
+                        "Could not export '{}' to GeoPackage.".format(source.label)
+                    )
+            else:
+                raise RuntimeError(
+                    "'{}' is a layer type Mapdex cannot send.".format(source.label)
+                )
+            paths.append(path)
+            names.append(source.label)
+        return paths, names
+
+    def _upload_and_run(self, paths, project_id, kind, names=None, options=None):
         file_ids = []
         for path in paths:
             uploaded = self.api.upload_file(path, project_id)
@@ -865,17 +6025,38 @@ class MapdexPlugin:
             if not file_id:
                 raise RuntimeError("Upload succeeded but no file id was returned.")
             file_ids.append(file_id)
-        return {"batch": self.api.start_batch(project_id, file_ids, kind), "file_ids": file_ids}
+        return {
+            "batch": self.api.start_batch(project_id, file_ids, kind, options=options),
+            "file_ids": file_ids,
+            # Paired by position with file_ids, which is the only place the two
+            # are ever together: the server never learns the local path, and a
+            # layer never had one to learn.
+            "file_names": list(names) if names else [os.path.basename(path) for path in paths],
+        }
 
+    @guarded
     def _run_started(self, exception, response):
         if exception:
             self.batch_id = ""
             self._last_batch = None
+            # The server refusing for money is the one failure here with a
+            # route out, and it reaches this branch when our own check could
+            # not see it: an unread balance, a deployment we could not measure,
+            # or a run in another window that spent it since. Branching on the
+            # canonical code, never on the message - the message is human copy
+            # and matching it would be a keyword list in disguise.
+            if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                self._load_balance()
+                self._refresh_ui()
+                self._set_status(str(exception))
+                self._show_balance_dialog(str(exception))
+                return
             self._show_error("Send to Mapdex failed", exception)
             return
         payload = response or {}
         batch = payload.get("batch") if isinstance(payload.get("batch"), dict) else payload
         file_ids = payload.get("file_ids") or []
+        self._batch_file_names = dict(zip(file_ids, payload.get("file_names") or []))
         self.batch_id = (batch or {}).get("id") or ""
         if not self.batch_id:
             self._show_error("Send to Mapdex failed", RuntimeError("No batch id returned"))
@@ -885,7 +6066,7 @@ class MapdexPlugin:
             self.batch_id,
             self.project_id,
             str(self.workflow_box.currentData() or ""),
-            self._source_label or "QGIS source",
+            self._remembered_source_label(),
             file_ids[0] if file_ids else "",
         )
         QSettings().setValue("mapdex/project_id", self.project_id)
@@ -895,6 +6076,153 @@ class MapdexPlugin:
         self._refresh_ui()
         self.progress_timer.start(3000)
 
+    @guarded
+    def _offer_plan_run(self, response):
+        """Ask whether to run the plan this turn proposed, and then run it.
+
+        The desktop could not do this at all. A compose turn needing a Run came
+        back as a description of the work with no way to start it, so a
+        traverse, a resection, a geoid height or validating a layer was
+        understood, planned, and then sat in the panel. See the `run a server
+        plan` row in the capability matrix.
+
+        Nothing here reads the plan. It travels to the server exactly as it
+        arrived, with the hash that proves it: a client that rebuilds a plan
+        from tool names runs something nobody approved.
+        """
+        offer = plan_offer(response)
+        if offer is None:
+            return
+        if self.plan_run_id:
+            # One plan at a time. Starting a second while the first is running
+            # spends credits on work whose result the panel cannot attribute.
+            self._say("There is already a plan running. I will offer this one when it finishes.")
+            return
+        try:
+            project_id = self._require_mapdex_session()
+        except CapabilityError as error:
+            self._say(str(error))
+            return
+
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(), "Run this in Mapdex?",
+            offer_prompt(offer), yes | no, no,
+        )
+        if answer != yes:
+            self._say("Not run. The plan is still here if you change your mind.")
+            return
+
+        self._nivo_state = transition(self._nivo_state, "action")
+        text = str((response or {}).get("text") or "")
+        plan, plan_hash = offer["plan"], offer["plan_hash"]
+        self._set_status("Running in Mapdex…")
+        self._task(
+            "Run Mapdex plan",
+            lambda: self.api.create_run(project_id, text, plan, plan_hash),
+            self._plan_run_created,
+        )
+
+    @guarded
+    def _plan_run_created(self, exception, payload):
+        # The request has been made, so the turn is executing whatever the
+        # answer is. The closed state table has no edge from `action_ready` to
+        # `error`, so reporting a failure without this step leaves the turn
+        # sitting in `action_ready` while the panel says the run failed.
+        self._nivo_state = transition(self._nivo_state, "execute")
+        if exception is not None:
+            self._nivo_state = transition(self._nivo_state, "error")
+            self._say("Mapdex could not start that run: {}".format(describe_exception(exception)))
+            self._set_status("The run did not start")
+            return
+        run_id = str((payload or {}).get("id") or "")
+        if not run_id:
+            # A created run with no id cannot be followed, and reporting it as
+            # started would leave the user watching a run nobody can find.
+            self._nivo_state = transition(self._nivo_state, "error")
+            self._say("Mapdex accepted the plan but returned no run to follow.")
+            return
+        self.plan_run_id = run_id
+        self._refresh_stop_button()
+        self._say("Running it in Mapdex now. I will tell you when it finishes.")
+        self.plan_timer.start(3000)
+
+    @guarded
+    def _cancel_plan_run(self):
+        """Ask Mapdex to stop the run this panel started.
+
+        Nothing is reported as stopped before the server says so. Announcing it
+        locally and then discovering the run had already finished would tell
+        somebody their work was thrown away when it was delivered.
+        """
+        run_id = self.plan_run_id
+        if not run_id:
+            return
+        project_id = self._active_project_id()
+        self._set_status("Asking Mapdex to stop the run…")
+        self._task(
+            "Cancel Mapdex run",
+            lambda: self.api.cancel_run(project_id, run_id),
+            self._plan_run_cancelled,
+            busy=False,
+        )
+
+    @guarded
+    def _plan_run_cancelled(self, exception, _payload):
+        if exception is not None:
+            # A run that reached a terminal state a moment before the request
+            # answers 409. That is the ordinary race between pressing Stop and
+            # the run finishing, not a fault, and the next poll reports the
+            # real outcome, so nothing is said here beyond letting it land.
+            self._set_status("The run had already finished; showing its result.")
+            return
+        # The poll owns the transition to terminal, so the state is not written
+        # twice from two places.
+        self._say("Cancelling that run in Mapdex.")
+
+    @guarded
+    def _poll_plan_run(self):
+        if self.plan_run_pending or not self.plan_run_id:
+            return
+        self.plan_run_pending = True
+        project_id = self._active_project_id()
+        run_id = self.plan_run_id
+        self._task(
+            "Follow Mapdex run", lambda: self.api.run(run_id, project_id),
+            self._plan_run_polled, busy=False,
+        )
+
+    @guarded
+    def _plan_run_polled(self, exception, payload):
+        self.plan_run_pending = False
+        if exception is not None:
+            # One failed poll is a network blip, not a failed run. Stopping
+            # here would report a run as lost while it is still executing.
+            return
+        report = plan_run_report(payload)
+        if not report["terminal"]:
+            return
+        self.plan_timer.stop()
+        finished_run = self.plan_run_id
+        self.plan_run_id = ""
+        self._refresh_stop_button()
+        self._say(report["message"])
+        self._set_status("Ready")
+        self._nivo_state = transition(
+            self._nivo_state, "error" if report["state"] in {"failed", "cancelled"} else "done")
+        if not report["layers"]:
+            return
+        # The result is the point. Announcing a finished run and leaving its
+        # layers in the browser is the same silence this whole path removes.
+        self._set_status("Bringing the result into QGIS…")
+        self._task(
+            "Import Mapdex results into QGIS",
+            lambda: self._fetch_result_files({}, only_runs=(finished_run,)),
+            self._results_imported,
+        )
+
+    @guarded
     def _poll_batch(self):
         if self.progress_pending or not self.batch_id or self._busy:
             return
@@ -952,6 +6280,7 @@ class MapdexPlugin:
                 return run_id
         return ""
 
+    @guarded
     def _batch_updated(self, exception, payload):
         self.progress_pending = False
         if exception:
@@ -973,10 +6302,20 @@ class MapdexPlugin:
         ok = int(counts.get("succeeded", 0) or 0)
         review = int(counts.get("needs_review", 0) or 0)
         failed = int(counts.get("failed", 0) or 0)
+        next_step = failure_next_step(batch_failure(response or {}).get("code"))
         if state in ("created", "queued", "pending"):
             message = "Task queued. Mapdex will start processing shortly."
         elif state == "running":
             message = "Processing in Mapdex…"
+        elif failed and not ok and not review and next_step:
+            # A refusal that names a next step is not a failure report. The scan
+            # is fine and already uploaded; saying so and offering the route is
+            # the whole difference between this and the generic sentence below,
+            # which left the user holding a rejected upload.
+            message = next_step["hint"]
+            if self._announced_state != "needs_placement":
+                self._announced_state = "needs_placement"
+                self._announce(message, level=1, duration=10)
         elif failed and not ok and not review:
             message = first_batch_error(response or {}) or "Task failed. Retry it, or open Mapdex for details."
         elif failed:
@@ -1013,8 +6352,13 @@ class MapdexPlugin:
                 )
             else:
                 self.progress_timer.stop()
+                # This task has just spent some of the balance, so the next one
+                # is checked against what is actually left rather than against
+                # what was left before it ran.
+                self._load_balance()
 
-    def import_results(self):
+    @guarded
+    def import_results(self, *args):
         """Pull the result into QGIS, saying plainly when it is still a draft."""
         if not self.batch_id:
             return
@@ -1089,19 +6433,43 @@ class MapdexPlugin:
             )
         return prepared
 
-    def _fetch_result_files(self, detail: dict, include_review: bool = False):
+    def _fetch_result_files(self, detail: dict, include_review: bool = False,
+                            only_runs: tuple[str, ...] = ()):
+        """Bring the results of a batch, or of named runs, into QGIS.
+
+        `only_runs` is the second entry point: a plan the panel ran directly is
+        one run and belongs to no batch, and giving it its own copy of this
+        method would leave two places that decide how a raster result differs
+        from a vector one and what a draft review layer looks like.
+        """
         project_id = self._active_project_id()
         prepared = []
-        run_ids = list(succeeded_run_ids(detail))
-        draft_runs = set()
-        if include_review:
-            for run_id in review_run_ids(detail):
-                if run_id not in run_ids:
-                    run_ids.append(run_id)
-                    draft_runs.add(run_id)
+        if only_runs:
+            run_ids = list(only_runs)
+            # A named run is imported as it stands. `include_review` exists to
+            # decide whether to reach past a batch's approved items into its
+            # unfinished ones; there is nothing to reach past here, and a run
+            # the caller asked for by id is not a draft it did not ask for.
+            draft_runs: set[str] = set()
+        else:
+            run_ids = list(succeeded_run_ids(detail))
+            draft_runs = set()
+            if include_review:
+                for run_id in review_run_ids(detail):
+                    if run_id not in run_ids:
+                        run_ids.append(run_id)
+                        draft_runs.add(run_id)
         for run_id in run_ids:
             draft = run_id in draft_runs
             run = self.api.run(run_id, project_id)
+            # A survey computation's positions are not a Layer and never will
+            # be: nothing is materialized on the server, because the answer
+            # belongs to the turn rather than to the project. They arrive with
+            # the step that produced them, so they are drawn here rather than
+            # imported below.
+            from .survey_drawing import drawings_from_run  # noqa: PLC0415
+
+            self._create_survey_layers(drawings_from_run(run))
             for layer in collect_layer_imports(run):
                 layer_id = layer["layer_id"]
                 if layer_id in self.imported_layer_ids:
@@ -1124,6 +6492,12 @@ class MapdexPlugin:
                     kind = "raster"
                 else:
                     raw = self.api.layer_geojson(layer_id, project_id)
+                    try:
+                        notice = geojson_truncation_notice(json.loads(raw), layer["name"])
+                    except (ValueError, TypeError):
+                        notice = ""
+                    if notice:
+                        self._announce(notice, level=1, duration=10)
                     if draft:
                         # An unreviewed draft is worth reviewing IN QGIS, so it
                         # arrives as one layer per validator verdict instead of
@@ -1144,7 +6518,9 @@ class MapdexPlugin:
                         "kind": kind,
                     }
                 )
-            for artifact in collect_geojson_artifact_urls(run):
+            # Artifacts are the fallback for a run that materialized no Layer;
+            # the rule and its reasoning live in `fallback_artifact_imports`.
+            for artifact in fallback_artifact_imports(run):
                 key = artifact["url"]
                 if key in self.imported_layer_ids:
                     continue
@@ -1165,6 +6541,7 @@ class MapdexPlugin:
                 )
         return {"files": prepared, "batch": detail}
 
+    @guarded
     def _results_imported(self, exception, payload):
         if exception:
             self._show_error("Could not import results", exception)
@@ -1239,7 +6616,8 @@ class MapdexPlugin:
         canvas.setExtent(combined)
         canvas.refresh()
 
-    def cancel_batch(self):
+    @guarded
+    def cancel_batch(self, *args):
         if not self.batch_id:
             return
         project_id = self._active_project_id()
@@ -1257,7 +6635,8 @@ class MapdexPlugin:
             done,
         )
 
-    def retry_failed(self):
+    @guarded
+    def retry_failed(self, *args):
         if not self.batch_id:
             return
         project_id = self._active_project_id()
@@ -1278,7 +6657,69 @@ class MapdexPlugin:
             done,
         )
 
-    def open_review(self):
+    def _open_workspace_path(self, path: str):
+        """Open one workspace destination in the browser.
+
+        The locale prefix is applied in one place so the three callers that
+        route a user out of QGIS cannot drift apart on it.
+        """
+        locale = QLocale.system().name().split("_")[0]
+        prefix = "" if locale == "en" else "/{}".format(locale)
+        QDesktopServices.openUrl(QUrl("{}{}{}".format(self.web_base, prefix, path)))
+
+    @guarded
+    def open_batch_in_mapdex(self, *args):
+        """Show this task in Mapdex, whatever state it is in.
+
+        Distinct from Review, which is offered only when something is waiting
+        for a decision. A task that failed is the case somebody most wants to
+        look at, and until now the panel offered no way to do it.
+        """
+        if not self.batch_id or self.batch_id == "uploading":
+            return
+        detail = self._last_batch or {}
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        self._open_workspace_path(
+            task_workspace_path(self._active_project_id(), workflow, detail)
+        )
+
+    @guarded
+    def _job_item_action(self, key: str, item: dict):
+        """Act on one sheet of the batch.
+
+        What each key means was decided in `job_items.item_action`; this only
+        carries it out. A row for a sheet whose run is unknown offers nothing,
+        so there is no branch here for a missing run id.
+        """
+        run_id = str((item or {}).get("run_id") or "")
+        project_id = self._active_project_id()
+        if key == "import":
+            if not run_id:
+                return
+            # One run, imported as it stands. `_fetch_result_files` already had
+            # this entry point for a directly-run plan, so a per-sheet import
+            # does not become a second place that decides what a result is.
+            self._task(
+                "Import Mapdex result into QGIS",
+                lambda: self._fetch_result_files(
+                    self._last_batch or {}, only_runs=(run_id,)
+                ),
+                self._results_imported,
+            )
+            return
+        # Review and Why are both "show me this sheet in Mapdex", and the
+        # destination differs by the sheet's own state, which is exactly what
+        # task_workspace_path decides from the item it is given.
+        workflow = str(self.workflow_box.currentData() or "") if self.workflow_box else ""
+        detail = {"items": [item]} if isinstance(item, dict) else {}
+        self._open_workspace_path(
+            task_workspace_path(
+                project_id, workflow, detail, file_id=str((item or {}).get("file_id") or "")
+            )
+        )
+
+    @guarded
+    def open_review(self, *args):
         if not self.batch_id:
             return
         locale = QLocale.system().name().split("_")[0]
@@ -1294,19 +6735,30 @@ class MapdexPlugin:
         detail = self._last_batch
         if not detail and fallback_file_id:
             detail = {"items": [{"file_id": fallback_file_id, "state": "running"}]}
-        path = task_workspace_path(project_id, workflow, detail)
+        # A refusal that names a prerequisite outranks the workflow that was
+        # submitted: the destination is where the user satisfies it, not the desk
+        # for the work that was already refused. The file is the one Mapdex
+        # already holds, so this is a handoff and not a second upload.
+        failure = batch_failure(detail or {})
+        route = failure_next_step(failure.get("code")).get("route")
+        path = task_workspace_path(
+            project_id,
+            route or workflow,
+            detail,
+            file_id=failure.get("file_id", "") if route else "",
+        )
         QDesktopServices.openUrl(
             QUrl("{}{}{}".format(self.web_base, prefix, path))
         )
 
-    def open_project(self):
+    @guarded
+    def open_project(self, *args):
         project_id = self._active_project_id()
-        locale = QLocale.system().name().split("_")[0]
-        prefix = "" if locale == "en" else "/{}".format(locale)
         path = "/workspace/{}".format(project_id) if project_id else "/workspace"
-        QDesktopServices.openUrl(
-            QUrl("{}{}{}".format(self.web_base, prefix, path))
-        )
+        # The authenticated application has one URL tree. Locale prefixes are
+        # for authored marketing pages; `/tr/workspace/...` and friends are
+        # stale routes that can 404 or bounce through the public host.
+        QDesktopServices.openUrl(QUrl("{}{}".format(self.web_base, path)))
 
     def _recent_tasks(self):
         raw = str(QSettings().value("mapdex/recent_tasks", "[]") or "[]")
@@ -1318,7 +6770,16 @@ class MapdexPlugin:
 
     def _remember_task(self, batch_id, project_id, workflow, source, file_id=""):
         tasks = [item for item in self._recent_tasks() if item.get("batch_id") != batch_id]
-        tasks.insert(0, {"batch_id": batch_id, "project_id": project_id, "workflow": workflow, "source": source, "file_id": file_id})
+        tasks.insert(
+            0,
+            {
+                "batch_id": batch_id,
+                "project_id": project_id,
+                "workflow": workflow,
+                "source": source,
+                "file_id": file_id,
+            },
+        )
         QSettings().setValue("mapdex/recent_tasks", json.dumps(tasks[:5]))
         self._load_recent_tasks()
 
@@ -1327,11 +6788,15 @@ class MapdexPlugin:
             return
         self.recent_box.clear()
         for item in self._recent_tasks():
-            label = "{} · {}".format(item.get("workflow") or "Task", item.get("source") or "Source")
+            label = "{} · {}".format(
+                workflow_title(item.get("workflow")), item.get("source") or "Source")
             self.recent_box.addItem(label, item)
-        self.recent.setVisible(self.recent_box.count() > 0)
+        # A Resume needs a session: without one it submits a batch id the API
+        # answers with a tenant-safe NOT_FOUND, which reads as a lost task.
+        self.recent.setVisible(self.recent_box.count() > 0 and bool(self.api.token))
 
-    def resume_recent(self):
+    @guarded
+    def resume_recent(self, *args):
         item = self.recent_box.currentData()
         if not isinstance(item, dict):
             return

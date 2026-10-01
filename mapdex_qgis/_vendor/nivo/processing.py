@@ -1,0 +1,558 @@
+# SPDX-License-Identifier: MIT
+"""Bounded QGIS Processing operation registry for Nivo.
+
+The server may ask for a named operation, but this plugin owns the native
+algorithm mapping and validates it against the live QGIS registry before any
+task can run.
+"""
+from __future__ import annotations
+
+import math
+import re
+from typing import Any, Callable, Mapping
+
+MAX_PARAM_TEXT = 256
+
+# What a reference to a second layer may look like. QGIS layer ids are word
+# characters, dots and hyphens; a path, a URI, a GDAL virtual filesystem prefix
+# or a provider string all need a slash, a backslash, a colon or a pipe.
+LAYER_REFERENCE = re.compile(r"[\w.\-]+")
+
+PROCESSING_OPERATION_CATALOG: dict[str, tuple[str, ...]] = {
+    "buffer": ("native:buffer", "qgis:buffer"),
+    "clip": ("native:clip", "qgis:clip"),
+    "intersection": ("native:intersection", "qgis:intersection"),
+    "select_by_location": ("native:selectbylocation", "qgis:selectbylocation"),
+    "nearest_neighbor": ("native:joinbynearest",),
+    "reproject": ("native:reprojectlayer", "qgis:reprojectlayer"),
+    "heatmap": ("qgis:heatmapkerneldensityestimation",),
+    "measure_geometry": ("native:exportaddgeometrycolumns", "qgis:exportaddgeometrycolumns"),
+    # Operations a professional expects from any GIS and that Nivo could not
+    # name. Each is an installed native algorithm; the gap was the allowlist,
+    # not the capability. Alternative ids are listed because algorithm names
+    # moved between QGIS versions and resolve_processing_algorithm tries them in
+    # order against the live registry.
+    "dissolve": ("native:dissolve", "qgis:dissolve"),
+    "union": ("native:union", "qgis:union"),
+    "difference": ("native:difference", "qgis:difference"),
+    "merge": ("native:mergevectorlayers", "qgis:mergevectorlayers"),
+    "centroid": ("native:centroids", "qgis:centroids"),
+    "convex_hull": ("native:convexhull", "qgis:convexhull"),
+    "split": ("native:splitwithlines", "qgis:splitwithlines"),
+    "zonal_statistics": ("native:zonalstatisticsfb", "qgis:zonalstatistics"),
+    "spatial_join": ("native:joinattributesbylocation", "qgis:joinattributesbylocation"),
+    "simplify": ("native:simplifygeometries", "qgis:simplifygeometries"),
+    "repair": ("native:fixgeometries", "qgis:fixgeometries"),
+    "validate": ("qgis:checkvalidity", "native:checkvalidity"),
+    # Terrain. Core QGIS ships all five, in the native or GDAL provider, so a
+    # resolution failure here means a broken install rather than a missing
+    # optional provider - which is why flow routing and viewshed are NOT in this
+    # table: they live in GRASS and SAGA, and a capability that usually cannot
+    # resolve is worse than one that is honestly absent.
+    "slope": ("native:slope", "gdal:slope"),
+    "aspect": ("native:aspect", "gdal:aspect"),
+    "hillshade": ("native:hillshade", "gdal:hillshade"),
+    "ruggedness": ("native:ruggednessindex",),
+    "roughness": ("gdal:roughness",),
+    # The one terrain product that leaves as VECTOR data, which is why it is not
+    # in TERRAIN_OPERATIONS: it writes a feature layer rather than a surface.
+    "contours": ("gdal:contour",),
+    # Hydrology and visibility. These live in GRASS, which ships with the
+    # standalone QGIS installer and can be absent from a package-manager one, so
+    # unlike everything above they may not resolve. They are declared anyway,
+    # because the refusal now NAMES the missing provider and the route round it
+    # - which is the difference between a capability that is honestly
+    # conditional and one that fails as a mystery.
+    "watershed": ("grass7:r.water.outlet", "grass:r.water.outlet"),
+    "flow_accumulation": ("grass7:r.watershed", "grass:r.watershed"),
+    "viewshed": ("grass7:r.viewshed", "grass:r.viewshed"),
+}
+
+# Which provider an operation needs when it is not core QGIS, so a refusal can
+# say what to install rather than "this installation has no algorithm".
+PROVIDER_DEPENDENT_OPERATIONS: dict[str, str] = {
+    "watershed": "GRASS",
+    "flow_accumulation": "GRASS",
+    "viewshed": "GRASS",
+}
+
+# What the Workspace computes without any provider at all. Named here so the
+# refusal can offer the other route by capability rather than by guesswork.
+HOSTED_EQUIVALENT: dict[str, str] = {
+    "watershed": "spatial:hydrology@1",
+    "flow_accumulation": "spatial:hydrology@1",
+    "viewshed": "spatial:viewshed@1",
+}
+
+# The three terrain measurements that are a RATIO of vertical to horizontal
+# distance. On a geographic grid the horizontal distance is in DEGREES and the
+# elevation in metres, so the ratio has no meaning - and QGIS computes it anyway
+# without a word. A 10% grade on an EPSG:4326 DEM reads as 89.99 degrees, which
+# is measured in the Workspace's own terrain tests.
+#
+# Roughness and ruggedness are elevation differences alone, so they carry no
+# ratio and a geographic grid does not corrupt them.
+UNIT_SENSITIVE_TERRAIN = frozenset({"slope", "aspect", "hillshade"})
+
+TERRAIN_OPERATIONS = frozenset({"slope", "aspect", "hillshade", "ruggedness", "roughness"})
+
+# Operations whose input layer must be a raster, because they read elevations
+# out of a grid. Named rather than inferred, so the refusal happens in front of
+# the user's question instead of inside an algorithm: a parcel layer handed to
+# `terrain.slope@1` used to be accepted and started, and the failure surfaced
+# later, away from the request that caused it.
+RASTER_INPUT_OPERATIONS = frozenset({
+    "slope", "aspect", "hillshade", "ruggedness", "roughness",
+    "contours", "flow_accumulation", "watershed", "viewshed",
+})
+
+# The operations that have a capability of their own rather than being reached
+# through the generic bridge. Kept here, beside the catalog, so the handler
+# table and the capability declarations cannot name different sets: an id
+# advertised with no handler is the "Nivo prepared an action" and nothing
+# happens failure, and a handler nobody advertises is dead code.
+NAMED_GEOPROCESSING_OPERATIONS: tuple[str, ...] = (
+    "buffer", "clip", "intersection", "union", "difference",
+    "dissolve", "merge", "centroid", "convex_hull", "reproject",
+    "spatial_join", "simplify", "repair", "validate", "split", "zonal_statistics",
+)
+
+# Operations that combine two layers. Naming them makes the requirement
+# checkable rather than implied by whichever parameter the algorithm happens to
+# expose: running one of these against a single layer produces an empty or
+# nonsensical result instead of an error.
+TWO_LAYER_OPERATIONS = frozenset({
+    "clip", "intersection", "union", "difference", "merge",
+    "select_by_location", "nearest_neighbor", "split", "zonal_statistics",
+    "spatial_join",
+})
+
+# Operations that need a destination reference system. Reprojection is the
+# whole request here: without one there is nothing to reproject TO, and the
+# algorithm's TARGET_CRS used to be filled with the layer's OWN crs, so a
+# reprojection ran, reported success and added a duplicate layer in the
+# reference system it started in.
+CRS_REQUIRED_OPERATIONS = frozenset({"reproject"})
+
+# The parameter names an algorithm writes its result to. Ordered rather than a
+# set, because the ORDER decides which layer is loaded when an algorithm writes
+# several: `checkvalidity` writes valid, invalid and error layers, and the
+# invalid one is the answer - loading the features that passed tells a reviewer
+# nothing they can act on.
+PROCESSING_OUTPUT_ORDER: tuple[str, ...] = (
+    "OUTPUT", "OUTPUT_LAYER", "OUTPUT_VECTOR", "OUTPUT_RASTER", "INVALID_OUTPUT",
+)
+
+PROCESSING_OUTPUT_KEYS = frozenset(PROCESSING_OUTPUT_ORDER)
+
+# What the person who asked for a buffer calls it. `native:buffer` is how QGIS
+# spells the algorithm internally: it is developer data, it is untranslatable,
+# and reading it back to the user tells them nothing they can act on.
+OPERATION_LABELS: dict[str, str] = {
+    "buffer": "buffer",
+    "clip": "clip",
+    "intersection": "intersection",
+    "select_by_location": "selection by location",
+    "nearest_neighbor": "nearest-neighbour join",
+    "reproject": "reprojection",
+    "heatmap": "heatmap",
+    "measure_geometry": "geometry measurement",
+    "dissolve": "dissolve",
+    "union": "union",
+    "difference": "difference",
+    "merge": "merge",
+    "centroid": "centroids",
+    "convex_hull": "convex hull",
+    "split": "split",
+    "zonal_statistics": "zonal statistics",
+    "spatial_join": "spatial join",
+    "simplify": "simplification",
+    "repair": "geometry repair",
+    "validate": "geometry check",
+    "slope": "slope",
+    "aspect": "aspect",
+    "hillshade": "hillshade",
+    "ruggedness": "ruggedness index",
+    "roughness": "surface roughness",
+    "contours": "contour lines",
+    "watershed": "watershed",
+    "flow_accumulation": "flow accumulation",
+    "viewshed": "viewshed",
+}
+
+
+def describe_missing_algorithm(operation: Any, service_name: str = "") -> str:
+    """Why an operation will not run here, and what to do instead.
+
+    It replaces "This QGIS installation has no algorithm for the watershed",
+    which names nothing and offers no route: a person who reads it has no next
+    move, which is the same failure as an unexplained error code.
+
+    Two facts, and they need different sentences. A provider that is simply not
+    installed is fixable by installing it, and saying which one is most of the
+    answer. An operation with no provider to name is a gap in the allowlist, and
+    telling somebody to install something would send them to fix the wrong
+    thing.
+
+    `service_name` is the host's own server-side route, when it has one that
+    computes these without any provider. Offering the route that already works
+    is worth more than a diagnosis, but this package cannot know such a service
+    exists, so the host names it. Without one, no route is invented.
+    """
+    label = operation_label(operation)
+    service = str(service_name or "").strip()
+    provider = PROVIDER_DEPENDENT_OPERATIONS.get(str(operation or "").strip())
+    if provider:
+        if service:
+            return (
+                "This QGIS has no {} provider, and a {} needs one. Enable {} in "
+                "Processing, or upload the surface to {} and ask me there - it "
+                "computes this without any provider at all."
+            ).format(provider, label, provider, service)
+        return (
+            "This QGIS has no {} provider, and a {} needs one. Enable {} in Processing."
+        ).format(provider, label, provider)
+    if service:
+        return (
+            "This QGIS installation has no algorithm for the {}. Upload the data to "
+            "{} and ask me there instead."
+        ).format(label, service)
+    return "This QGIS installation has no algorithm for the {}.".format(label)
+
+
+def describe_geographic_terrain_refusal(operation: Any, crs_description: str = "") -> str:
+    """Why a slope will not be computed on a grid measured in degrees.
+
+    The refusal names the fix and names it as something Nivo itself can do: the
+    reprojection is already in this allowlist, so the next sentence a person
+    says can start the work rather than sending them to another menu.
+
+    Refusing rather than applying a scale constant is deliberate. gdaldem's
+    documented lat/long scale of 111120 is correct only along a meridian; east
+    to west a degree is 111320*cos(latitude) metres, which is half as far at 60
+    degrees. One constant produces an answer that is wrong by a factor varying
+    across the sheet, and nothing in the output says so.
+    """
+    where = " ({})".format(crs_description) if crs_description else ""
+    return (
+        "This layer's coordinates are in degrees{}, and a {} is a ratio of height to "
+        "horizontal distance - so computing one here would return a confident wrong "
+        "number rather than an error. Ask me to reproject the layer to a metre "
+        "system first, then ask again."
+    ).format(where, operation_label(operation))
+
+
+def operation_label(operation: Any) -> str:
+    """A human name for an operation, never an algorithm id."""
+    key = str(operation or "").strip()
+    return OPERATION_LABELS.get(key) or key.replace("_", " ") or "that operation"
+
+
+def describe_empty_input(operation: Any, source_name: str = "") -> str:
+    """Why the run was not started at all.
+
+    Running a buffer over an empty layer succeeds and produces an empty layer,
+    which is how "buffer yaptım" ended with a new layer and nothing in it.
+    """
+    where = "'{}'".format(source_name) if source_name else "The selected layer"
+    return (
+        "{} has no features yet, so a {} would produce an empty layer. Add or "
+        "import data first, then ask again."
+    ).format(where, operation_label(operation))
+
+
+def describe_processing_outcome(
+    operation: Any,
+    output_name: str = "",
+    feature_count: Any = None,
+    source_name: str = "",
+) -> str:
+    """One honest line about what the run actually left on the map."""
+    label = operation_label(operation)
+    if not output_name:
+        return "The {} ran but produced no layer, so nothing was added to the map.".format(label)
+    if feature_count == 0:
+        if source_name:
+            return "The {} produced an empty layer because '{}' has no features to work on.".format(
+                label, source_name)
+        return "The {} produced an empty layer, so there is nothing to see on the map.".format(label)
+    if isinstance(feature_count, int) and feature_count > 0:
+        return "Added '{}' with {} feature{} from the {}.".format(
+            output_name, feature_count, "s" if feature_count != 1 else "", label)
+    return "Added '{}' from the {}.".format(output_name, label)
+
+
+def safe_processing_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Accept only operation-level parameters owned by the companion contract."""
+    operation = str(params.get("operation") or "").strip()
+    if operation not in PROCESSING_OPERATION_CATALOG:
+        return {}
+    safe: dict[str, Any] = {"operation": operation}
+    if operation in TWO_LAYER_OPERATIONS and not str(params.get("target_layer") or "").strip():
+        # Refused rather than defaulted. A two-layer operation with one layer is
+        # not a smaller version of the same request; it is a different question
+        # nobody asked.
+        return {}
+    # Every number is checked with math.isfinite as well as its range. NaN fails
+    # no ordering comparison, so `nan <= 0 or nan > 1e6` is False and a NaN
+    # distance used to pass straight through to the algorithm.
+    if "distance" in params:
+        try:
+            distance = float(params.get("distance"))
+        except (TypeError, ValueError):
+            return {}
+        if not math.isfinite(distance) or distance <= 0 or distance > 1000000:
+            return {}
+        safe["distance"] = distance
+    if "tolerance" in params:
+        try:
+            tolerance = float(params.get("tolerance"))
+        except (TypeError, ValueError):
+            return {}
+        if not math.isfinite(tolerance) or tolerance <= 0 or tolerance > 1000000:
+            return {}
+        safe["tolerance"] = tolerance
+    if operation == "contours":
+        try:
+            interval = float(params.get("interval"))
+        except (TypeError, ValueError):
+            return {}
+        if not math.isfinite(interval) or interval <= 0 or interval > 1_000_000:
+            return {}
+        safe["interval"] = interval
+        if "base" in params:
+            try:
+                base = float(params.get("base"))
+            except (TypeError, ValueError):
+                return {}
+            if not math.isfinite(base):
+                return {}
+            safe["base"] = base
+    if "z_factor" in params:
+        try:
+            z_factor = float(params.get("z_factor"))
+        except (TypeError, ValueError):
+            return {}
+        if not (1e-6 <= z_factor <= 1e6):
+            return {}
+        safe["z_factor"] = z_factor
+    if "band" in params:
+        try:
+            band = int(params.get("band"))
+        except (TypeError, ValueError):
+            return {}
+        if band < 1 or band > 512:
+            return {}
+        safe["band"] = band
+    if "segments" in params:
+        try:
+            segments = int(params.get("segments"))
+        except (TypeError, ValueError):
+            return {}
+        if segments < 1 or segments > 96:
+            return {}
+        safe["segments"] = segments
+    for key in ("predicate", "target_layer", "field"):
+        if key in params:
+            value = str(params.get(key) or "").strip()[:MAX_PARAM_TEXT]
+            if key == "target_layer" and value and not LAYER_REFERENCE.fullmatch(value):
+                # Refused rather than cleaned: a second layer that looks like a
+                # path is not a layer name with odd characters, it is a request
+                # to open something that is not in the project.
+                return {}
+            if value:
+                safe[key] = value
+    if "target_crs" in params:
+        crs = normalize_crs_reference(params.get("target_crs"))
+        if not crs:
+            return {}
+        safe["target_crs"] = crs
+    if operation in CRS_REQUIRED_OPERATIONS and "target_crs" not in safe:
+        # Refused rather than defaulted to the layer's own system. That default
+        # is what made a reprojection a no-op that reported success.
+        return {}
+    return safe
+
+
+def resolve_target_layer(
+    params: Mapping[str, Any], lookup: Callable[[str], Any]
+) -> dict[str, Any] | None:
+    """Replace a second-layer reference with the host's own layer, or refuse.
+
+    `lookup` is the host's resolver for layers that are already loaded (in QGIS,
+    `QgsProject.instance().mapLayer`), returning None for anything else. The
+    reference must be resolved BEFORE it reaches a processing framework, because
+    QGIS Processing reads a string layer parameter as an id, then a name, then a
+    data source it opens: a reference such as ``CSV:/home/u/.pgpass`` or
+    ``/vsicurl/https://host/?d=...`` would otherwise read a local file or make
+    an outbound request. Returns a new parameter mapping, or None when the
+    reference names nothing the host has loaded.
+    """
+    resolved = dict(params)
+    reference = resolved.get("target_layer")
+    if not reference:
+        return resolved
+    layer = lookup(str(reference))
+    if layer is None:
+        return None
+    resolved["target_layer"] = layer
+    return resolved
+
+
+def normalize_crs_reference(value: Any) -> str:
+    """An authority:code reference, or empty when it is not one.
+
+    Only the FORM is checked here; whether the code exists is QGIS's question
+    and it answers it when the string is resolved. Accepting free text would
+    hand an unresolvable reference to the algorithm and turn a typo into a
+    silently wrong projection.
+    """
+    text = str(value or "").strip().upper()
+    if ":" not in text:
+        return ""
+    authority, _, code = text.partition(":")
+    authority = authority.strip()
+    code = code.strip()
+    if not authority.isalpha() or len(authority) > 16:
+        return ""
+    if not code.isdigit() or len(code) > 12:
+        return ""
+    return "{}:{}".format(authority, code)
+
+
+def predicate_index(algorithm: Any, requested: Any) -> int | None:
+    """Where this algorithm keeps the named relationship in its own options.
+
+    Returns None when the algorithm does not offer it. Absent means the
+    algorithm's own first option, which is what a caller who named no
+    relationship is asking for.
+    """
+    name = str(requested or "").strip().lower()
+    options: list[str] = []
+    try:
+        definition = algorithm.parameterDefinition("PREDICATE")
+        options = [str(option).strip().lower() for option in (definition.options() or [])]
+    except Exception:  # noqa: BLE001 - a definition without options is not fatal
+        options = []
+    if not name:
+        return 0
+    if not options:
+        # Nothing to match against. Refusing is right: guessing an index here
+        # is how the constant [0] survived.
+        return None
+    for index, option in enumerate(options):
+        # QGIS spells them "intersect", "are within", "contain"; the contract
+        # spells them "intersects", "within", "contains". Dropping the leading
+        # "are " and letting either string be a prefix of the other matches
+        # every pair exactly, with no character count to get wrong: a first
+        # version compared six-character stems and silently refused "within"
+        # against "are within".
+        candidate = option[4:] if option.startswith("are ") else option
+        if candidate and (name.startswith(candidate) or candidate.startswith(name)):
+            return index
+    return None
+
+
+def resolve_processing_algorithm(registry: Any, operation: str) -> tuple[str, Any] | tuple[str, None]:
+    """Resolve a trusted operation name to an installed QGIS algorithm."""
+    for algorithm_id in PROCESSING_OPERATION_CATALOG.get(operation, ()):
+        algorithm = registry.algorithmById(algorithm_id) if registry is not None else None
+        if algorithm is not None:
+            return algorithm_id, algorithm
+    return "", None
+
+
+def build_algorithm_parameters(algorithm: Any, operation: str, layer: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Build a conservative native parameter map from validated operation params."""
+    names = {definition.name() for definition in algorithm.parameterDefinitions()}
+    payload: dict[str, Any] = {}
+    if "INPUT" in names:
+        payload["INPUT"] = layer
+    if "INTERSECT" in names and params.get("target_layer"):
+        payload["INTERSECT"] = params["target_layer"]
+    if "OVERLAY" in names and params.get("target_layer"):
+        payload["OVERLAY"] = params["target_layer"]
+    if "DISTANCE" in names:
+        payload["DISTANCE"] = float(params.get("distance") or 100)
+    if "RADIUS" in names:
+        payload["RADIUS"] = float(params.get("distance") or 100)
+    if "SEGMENTS" in names:
+        payload["SEGMENTS"] = int(params.get("segments") or 16)
+    if "TARGET_CRS" in names:
+        # The destination the caller asked for. Falling back to the layer's own
+        # crs is kept only for algorithms where TARGET_CRS is incidental output
+        # metadata rather than the request; `reproject` can no longer reach here
+        # without one, because safe_processing_params refuses it.
+        payload["TARGET_CRS"] = params.get("target_crs") or layer.crs()
+    if "LAYERS" in names:
+        # native:mergevectorlayers takes a list rather than INPUT/OVERLAY.
+        payload["LAYERS"] = [layer] + ([params["target_layer"]] if params.get("target_layer") else [])
+    if "LINES" in names and params.get("target_layer"):
+        payload["LINES"] = params["target_layer"]
+    if "FIELD" in names and params.get("field"):
+        payload["FIELD"] = params["field"]
+    if "INTERVAL" in names:
+        # The height between lines. There is no sensible default - 10 m is right
+        # for a hillside and absurd for a building site - so the absence of one
+        # is refused by safe_processing_params before this is reached.
+        payload["INTERVAL"] = float(params.get("interval") or 0)
+    if "OFFSET" in names and params.get("base") is not None:
+        # gdal:contour spells the base OFFSET.
+        payload["OFFSET"] = float(params["base"])
+    if "FIELD_NAME" in names:
+        # Without it the lines carry no elevation, which is most of what a
+        # contour is for: nobody can label them.
+        payload["FIELD_NAME"] = "elevation"
+    if "Z_FACTOR" in names:
+        # How many horizontal units one vertical unit is. 1.0 means the
+        # elevation is already in the horizontal unit; a surface in feet on a
+        # metre grid needs 0.3048, and reading feet as metres makes every slope
+        # three times too steep. No metadata states it, so it is a declaration.
+        payload["Z_FACTOR"] = float(params.get("z_factor") or 1.0)
+    if "BAND" in names and params.get("band"):
+        payload["BAND"] = int(params["band"])
+    if "COMPUTE_EDGES" in names:
+        payload["COMPUTE_EDGES"] = True
+    if "elevation" in names:
+        # GRASS raster algorithms name their input `elevation` rather than
+        # INPUT, so without this the surface never reaches them and the run
+        # fails on a missing required parameter it was given.
+        payload["elevation"] = layer
+    if "observer_elevation" in names:
+        payload["observer_elevation"] = float(params.get("observer_height_m") or 1.75)
+    if "max_distance" in names and params.get("radius_m"):
+        payload["max_distance"] = float(params["radius_m"])
+    if "coordinates" in names and params.get("point"):
+        point = params["point"]
+        payload["coordinates"] = "{},{}".format(float(point[0]), float(point[1]))
+    if "TOLERANCE" in names:
+        # Simplification is entirely this number: without it the algorithm's
+        # own default decides how much detail a customer's boundary loses.
+        payload["TOLERANCE"] = float(params.get("tolerance") or 1.0)
+    if "JOIN" in names and params.get("target_layer"):
+        # `native:joinattributesbylocation` names the second layer JOIN rather
+        # than OVERLAY or INTERSECT.
+        payload["JOIN"] = params["target_layer"]
+    if "PREDICATE" in names:
+        # The requested relationship, matched against THIS algorithm's own
+        # option list.
+        #
+        # It used to be the constant [0], so every spatial relationship
+        # question ran as `intersects` whatever was asked - the parameter was
+        # accepted, validated against an enum, and then thrown away. An index
+        # table would not fix it either: `native:selectbylocation` and
+        # `native:joinattributesbylocation` do not order their options the
+        # same way, and the versions move. Reading the live options is the only
+        # way the index means what the name says.
+        index = predicate_index(algorithm, params.get("predicate"))
+        if index is None:
+            # A relationship this algorithm does not offer. Refused by
+            # returning nothing for it, so the caller sees the algorithm
+            # decline rather than a confident answer about a different
+            # relationship.
+            return {}
+        payload["PREDICATE"] = [index]
+    for key in PROCESSING_OUTPUT_KEYS:
+        if key in names:
+            payload[key] = "TEMPORARY_OUTPUT"
+    return payload

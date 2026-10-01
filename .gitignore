@@ -1,3 +1,8 @@
+# The published plugin repository's .gitignore. It has to live inside the
+# published prefix: `git subtree split` carries only what is under
+# mapdex/apps/qgis-plugin/, so the monorepo's root .gitignore does not travel.
+#
+# These rules are a subset of the monorepo's, so this file changes nothing here.
 __pycache__/
 *.pyc
 .pytest_cache/

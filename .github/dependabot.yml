@@ -1,11 +1,28 @@
-# Placed at .github/dependabot.yml in the public repository by
-# scripts/sync_public_repo.sh. The plugin has no Python dependencies beyond
-# the QGIS runtime, so the only moving parts are the pinned GitHub Actions.
+# This file lives at .github/dependabot.yml in the published plugin repository.
+# The monorepo does not read it: GitHub only discovers .github/ at a repository
+# root, so under mapdex/apps/qgis-plugin/ it is inert until it is published.
+#
+# The plugin has no Python dependencies beyond the QGIS runtime, so the only
+# moving parts are the pinned GitHub Actions.
+#
+# The public repo is a mirror with nobody watching it day to day. Dependabot
+# defaults to five open pull requests per ecosystem and simply accumulates them
+# when no one merges -- which is what happened: four went unattended. One at a
+# time keeps the queue honest. It is a backlog cap, not a rate limit: closing
+# or merging the open one lets the next appear.
+#
+# "Merging" means the MONOREPO, never the public repo. It is a fast-forward
+# mirror of mapdex/apps/qgis-plugin, so one commit made there makes every later
+# publish fail with "fetch first". Two hand commits made at the first release did
+# exactly that from 2026-09-18 to 2026-10-02: four red publishes, hidden among
+# the green runs of pushes that never touched the plugin. Make the bump here,
+# then close the pull request there.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
+    open-pull-requests-limit: 1
     commit-message:
       prefix: "ci"

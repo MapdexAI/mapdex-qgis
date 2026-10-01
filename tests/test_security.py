@@ -46,6 +46,7 @@ def test_third_party_download_carries_neither_token_nor_tenant(monkeypatch):
 
     def fake_urlopen(req, timeout=0):
         captured["headers"] = {key.lower(): value for key, value in req.header_items()}
+        captured["timeout"] = timeout
         return FakeResponse()
 
     monkeypatch.setattr("mapdex_qgis.api_client._urlopen", fake_urlopen)
@@ -54,9 +55,12 @@ def test_third_party_download_carries_neither_token_nor_tenant(monkeypatch):
     assert "authorization" not in captured["headers"]
     assert "x-project-id" not in captured["headers"]
 
-    api.download_bytes("/v1/layers/layer_1/geojson", project_id="proj_1")
+    api.download_bytes(
+        "/v1/layers/layer_1/geojson", project_id="proj_1", timeout=7
+    )
     assert captured["headers"]["authorization"] == "Bearer secret-token"
     assert captured["headers"]["x-project-id"] == "proj_1"
+    assert captured["timeout"] == 7
 
 
 def test_download_refuses_plaintext_third_party_urls():
@@ -88,14 +92,15 @@ def test_same_origin_compares_scheme_host_and_port():
 def test_device_url_rejects_non_web_schemes_from_the_server():
     web = "https://mapdex.ai"
     api = "https://api.mapdex.ai"
-    assert device_verification_url("javascript:alert(1)", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("file:///etc/passwd", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("http://mapdex.ai/device", web, api) == "https://mapdex.ai/device"
-    assert device_verification_url("", web, api) == "https://mapdex.ai/device"
+    app_device = "https://app.mapdex.ai/device"
+    assert device_verification_url("javascript:alert(1)", web, api) == app_device
+    assert device_verification_url("file:///etc/passwd", web, api) == app_device
+    assert device_verification_url("http://mapdex.ai/device", web, api) == app_device
+    assert device_verification_url("", web, api) == app_device
     # A production API may not send the user to their own machine.
-    assert device_verification_url("http://localhost:3000/device", web, api) == "https://mapdex.ai/device"
+    assert device_verification_url("http://localhost:3000/device", web, api) == app_device
     # A legitimate https address is kept.
-    assert device_verification_url("https://mapdex.ai/device", web, api) == "https://mapdex.ai/device"
+    assert device_verification_url("https://mapdex.ai/device", web, api) == app_device
     # Self-hosted/local development keeps working.
     assert (
         device_verification_url("http://127.0.0.1:3000/device", "http://127.0.0.1:3000", "http://127.0.0.1:8080")

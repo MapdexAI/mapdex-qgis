@@ -1,0 +1,754 @@
+"""Safe Nivo companion payloads and closed desktop action handling.
+
+This module deliberately has no QGIS imports.  Keeping the admission and
+allowlist logic pure makes it testable on QGIS 3 and 4, and prevents a model
+response from becoming executable Python by accident.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+import hashlib
+import re
+from typing import Any
+
+from ._vendor.nivo.capabilities import CapabilityError, get as get_capability
+from ._vendor.nivo.processing import (
+    PROCESSING_OPERATION_CATALOG,
+    safe_processing_params,
+)
+from ._vendor.nivo.viewport import resolve_extent
+
+COMPANION_VERSION = "companion.qgis.v1"
+MAX_FIELDS = 64
+MAX_TEXT = 256
+
+QGIS_PROCESSING_CAPABILITY_DOMAINS = frozenset({"geoprocessing", "terrain"})
+GENERIC_QGIS_PROCESSING_CAPABILITIES = frozenset({
+    "processing.run@1", "qgis:processing_operation@1", "qgis:action",
+})
+SUPPORTED_QGIS_PROCESSING_OPERATIONS = frozenset(PROCESSING_OPERATION_CATALOG)
+CANONICAL_QGIS_PROCESSING_ACTIONS = frozenset(
+    "{}.{}@1".format(domain, operation)
+    for domain in QGIS_PROCESSING_CAPABILITY_DOMAINS
+    for operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS
+)
+
+
+def _processing_operation_for_capability(capability: str) -> str:
+    """Resolve a canonical capability through the closed local tool catalog."""
+    stem, separator, version = capability.partition("@")
+    domain, dot, operation = stem.partition(".")
+    if separator != "@" or version != "1" or dot != ".":
+        return ""
+    if domain not in QGIS_PROCESSING_CAPABILITY_DOMAINS:
+        return ""
+    return operation if operation in SUPPORTED_QGIS_PROCESSING_OPERATIONS else ""
+
+
+_LOCAL_OPERATION_ALIASES = {
+    "centroids": "centroid", "centroid": "centroid",
+    "convex hull": "convex_hull", "convex_hull": "convex_hull",
+    "dissolve": "dissolve", "merge": "merge", "repair": "repair",
+    "fix geometries": "repair", "validate": "validate",
+    "simplify": "simplify", "reproject": "reproject", "buffer": "buffer",
+    "contours": "contours", "contour": "contours", "slope": "slope",
+    "aspect": "aspect", "hillshade": "hillshade", "ruggedness": "ruggedness",
+    "roughness": "roughness", "flow accumulation": "flow_accumulation",
+    "watershed": "watershed", "viewshed": "viewshed",
+    "centroid oluştur": "centroid", "merkez noktaları": "centroid",
+    "geometriyi düzelt": "repair", "geometrileri düzelt": "repair",
+    "sadeleştir": "simplify", "yeniden projelendir": "reproject",
+    "tampon": "buffer", "eşyükselti": "contours",
+}
+
+
+def local_processing_action(message: str, target: str) -> dict[str, Any]:
+    """Recover an explicit operation name when hosted routing returns no action.
+
+    This is deliberately not a general language classifier. It recognizes only
+    canonical GIS operation names (plus a small set of direct UI translations),
+    validates them through the same closed Processing catalog, and still sends
+    the result through the normal confirmation dialog.
+    """
+    text = " ".join(str(message or "").casefold().replace("-", " ").split())
+    operation = ""
+    for alias in sorted(_LOCAL_OPERATION_ALIASES, key=len, reverse=True):
+        if re.search(r"(?<!\w){}(?!\w)".format(re.escape(alias)), text):
+            operation = _LOCAL_OPERATION_ALIASES[alias]
+            break
+    target = _text(target, 128)
+    if not operation or not target:
+        return {}
+    params: dict[str, Any] = {"operation": operation, "input_layer": target}
+    number = re.search(r"(?<!\w)(\d+(?:[.,]\d+)?)\s*(km|m|meter|metre)?\b", text)
+    if operation in {"buffer", "simplify", "contours"}:
+        if not number:
+            return {}
+        value = float(number.group(1).replace(",", "."))
+        if (number.group(2) or "m") == "km":
+            value *= 1000
+        params[{"buffer": "distance", "simplify": "tolerance", "contours": "interval"}[operation]] = value
+    if operation == "reproject":
+        epsg = re.search(r"\bepsg\s*[: ]\s*(\d{3,12})\b", text)
+        if not epsg:
+            return {}
+        params["target_crs"] = "EPSG:{}".format(epsg.group(1))
+    if operation in {
+        "clip", "intersection", "union", "difference",
+        "merge", "spatial_join", "split", "zonal_statistics",
+    }:
+        return {}
+    safe = safe_processing_params(params)
+    if not safe:
+        return {}
+    digest = hashlib.sha256("{}\0{}".format(target, text).encode("utf-8")).hexdigest()[:24]
+    return {
+        "id": "local_processing_{}".format(digest),
+        "tool": "qgis:processing_operation@1",
+        "target": target,
+        "params": safe,
+        "summary": "Nivo prepared a QGIS Processing operation for confirmation.",
+        "undo": True,
+    }
+
+
+TURN_STATES = frozenset({
+    "idle", "composing", "clarification_required", "action_ready",
+    "confirmation_required", "executing", "cancelling", "completed", "failed",
+})
+
+
+def transition(state: str, event: str) -> str:
+    """Closed Nivo turn state machine; stale/unknown events fail closed."""
+    table = {
+        ("idle", "send"): "composing", ("composing", "clarify"): "clarification_required",
+        ("composing", "action"): "action_ready", ("composing", "confirm"): "confirmation_required",
+        ("composing", "error"): "failed", ("action_ready", "execute"): "executing",
+        ("confirmation_required", "apply"): "executing", ("executing", "cancel"): "cancelling",
+        ("executing", "done"): "completed", ("executing", "error"): "failed",
+        ("cancelling", "done"): "completed", ("clarification_required", "send"): "composing",
+        ("completed", "send"): "composing", ("failed", "send"): "composing",
+    }
+    return table.get((state, event), state if state in TURN_STATES else "idle")
+
+
+# These names are product contracts, not model suggestions.  The plugin maps
+# them to a small set of native QGIS UI operations after compose returns.
+ALLOWED_ACTIONS = frozenset({
+    "qgis:zoom_to_layer@1",
+    "qgis:zoom_to_selection@1",
+    "qgis:zoom_to_extent@1",
+    "qgis:set_layer_visibility@1",
+    "qgis:preview_filter@1",
+    "qgis:semantic_style@1",
+    "qgis:open_attribute_table@1",
+    "qgis:open_processing@1",
+    "qgis:open_review@1",
+    "qgis:open_results@1",
+    "qgis:inspect_layer@1",
+    "qgis:refresh_canvas@1",
+    "qgis:previous_extent@1",
+    "qgis:next_extent@1",
+    "qgis:select_all@1",
+    "qgis:clear_selection@1",
+    "qgis:invert_selection@1",
+    "qgis:set_layer_opacity@1",
+    "qgis:processing_operation@1",
+    "qgis:add_xyz_basemap@1",
+    "qgis:create_layer@1",
+    "qgis:add_features@1",
+})
+
+# What this build can actually carry out. ALLOWED_ACTIONS above is the protocol
+# allowlist - the shapes we are willing to parse - which is deliberately wider
+# during development. Capability negotiation must advertise only what the
+# dispatcher really implements: telling the server we support an action and then
+# doing nothing produces "Nivo prepared a QGIS action" followed by a map that
+# never changes, which reads as a broken assistant rather than a missing feature.
+# test_action_parity.py fails if this drifts from the dispatcher.
+#
+# The canonical half is derived rather than listed. Every capability with a
+# bound executor is advertised, so adding one to the runtime table makes it
+# reachable without anyone remembering to edit this file. The `qgis:*` entries
+# below stay hand-written because they are the legacy vocabulary: a fixed,
+# closed set that will only ever shrink.
+LEGACY_ACTIONS = frozenset({
+    "qgis:zoom_to_layer@1",
+    "qgis:zoom_to_selection@1",
+    "qgis:zoom_to_extent@1",
+    "qgis:set_layer_visibility@1",
+    "qgis:set_layer_opacity@1",
+    "qgis:open_attribute_table@1",
+    "qgis:open_processing@1",
+    "qgis:inspect_layer@1",
+    "qgis:refresh_canvas@1",
+    "qgis:previous_extent@1",
+    "qgis:next_extent@1",
+    "qgis:select_all@1",
+    "qgis:clear_selection@1",
+    "qgis:invert_selection@1",
+    "qgis:add_xyz_basemap@1",
+    "qgis:create_layer@1",
+    "qgis:add_features@1",
+    # Runs through the confirmation path rather than the direct dispatcher.
+    "qgis:processing_operation@1",
+})
+
+
+def _bound_capabilities() -> frozenset:
+    """Capabilities the runtime implements, or nothing if it cannot be read.
+
+    Imported lazily and defensively: capability negotiation happening at all
+    matters more than it being complete, and a plugin that fails to advertise
+    is degraded while a plugin that fails to load is broken.
+    """
+    try:
+        from .qgis_runtime import bound_capability_ids
+
+        return bound_capability_ids()
+    except Exception:  # noqa: BLE001 - advertisement must never break the plugin
+        return frozenset()
+
+
+def _can_run_plans() -> bool:
+    """Whether this build can START a plan the server proposes.
+
+    Not a supported action kind: that list is what the SERVER asks the desktop
+    to perform, and running a plan is the desktop acting on a proposal. Putting
+    it there would corrupt the registry intersection the server does on arrival.
+
+    Read from the module that does the work rather than written as a literal, so
+    the advertisement cannot outlive the control. Both halves are required - the
+    offer that states the cost and asks, and the client call that submits the
+    plan unchanged with its hash.
+    """
+    try:
+        from . import plan_offer
+        from .api_client import MapdexAPI
+
+        return callable(getattr(plan_offer, "plan_offer", None)) and callable(
+            getattr(MapdexAPI, "create_run", None))
+    except Exception:  # noqa: BLE001 - advertisement must never break the plugin
+        return False
+
+
+CAN_RUN_PLANS = _can_run_plans()
+
+IMPLEMENTED_ACTIONS = LEGACY_ACTIONS | _bound_capabilities()
+
+# The protocol allowlist has to admit the canonical vocabulary too, or the
+# parser rejects the very actions the negotiation just advertised.
+ALLOWED_ACTIONS = ALLOWED_ACTIONS | _bound_capabilities()
+
+TARGETED_ACTIONS = frozenset({
+    "qgis:zoom_to_layer@1", "qgis:set_layer_visibility@1",
+    "qgis:preview_filter@1", "qgis:semantic_style@1",
+    "qgis:open_attribute_table@1", "qgis:inspect_layer@1",
+    "qgis:select_all@1", "qgis:clear_selection@1", "qgis:invert_selection@1",
+    "qgis:set_layer_opacity@1",
+    "qgis:processing_operation@1",
+})
+
+# The geometry choice offered when a new-layer request did not state one.
+# Presenting it as a picker rather than a chat question matters: a question
+# asked in the transcript has nowhere to go, because the user's reply starts a
+# fresh turn in which "polygon" is a bare word with no intent attached.
+GEOMETRY_CHOICES = (
+    ("Point", "point"),
+    ("Line", "linestring"),
+    ("Polygon", "polygon"),
+)
+
+
+def geometry_from_choice(label: str) -> str:
+    """Map a picker label to its OGC type, or "" when nothing was chosen."""
+    for choice, geometry in GEOMETRY_CHOICES:
+        if str(label or "").strip().lower() == choice.lower():
+            return geometry
+    return ""
+
+
+SAFE_PARAM_KEYS = {
+    "qgis:zoom_to_extent@1": frozenset({"bbox", "crs", "center", "zoom"}),
+    "qgis:set_layer_visibility@1": frozenset({"visible"}),
+    "qgis:set_layer_opacity@1": frozenset({"opacity"}),
+    "qgis:semantic_style@1": frozenset({"renderer", "field", "classes", "label_field", "labels"}),
+    # `field` and `target_crs` were missing, and both are the REQUEST rather
+    # than a detail of it: a dissolve whose field is stripped merges the whole
+    # layer into one shape, and a reprojection with no destination used to be
+    # filled with the layer's own crs and reported success.
+    "qgis:processing_operation@1": frozenset(
+        {"operation", "distance", "segments", "predicate", "target_layer",
+         "input_layer", "field", "target_crs", "tolerance", "interval",
+         "base", "z_factor", "band"}
+    ),
+    "qgis:add_xyz_basemap@1": frozenset({"provider"}),
+    "qgis:create_layer@1": frozenset({"geometry", "crs", "name"}),
+    "qgis:add_features@1": frozenset(
+        {"geometry", "count", "coordinates", "bbox", "center", "crs", "area", "place"}
+    ),
+}
+
+
+def _text(value: Any, limit: int = MAX_TEXT) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def companion_context(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a bounded QGIS summary; never copy attributes or credentials."""
+    active = snapshot.get("active_layer") if isinstance(snapshot.get("active_layer"), dict) else {}
+    fields = active.get("fields") if isinstance(active.get("fields"), list) else []
+    layer = {
+        "id": _text(active.get("id"), 128),
+        "name": _text(active.get("name")),
+        "kind": _text(active.get("kind"), 32),
+        "crs": _text(active.get("crs"), 128),
+        "feature_count": max(0, int(active.get("feature_count") or 0)),
+        "geometry_type": _text(active.get("geometry_type"), 64),
+        "fields": [_text(field, 128) for field in fields[:MAX_FIELDS] if _text(field, 128)],
+    }
+    bbox = snapshot.get("bbox")
+    viewport = {"bbox": list(bbox)} if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None
+    context: dict[str, Any] = {
+        "version": COMPANION_VERSION,
+        "client": "qgis",
+        "crs": _text(snapshot.get("crs"), 128),
+        "selection_count": max(0, int(snapshot.get("selection_count") or 0)),
+        "visible_layer_count": max(0, int(snapshot.get("visible_layer_count") or 0)),
+        "active_layer": layer if layer["id"] or layer["name"] else None,
+        "connections": [{"id": _text(item.get("id"), 128), "name": _text(item.get("name"))}
+                        for item in (snapshot.get("connections") or [])[:16]
+                        if isinstance(item, dict) and _text(item.get("id"), 128)],
+    }
+    # Advertise only what this build can carry out, so the server never chooses
+    # an action that would silently do nothing on this desktop.
+    context["supported_action_kinds"] = sorted(IMPLEMENTED_ACTIONS)
+    # Whether a proposed plan can be started here. A build that cannot is told
+    # so beside the plan, instead of reading "run it when the steps look right"
+    # next to no control.
+    context["can_run_plans"] = CAN_RUN_PLANS
+    context["qgis_version"] = _text(snapshot.get("qgis_version"), 64)
+    context["plugin_version"] = _text(snapshot.get("plugin_version"), 64)
+    if viewport:
+        context["viewport"] = viewport
+    return {key: value for key, value in context.items() if value not in (None, "", [], {})}
+
+
+def allowed_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only schema-shaped allowlisted companion actions from compose."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for action in raw:
+        if not isinstance(action, dict) or action.get("kind") not in ALLOWED_ACTIONS:
+            continue
+        if action.get("requires_confirmation") is True:
+            continue
+        params = action.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        allowed = SAFE_PARAM_KEYS.get(action["kind"])
+        if allowed is not None and any(key not in allowed for key in params):
+            continue
+        if action["kind"] == "qgis:semantic_style@1":
+            renderer = params.get("renderer")
+            if renderer not in {"single", "categorized", "graduated", "labels"}:
+                continue
+            styling_field = _text(params.get("field") or params.get("label_field"), 128)
+            if renderer in {"categorized", "graduated", "labels"} and not styling_field:
+                continue
+        if action["kind"] == "qgis:add_xyz_basemap@1" and params.get("provider") != "osm":
+            continue
+        target = _text(action.get("target"), 128)
+        if action["kind"] in TARGETED_ACTIONS and not target:
+            continue
+        # These fields are opaque server-issued identifiers. Never accept a model
+        # supplied SQL, Python, path or confirmation executable payload.
+        action_id = _text(action.get("action_id"), 128)
+        if not action_id:
+            continue
+        result.append({
+            "id": action_id,
+            "tool": action["kind"],
+            "params": params,
+            "summary": _text(action.get("summary")),
+            "undo": bool(action.get("undo")),
+            "undo_token": _text(action.get("undo_token"), 128),
+            "target": target,
+            "correlation_id": _text(action.get("correlation_id"), 128),
+        })
+    return result
+
+
+def capability_request(tool: str, action: dict[str, Any], fallback_layer_id: str = "",
+                       legacy_ids: dict[str, str] | None = None):
+    """Resolve one compose action to (capability_id, params), or None.
+
+    Translation happens here and execution does not: a legacy id names the same
+    operation as its canonical capability, and routing both through the
+    registry is what makes them behave the same. None means no registered
+    capability covers the id, so the caller falls back to its plugin-native
+    table.
+
+    It lived inside the plugin's Qt class, where no test without QGIS could
+    reach it, so nothing held the server's real output to it. It is here so the
+    contract test (tests/test_server_action_contract.py) runs the same code the
+    dock runs.
+    """
+    capability_id = (legacy_ids or {}).get(tool, tool)
+    capability = get_capability(capability_id)
+    if capability is None:
+        return None
+    params = dict(action.get("params") or {})
+    if capability_id == "map.zoom_extent@1":
+        # The legacy payload may carry a centre and a zoom level rather than a
+        # box. Resolving it here is what lets one registry-validated capability
+        # serve both shapes.
+        resolved = resolve_extent(params)
+        if resolved is None:
+            raise CapabilityError("that map extent had no usable bounding box or centre")
+        # Emitted under the capability's declared name, which is the server's.
+        # The resolver above is what accepts whichever name arrived; validation
+        # only ever sees the canonical one.
+        params = {"bounds": resolved["bbox"], "crs": resolved["crs"]}
+    if "layer_id" in capability.params and "layer_id" not in params:
+        layer_id = str(action.get("target") or "") or str(fallback_layer_id or "")
+        if layer_id:
+            params["layer_id"] = layer_id
+    return capability_id, params
+
+
+def confirmation_actions(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return confirmation-required actions that are safe to present and apply."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if isinstance(response, dict) and (
+        not isinstance(raw, list)
+        or not any(
+            isinstance(action, dict)
+            and action.get("kind") == "qgis:processing_operation@1"
+            for action in raw
+        )
+    ):
+        # Current servers return named canonical actions (for example
+        # geoprocessing.buffer@1). Until this companion advertises those ids,
+        # recover their already validated client step from the grounded trace.
+        raw = _processing_actions_from_trace(response)
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for action in raw:
+        if not isinstance(action, dict) or action.get("kind") != "qgis:processing_operation@1":
+            continue
+        if action.get("requires_confirmation") is not True:
+            continue
+        target = _text(action.get("target"), 128)
+        if not target:
+            continue
+        params = action.get("params")
+        if not isinstance(params, dict):
+            continue
+        if any(key not in SAFE_PARAM_KEYS["qgis:processing_operation@1"] for key in params):
+            continue
+        safe_params = safe_processing_params(params)
+        if not safe_params:
+            continue
+        action_id = _text(action.get("action_id"), 128)
+        confirmation_id = _text(action.get("confirmation_id"), 128)
+        idempotency_key = _text(action.get("idempotency_key"), 128)
+        # Older hosted compose deployments did not attach the two server-side
+        # bookkeeping tokens. Neither token selects or executes the local
+        # algorithm: the closed kind, bounded params, stable target and action
+        # id above remain the execution safety boundary.
+        if not action_id:
+            continue
+        result.append({
+            "id": action_id,
+            "confirmation_id": confirmation_id,
+            "idempotency_key": idempotency_key,
+            "tool": action["kind"],
+            "target": target,
+            "params": safe_params,
+            "summary": _text(action.get("summary")),
+            "correlation_id": _text(action.get("correlation_id"), 128),
+            "undo": bool(action.get("undo")),
+            "undo_token": _text(action.get("undo_token"), 128),
+        })
+    return result
+
+
+def _processing_actions_from_trace(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recover a transport-dropped action from the server's grounded trace.
+
+    Some deployed compose transports return the direct-action text and trace
+    but omit ``companion_actions``. The trace is still server-generated from
+    the same validated action. Recovery is deliberately narrower than normal
+    admission: only a consequential client-side Processing capability with a
+    stable target and safe params can reach the existing confirmation gate.
+    """
+    trace = response.get("trace")
+    steps = trace.get("steps") if isinstance(trace, dict) else None
+    if not isinstance(steps, list):
+        return []
+    recovered = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        # Older traces used the generic qgis:action fallback even though their
+        # params were recorded from the validated Processing action. Newer
+        # traces carry the precise capability id.
+        capability = _text(step.get("capability"), 128)
+        named_operation = _processing_operation_for_capability(capability)
+        if capability not in GENERIC_QGIS_PROCESSING_CAPABILITIES and not named_operation:
+            continue
+        # surface/risk were added after the first trace transport. When either
+        # field is present it must prove this is the client consequential path;
+        # absence alone is tolerated for that older wire shape. Execution is
+        # still bounded below by the closed operation catalogue, safe params,
+        # stable target and the normal local confirmation dialog.
+        if step.get("surface") not in {None, "", "client"}:
+            continue
+        allowed_risks = {None, "", "safe", "consequential"} \
+            if named_operation else {None, "", "consequential"}
+        if step.get("risk") not in allowed_risks:
+            continue
+        params = step.get("params")
+        if not isinstance(params, dict):
+            continue
+        target = _text(params.get("input_layer"), 128)
+        # Named geoprocessing capabilities are the current server contract.
+        # Normalize their operation before applying the same closed local
+        # Processing catalogue and parameter validation as the legacy bridge.
+        supplied_operation = _text(params.get("operation"), 64)
+        if named_operation and supplied_operation and supplied_operation != named_operation:
+            continue
+        if not named_operation and supplied_operation not in SUPPORTED_QGIS_PROCESSING_OPERATIONS:
+            continue
+        if named_operation:
+            params = dict(params)
+            params["operation"] = named_operation
+        safe_params = safe_processing_params(params)
+        if not target or not safe_params:
+            continue
+        # Current compose responses identify the turn inside the canonical
+        # trace envelope; older transports also repeated it as top-level id.
+        response_id = _text(response.get("id") or trace.get("turn_id"), 96)
+        step_id = _text(step.get("id"), 96)
+        if not response_id or not step_id:
+            continue
+        recovered.append({
+            "action_id": "{}:{}".format(response_id, step_id),
+            "kind": "qgis:processing_operation@1",
+            "summary": _text(response.get("text") or response.get("message")),
+            "target": target,
+            "params": params,
+            "risk": "consequential",
+            "requires_confirmation": True,
+            "undo": True,
+        })
+    return recovered
+
+
+def confirmation_action_problem(response: dict[str, Any]) -> str:
+    """Explain why a proposed Processing action could not reach confirmation."""
+    raw = response.get("companion_actions") if isinstance(response, dict) else None
+    if not isinstance(raw, list):
+        return ""
+    for action in raw:
+        if not isinstance(action, dict) or action.get("kind") != "qgis:processing_operation@1":
+            continue
+        if action.get("requires_confirmation") is not True:
+            return "Nivo refused the Processing request because its confirmation gate was missing."
+        if not _text(action.get("target"), 128):
+            return "Nivo could not run Processing because the response did not identify the target layer."
+        params = action.get("params")
+        if not isinstance(params, dict):
+            return "Nivo could not run Processing because its parameters were missing."
+        if any(key not in SAFE_PARAM_KEYS["qgis:processing_operation@1"] for key in params):
+            return "Nivo refused unsafe or unsupported Processing parameters."
+        if not safe_processing_params(params):
+            return "Nivo could not validate the requested Processing operation or distance."
+        if not _text(action.get("action_id"), 128):
+            return "Nivo could not run Processing because the response had no action identifier."
+    trace = response.get("trace")
+    steps = trace.get("steps") if isinstance(trace, dict) else None
+    if isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and (
+            step.get("capability") in {"qgis:processing_operation@1", "qgis:action"}
+            or bool(_processing_operation_for_capability(_text(step.get("capability"), 128)))
+            or step.get("capability") == "processing.run@1"
+        )
+        for step in steps
+    ):
+        return "Nivo received a Processing proposal without executable target parameters."
+    return ""
+
+
+# --------------------------------------------------------------------------
+# Conversations
+# --------------------------------------------------------------------------
+#
+# `POST /v1/compose` has always accepted a `thread_id`, and with one it replays
+# the conversation and carries the earlier source reference forward. The plugin
+# sent none, so every QGIS turn arrived with no memory of the last one and
+# nothing was ever stored: there was no history to open because none was kept.
+#
+# These helpers are the pure half of that: which remembered id is still usable,
+# what the server's rows mean, and how a stored message becomes a transcript
+# turn. They are here rather than in plugin.py because plugin.py imports `qgis`
+# at module scope and cannot be imported in CI.
+
+THREAD_ID_SETTING = "mapdex/nivo/thread_id"
+THREAD_PROJECT_SETTING = "mapdex/nivo/thread_project_id"
+
+MAX_THREAD_TITLE = 60
+DEFAULT_THREAD_TITLE = "QGIS conversation"
+
+
+def thread_title(message: str) -> str:
+    """A History title taken from the user's own first words.
+
+    Mechanical: whitespace collapsed, then truncated. Nothing here inspects
+    what the words mean, in any language - the server's own fallback title is
+    a timestamp, which tells a reader nothing about which conversation this was.
+    """
+    text = " ".join(str(message or "").split())
+    if not text:
+        return DEFAULT_THREAD_TITLE
+    if len(text) <= MAX_THREAD_TITLE:
+        return text
+    return text[: MAX_THREAD_TITLE - 1].rstrip() + "…"
+
+
+def thread_is_gone(status: Any) -> bool:
+    """True when the API says the conversation we named does not exist.
+
+    `prepareCompose` answers 404 for an unknown or stale thread id and for
+    nothing else on that path, so this is the signal to open a fresh
+    conversation rather than to show the user an error about a thread they
+    never knew they had.
+    """
+    try:
+        return int(status) == 404
+    except (TypeError, ValueError):
+        return False
+
+
+def remembered_thread(stored_id: Any, stored_project: Any, active_project: Any) -> str:
+    """The stored thread id, but only for the project it was opened in.
+
+    Threads are project-scoped on the server. Carrying one into another project
+    would ask the API to continue a conversation that project cannot see, so a
+    mismatch (or a stored id with no recorded project) simply starts fresh.
+    """
+    thread_id = str(stored_id or "").strip()
+    project = str(stored_project or "").strip()
+    active = str(active_project or "").strip()
+    if not thread_id or not project or not active or project != active:
+        return ""
+    return thread_id
+
+
+def _rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    """The list in an API payload, whether bare or wrapped in an envelope."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys + ("items", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+    return []
+
+
+def _optional_count(value: Any):
+    """A non-negative integer, or None when the payload did not carry one.
+
+    None and 0 are different claims: "the server does not report this" must not
+    render as "this conversation has no messages".
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
+def thread_list_items(payload: Any) -> list[dict[str, Any]]:
+    """Normalize `GET /v1/threads` into rows the History dialog can render.
+
+    Server order is preserved. The API already returns newest-updated first,
+    and re-sorting RFC 3339 strings that may carry different UTC offsets would
+    reorder them wrongly rather than defensively.
+    """
+    rows = []
+    for item in _rows(payload, "threads"):
+        thread_id = _text(item.get("id"), 128)
+        if not thread_id:
+            continue
+        rows.append({
+            "id": thread_id,
+            "title": _text(item.get("title")) or DEFAULT_THREAD_TITLE,
+            "updated_at": _text(item.get("updated_at"), 64),
+            "created_at": _text(item.get("created_at"), 64),
+            "message_count": _optional_count(item.get("message_count")),
+        })
+    return rows
+
+
+def thread_turns(payload: Any) -> list[tuple[str, str]]:
+    """Stored messages as the transcript's own (sender, text) pairs.
+
+    Only user and assistant turns, and only their text. Tool calls, references
+    and model metadata are record-keeping, not conversation. The text stays a
+    plain string and is never marked up: the transcript is native Qt widgets on
+    purpose, because assistant text is data.
+    """
+    turns = []
+    for item in _rows(payload, "messages"):
+        role = _text(item.get("role"), 32).lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append((role, content))
+    return turns
+
+
+def format_timestamp(value: Any) -> str:
+    """`2026-08-17 14:32` in local time, or "" when the value cannot be read.
+
+    An unreadable timestamp yields nothing rather than the raw string: a row
+    reading "Parcel areas - 2026-08-17T11:32:04Z" is worse than one that simply
+    does not say when.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    text = raw[:-1] + "+00:00" if raw[-1:] in ("Z", "z") else raw
+    try:
+        moment = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return ""
+    if moment.tzinfo is not None:
+        try:
+            moment = moment.astimezone()
+        except (ValueError, OSError, OverflowError):
+            pass
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def describe_thread(item: dict[str, Any]) -> str:
+    """One History row: what it was about, when, and how long it ran."""
+    parts = [str((item or {}).get("title") or DEFAULT_THREAD_TITLE)]
+    when = format_timestamp((item or {}).get("updated_at") or (item or {}).get("created_at"))
+    if when:
+        parts.append(when)
+    count = (item or {}).get("message_count")
+    if isinstance(count, int) and count > 0:
+        parts.append("1 message" if count == 1 else "{} messages".format(count))
+    return " · ".join(parts)

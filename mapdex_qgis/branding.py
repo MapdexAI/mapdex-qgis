@@ -1,0 +1,119 @@
+"""Which Mapdex mark goes on the toolbar and the menus.
+
+The plugin put the INDIGO symbol on its toolbar button, its Measure and Draw
+actions and its layer-menu entries. That is not the Mapdex identity:
+`docs/MEMORY.md` hard rule 27 makes the black/white symbol the default mark -
+the white symbol on dark surfaces, the ink symbol on light ones - and reserves
+the blue variant for explicit accent placements, "never the default mark".
+
+Beside the correctness of it, one colour cannot serve a QGIS toolbar. QGIS
+ships light and dark themes, users install their own, and on Windows and macOS
+the system can darken the application with no QGIS setting changing at all. The
+indigo mark was the same picture in all of them; the black/white pair is chosen
+from the palette to match the user's interface.
+
+The two PNGs are the kit geometry, COPIED rather than redrawn: DESIGN.md
+forbids redrawing the mark, so the files on the toolbar are the same ones the
+PDF and HTML reports embed
+(`services/mapdex-extension-host/src/report/assets/mapdex-logo{,-white}.png`).
+
+**The `_dark` suffix means "for a dark interface", so the file whose name says
+dark is the WHITE one.** Reading it
+the other way round paints a black mark on a black toolbar, which on screen is
+indistinguishable from an icon that failed to load.
+
+Not in scope here: the Nivo avatar, which is its own assistant artwork and is
+left alone; and `icon.png`, which stays the indigo mark on purpose - see below.
+
+No Qt import, so which-file-on-which-surface is decided somewhere a test can
+reach without a host application.
+"""
+from __future__ import annotations
+
+import os
+
+# The default identity, per MEMORY hard rule 27. Named for the INTERFACE each
+# belongs to rather than for its own colour, because the interface is what the
+# caller knows and the colour is what it is choosing.
+MARK_FOR_LIGHT_INTERFACE = "mapdex_mark.png"
+MARK_FOR_DARK_INTERFACE = "mapdex_mark_dark.png"
+
+# `icon.png`, the indigo symbol, keeps its one legitimate job: `metadata.txt`
+# names it for the plugin-manager listing and for plugins.qgis.org. That is a
+# static install surface with no palette to read, where a single mark has to
+# stay visible against a light page and a dark one, and it is the same carve-out
+# MEMORY makes for favicon and app-icon exports. It is deliberately NOT
+# reachable through the helpers below, so it cannot drift back into the
+# workspace as the default mark.
+LISTING_MARK = "icon.png"
+
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+# ---------------------------------------------------------------------------
+# The eight glyphs
+# ---------------------------------------------------------------------------
+#
+# An icon earns its space when it carries STATE - what condition this is in -
+# or DESTINATION - where this work runs. Anything a label already says stays a
+# label, which is why layer kinds, zoom, tables, filters and the page tabs have
+# none: a picture beside a word that says the same thing is decoration, and at
+# 396 px decoration is the width the map does not get.
+#
+# Three states, from QGIS itself. Severity as a glyph is not a preference:
+# DESIGN.md section 8 forbids conveying status by colour alone, and the
+# coloured stripe this replaces did exactly that. QGIS draws them, follows the
+# user's theme for free, and makes the panel look like part of the host.
+#
+# `info` deliberately has none. It is the absence of a problem, so there is
+# nothing for a glyph to add that the sentence does not already say - and
+# QGIS's own mIconInfo draws a speech bubble, which beside an assistant's reply
+# reads as "this is a message", which every line in a transcript already is.
+SEVERITY_ICONS = {
+    "blocking": "mIconCritical.svg",
+    "warning": "mIconWarning.svg",
+    "success": "mIconSuccess.svg",
+}
+
+# Five of ours, because QGIS has no equivalent that paints - measured, not
+# assumed: mIconGeoreferencer.svg resolves to an empty pixmap in QGIS 4.0.2.
+# Four name the only work that leaves this machine, so a person can tell
+# before pressing that it is the paid half. Send is the one control in the
+# panel with no word on it.
+#
+# The four workflow keys are the `BatchKind` values verbatim, because the Task
+# page looks an icon up by the workflow's own id. That is also why
+# `full_pipeline` had to gain one: it became a card beside three that had a
+# glyph, and one blank tile in a row of four reads as an icon that failed to
+# load rather than as a workflow that has none.
+#
+# Named without the `_dark` half: the themed resolver adds it. Generated
+# by scripts/make_panel_icons.py on the same 24-unit grid, never hand-drawn binaries.
+ACTION_ICONS = {
+    "georeference": "icon_georeference.png",
+    "digitize_parcels": "icon_digitize.png",
+    "validate_deliver": "icon_validate.png",
+    "full_pipeline": "icon_pipeline.png",
+    "send": "icon_send.png",
+}
+
+
+def mark_asset(dark_interface: bool) -> str:
+    """The mark file name for the interface currently on screen."""
+    return MARK_FOR_DARK_INTERFACE if dark_interface else MARK_FOR_LIGHT_INTERFACE
+
+
+def mark_path(dark_interface: bool) -> str:
+    """Absolute path to that file. May not exist; callers fall back."""
+    return os.path.join(ASSETS, mark_asset(dark_interface))
+
+
+def surface_asset_path(name: str) -> str:
+    """The light-coloured variant, for a surface this panel always paints dark.
+
+    `themed_asset_icon` reads the interface palette, which is right for the
+    toolbar and wrong inside the panel: on a light QGIS theme it chose the ink
+    file and drew a near-black glyph on #191919, measured at relative luminance
+    0.06 against the surface's own 0.09.
+    """
+    stem, _, extension = name.rpartition(".")
+    return os.path.join(ASSETS, "{}_dark.{}".format(stem or name, extension or "png"))
