@@ -10,6 +10,13 @@
 # when no one merges -- which is what happened: four went unattended. One at a
 # time keeps the queue honest. It is a backlog cap, not a rate limit: closing
 # or merging the open one lets the next appear.
+#
+# "Merging" means the MONOREPO, never the public repo. It is a fast-forward
+# mirror of mapdex/apps/qgis-plugin, so one commit made there makes every later
+# publish fail with "fetch first". Two hand commits made at the first release did
+# exactly that from 2026-09-18 to 2026-10-02: four red publishes, hidden among
+# the green runs of pushes that never touched the plugin. Make the bump here,
+# then close the pull request there.
 version: 2
 updates:
   - package-ecosystem: github-actions
