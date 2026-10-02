@@ -536,6 +536,12 @@ ERROR_REGISTRY = [
         "template": "Could not import from the connection: {message}"
     },
     {
+        "code": "EXTRACTION_FOUND_NOTHING",
+        "type": "validation",
+        "http": 422,
+        "template": "Nothing could be extracted: {message}"
+    },
+    {
         "code": "CONNECTION_IMPORT_EMPTY",
         "type": "validation",
         "http": 422,
