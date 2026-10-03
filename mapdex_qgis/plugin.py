@@ -6544,6 +6544,18 @@ class MapdexPlugin:
     @guarded
     def _results_imported(self, exception, payload):
         if exception:
+            # A placed sheet costs one placement the first time it leaves
+            # Mapdex, and importing the georeferenced GeoTIFF into QGIS is it
+            # leaving. A balance that cannot cover it is refused with the
+            # canonical code, and that refusal has a route out: the same
+            # balance dialog a batch that cannot start gets. Branching on the
+            # code, never on the message.
+            if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                self._load_balance()
+                self._refresh_ui()
+                self._set_status(str(exception))
+                self._show_balance_dialog(str(exception))
+                return
             self._show_error("Could not import results", exception)
             return
         files = (payload or {}).get("files") or []
