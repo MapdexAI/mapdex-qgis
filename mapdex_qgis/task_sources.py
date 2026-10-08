@@ -304,9 +304,10 @@ def start_label(sources: Sequence[Source], price: str = "") -> str:
 
     The money belongs HERE rather than only in the line beside it: pressing this
     is the moment it is spent, and somebody who presses without reading the
-    surrounding sentence has still been told. The figure is a CEILING - a sheet
-    is charged only when its result is produced - and the line beside the button
-    is what says so, which is why the total is not repeated there.
+    surrounding sentence has still been told. The figure is what the batch
+    HOLDS while it runs (its traces; placing is free) and the line beside the
+    button says what a placed sheet costs later, the first time it is
+    downloaded, which is why the total is not repeated there.
 
     This module computes no price. It renders the string it is handed; the
     server owns the figure and `task_price` multiplies it. An empty `price`

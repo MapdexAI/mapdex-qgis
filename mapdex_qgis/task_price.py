@@ -71,10 +71,17 @@ def estimate(batch_kinds, kind: str, sheets: int) -> Optional[dict]:
     if not isinstance(per_item, int):
         return None
     charge = entry.get("charge") or {}
+    # leave_cents is what a placed sheet costs LATER, the first time it leaves
+    # Mapdex. It is never held at start and must never gate Start; an older
+    # server that does not send it is read as "no later charge to mention".
+    leave = entry.get("leave_cents")
+    leave = leave if isinstance(leave, int) and not isinstance(leave, bool) else 0
     return {
         "sheets": int(sheets),
         "per_item_cents": per_item,
         "total_cents": per_item * int(sheets),
+        "per_item_leave_cents": leave,
+        "leave_total_cents": leave * int(sheets),
         "placements": int(charge.get("placements") or 0) * int(sheets),
         "traces": int(charge.get("traces") or 0) * int(sheets),
     }
@@ -83,30 +90,35 @@ def estimate(batch_kinds, kind: str, sheets: int) -> Optional[dict]:
 def price_line(batch_kinds, kind: str, sheets: int, trace_beta: bool = False) -> str:
     """The sentence under the Start control, or "" when we cannot price it.
 
-    Three things it deliberately does NOT say. It does not print "$0.00" for an
-    unknown price. It does not call itself a bill: a subscriber's included
-    allowance is applied later by the meter, so this is the published
-    pay-as-you-go rate and is worded as an estimate. And it repeats what the
-    charge is conditional on - a sheet is charged only when the work it asked
-    for is produced, so an abstention, a review or a failure on our side costs
-    nothing - because that is the difference between this number and a quote.
+    It does not print "$0.00" for an unknown price, and it does not call itself
+    a bill: a subscriber's included allowance is applied later by the meter.
+
+    Placing a sheet is free (2026-10-03). A placed sheet costs one placement
+    the first time it is downloaded or exported, so that price is stated as
+    WHEN it is charged, never as the price of running the batch: a batch that
+    only places sheets runs on any balance.
     """
     figures = estimate(batch_kinds, kind, sheets)
     if figures is None:
         return ""
+    leave = figures["per_item_leave_cents"]
+    leave_line = (
+        " Placing is free; each placed sheet costs {unit} the first time it is"
+        " downloaded or exported."
+    ).format(unit=format_cents(leave)) if leave > 0 else ""
     if figures["total_cents"] == 0:
+        if leave > 0:
+            return leave_line.strip()
         return "No charge for this workflow."
     unit = format_cents(figures["per_item_cents"])
-    line = "{unit} per sheet.".format(unit=unit)
+    line = "{unit} per traced sheet.".format(unit=unit)
     if trace_beta and figures["traces"] > 0:
         line += " Tracing is in beta."
-    # Why the button's figure is a ceiling rather than a bill. The total is on
-    # the button and is deliberately NOT repeated here: one number in two
-    # adjacent places reads as two numbers.
+    # The total is on the button and is deliberately NOT repeated here: one
+    # number in two adjacent places reads as two numbers.
     return line + (
-        " A sheet is charged only when its result is produced, so a sheet that"
-        " fails or abstains costs nothing."
-    )
+        " A trace that fails or finds nothing costs nothing."
+    ) + leave_line
 
 
 def total_label(batch_kinds, kind: str, sheets: int) -> str:

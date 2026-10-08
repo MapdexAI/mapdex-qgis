@@ -27,10 +27,16 @@ from mapdex_qgis.task_price import (  # noqa: E402
 
 # Shaped exactly like the server's `batch_kinds`, from
 # apps/api/internal/modules/billing/infrastructure/http_handler.go.
+# Since 2026-10-03 `cents` is what an item HOLDS when it starts (its traces;
+# placing is free) and `leave_cents` is what its placed sheet costs later, the
+# first time it is downloaded or exported.
 KINDS = [
-    {"kind": "georeference", "charge": {"placements": 1, "traces": 0}, "cents": 200},
-    {"kind": "digitize_parcels", "charge": {"placements": 0, "traces": 1}, "cents": 500},
-    {"kind": "validate_deliver", "charge": {"placements": 0, "traces": 0}, "cents": 0},
+    {"kind": "georeference", "charge": {"placements": 1, "traces": 0}, "cents": 0,
+     "leave_cents": 200, "ceiling_cents": 200},
+    {"kind": "digitize_parcels", "charge": {"placements": 1, "traces": 1}, "cents": 500,
+     "leave_cents": 200, "ceiling_cents": 700},
+    {"kind": "validate_deliver", "charge": {"placements": 0, "traces": 0}, "cents": 0,
+     "leave_cents": 0, "ceiling_cents": 0},
 ]
 
 
@@ -53,35 +59,54 @@ def test_no_float_ever_touches_the_total():
 # -- multiplying the server's own figure ------------------------------------
 
 def test_the_estimate_multiplies_the_published_per_item_charge():
-    figures = estimate(KINDS, "georeference", 8)
+    figures = estimate(KINDS, "digitize_parcels", 8)
     assert figures == {
         "sheets": 8,
-        "per_item_cents": 200,
-        "total_cents": 1600,
+        "per_item_cents": 500,
+        "total_cents": 4000,
+        "per_item_leave_cents": 200,
+        "leave_total_cents": 1600,
         "placements": 8,
-        "traces": 0,
+        "traces": 8,
     }
 
 
 def test_the_line_states_the_rate_and_the_button_states_the_total():
     # Two numbers, two places, each answering a different question: the line
-    # says what a sheet costs, the button says what pressing it will spend.
-    # The total is deliberately NOT repeated in the line - one figure printed
-    # twice a centimetre apart reads as two figures.
-    line = price_line(KINDS, "georeference", 8)
-    assert "$2 per sheet" in line
-    assert "$16" not in line
-    assert total_label(KINDS, "georeference", 8) == "$16"
+    # says what a sheet costs, the button says what pressing it will hold.
+    # The total is deliberately NOT repeated in the line.
+    line = price_line(KINDS, "digitize_parcels", 8)
+    assert "$5 per traced sheet" in line
+    assert "$40" not in line
+    assert total_label(KINDS, "digitize_parcels", 8) == "$40"
 
 
 def test_the_rate_does_not_change_with_the_count():
-    assert price_line(KINDS, "georeference", 1) == price_line(KINDS, "georeference", 40)
+    assert price_line(KINDS, "digitize_parcels", 1) == price_line(KINDS, "digitize_parcels", 40)
+
+
+# Placing is free. A georeference batch holds nothing and runs on any balance;
+# what a placed sheet costs is stated as WHEN it is charged, and is never the
+# figure Start is gated on. Gating on it blocked free work (2026-10-03 review).
+def test_placing_is_free_and_the_download_price_is_stated_apart():
+    line = price_line(KINDS, "georeference", 8)
+    assert "Placing is free" in line
+    assert "$2 the first time it is downloaded or exported" in line
+    assert "$16" not in line
+    assert total_label(KINDS, "georeference", 8) == ""
+    assert total_cents(KINDS, "georeference", 300) == 0
+    empty = read_balance({"credits_available": 0, "credits_enforced": True})
+    assert afford(empty, total_cents(KINDS, "georeference", 300))["enough"] is True
+    assert balance_refusal(empty, total_cents(KINDS, "georeference", 300), 300) == ""
+
+
+def test_a_server_that_sends_no_leave_price_mentions_none():
+    kinds = [{"kind": "georeference", "charge": {"placements": 1}, "cents": 0}]
+    assert price_line(kinds, "georeference", 3) == "No charge for this workflow."
 
 
 def test_the_line_states_what_the_charge_is_conditional_on():
-    # The difference between an estimate and a quote: an abstention, a review or
-    # a failure on our side costs nothing.
-    assert "only when its result is produced" in price_line(KINDS, "georeference", 3)
+    assert "fails or finds nothing costs nothing" in price_line(KINDS, "digitize_parcels", 3)
 
 
 def test_tracing_says_it_is_in_beta_when_the_server_says_so():
@@ -140,8 +165,8 @@ def test_the_pricing_block_is_read_out_of_a_real_plans_response():
     })
     assert state["trace_beta"] is True
     assert kinds_from(state) == KINDS
-    assert "$2 per sheet" in price_line(kinds_from(state), "georeference", 8)
-    assert total_label(kinds_from(state), "georeference", 8) == "$16"
+    assert "$5 per traced sheet" in price_line(kinds_from(state), "digitize_parcels", 8)
+    assert total_label(kinds_from(state), "digitize_parcels", 8) == "$40"
 
 
 def test_a_malformed_entry_does_not_break_the_lookup():

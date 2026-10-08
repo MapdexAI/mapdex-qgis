@@ -197,6 +197,7 @@ from .plan_offer import offer_prompt, plan_offer, plan_run_report
 from .trace_view import budget_notice, step_rows
 from . import task_sources
 from . import task_price
+from . import leave_price
 from .task_options import TaskOptions, normalise_concurrency
 from . import task_options as task_options_module
 from .workspace import review_workspace_path, task_workspace_path
@@ -1235,6 +1236,10 @@ class MapdexPlugin:
         self.cancel_button = None
         self.retry_button = None
         self.import_button = None
+        # What importing the finished result costs, as the server quoted it,
+        # shown on the button before it is pressed. Empty until a quote was
+        # read; a placed sheet's first import is the one that charges.
+        self._result_price_line = ""
         self.review_button = None
         self.open_batch_button = None
         self.item_list = None
@@ -2388,7 +2393,10 @@ class MapdexPlugin:
                 if succeeded == 1
                 else "Get {} results from Mapdex".format(succeeded)
             )
-            self.import_button.setToolTip("Add the approved Mapdex result to this project.")
+            self.import_button.setToolTip(
+                "Add the approved Mapdex result to this project."
+                + (" " + self._result_price_line if self._result_price_line else "")
+            )
         else:
             self.import_button.setText("Get result from Mapdex")
             self.import_button.setToolTip(
@@ -2828,9 +2836,11 @@ class MapdexPlugin:
         """
         QDesktopServices.openUrl(QUrl("{}/workspace/billing".format(self.web_base)))
 
-    def _show_balance_dialog(self, notice):
+    def _show_balance_dialog(self, notice, headline=None, reassurance=None):
         """Say it again where it cannot be missed, and offer the way out."""
-        dialog = build_balance_dialog(notice, self._workflow_title(), self.dock)
+        dialog = build_balance_dialog(
+            notice, self._workflow_title(), self.dock, headline=headline, reassurance=reassurance,
+        )
         if dialog.exec():
             self.open_billing()
 
@@ -3080,6 +3090,21 @@ class MapdexPlugin:
         kind = str(action.get("kind") or "")
         if kind == "capabilities":
             self._say_capabilities()
+            return
+        if kind == "import_run":
+            # The control's label carries the price, so pressing it is the
+            # consent: import exactly the runs it names, nothing else.
+            run_ids = tuple(str(run_id) for run_id in action.get("run_ids") or () if run_id)
+            if not run_ids:
+                return
+            self._set_status("Fetching Mapdex results…")
+            self._task(
+                "Import Mapdex results into QGIS",
+                lambda: self._fetch_result_files(
+                    {}, only_runs=run_ids, interactive=True, consented=True,
+                ),
+                self._results_imported,
+            )
             return
         if kind == "connect":
             self.connect()
@@ -6046,10 +6071,12 @@ class MapdexPlugin:
             # canonical code, never on the message - the message is human copy
             # and matching it would be a keyword list in disguise.
             if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                numbers = leave_price.refusal_numbers(getattr(exception, "details", None))
+                message = "{} {}".format(exception, numbers).strip()
                 self._load_balance()
                 self._refresh_ui()
-                self._set_status(str(exception))
-                self._show_balance_dialog(str(exception))
+                self._set_status(message)
+                self._show_balance_dialog(message)
                 return
             self._show_error("Send to Mapdex failed", exception)
             return
@@ -6392,7 +6419,7 @@ class MapdexPlugin:
         def work():
             fresh = self._last_batch or self.api.batch(project_id, self.batch_id)
             self._last_batch = fresh
-            return self._fetch_result_files(fresh, include_review=include_review)
+            return self._fetch_result_files(fresh, include_review=include_review, interactive=True)
 
         self._set_status("Fetching the draft from Mapdex…" if include_review else "Fetching Mapdex results…")
         self._task("Import Mapdex results into QGIS", work, self._results_imported)
@@ -6434,16 +6461,24 @@ class MapdexPlugin:
         return prepared
 
     def _fetch_result_files(self, detail: dict, include_review: bool = False,
-                            only_runs: tuple[str, ...] = ()):
+                            only_runs: tuple[str, ...] = (), interactive: bool = False,
+                            consented: bool = False):
         """Bring the results of a batch, or of named runs, into QGIS.
 
         `only_runs` is the second entry point: a plan the panel ran directly is
         one run and belongs to no batch, and giving it its own copy of this
         method would leave two places that decide how a raster result differs
         from a vector one and what a draft review layer looks like.
+
+        A placed sheet costs one placement the first time it leaves Mapdex, and
+        importing its GeoTIFF is it leaving. So the rasters are priced BEFORE any
+        is downloaded: unless the server says the import is free, nothing is
+        fetched and the answer is the price (`needs_consent`), which the panel
+        states and asks about (`interactive`) or leaves on the button for the
+        person to press (an import nobody pressed). `consented` is the second
+        call, after the person agreed.
         """
         project_id = self._active_project_id()
-        prepared = []
         if only_runs:
             run_ids = list(only_runs)
             # A named run is imported as it stands. `include_review` exists to
@@ -6459,17 +6494,13 @@ class MapdexPlugin:
                     if run_id not in run_ids:
                         run_ids.append(run_id)
                         draft_runs.add(run_id)
-        for run_id in run_ids:
-            draft = run_id in draft_runs
-            run = self.api.run(run_id, project_id)
-            # A survey computation's positions are not a Layer and never will
-            # be: nothing is materialized on the server, because the answer
-            # belongs to the turn rather than to the project. They arrive with
-            # the step that produced them, so they are drawn here rather than
-            # imported below.
-            from .survey_drawing import drawings_from_run  # noqa: PLC0415
 
-            self._create_survey_layers(drawings_from_run(run))
+        # What would be imported, read without downloading anything.
+        runs = []
+        planned = []
+        for run_id in run_ids:
+            run = self.api.run(run_id, project_id)
+            runs.append(run)
             for layer in collect_layer_imports(run):
                 layer_id = layer["layer_id"]
                 if layer_id in self.imported_layer_ids:
@@ -6478,46 +6509,96 @@ class MapdexPlugin:
                 geometry_type = str(
                     metadata.get("geometry_type") or layer.get("geometry_type") or ""
                 ).lower()
-                result_dir = tempfile.mkdtemp(prefix="mapdex-qgis-result-")
-                # The id comes from the server and is used as a file name.
-                safe_id = safe_filename_part(layer_id, "layer")
                 if geometry_type == "raster":
                     file_id = str(metadata.get("source_file_id") or "")
                     if not file_id:
                         raise RuntimeError(
                             "Raster result {} has no downloadable source file.".format(layer_id)
                         )
-                    raw = self.api.file_bytes(file_id, project_id)
-                    path = os.path.join(result_dir, "{}.tif".format(safe_id))
-                    kind = "raster"
                 else:
-                    raw = self.api.layer_geojson(layer_id, project_id)
-                    try:
-                        notice = geojson_truncation_notice(json.loads(raw), layer["name"])
-                    except (ValueError, TypeError):
-                        notice = ""
-                    if notice:
-                        self._announce(notice, level=1, duration=10)
-                    if draft:
-                        # An unreviewed draft is worth reviewing IN QGIS, so it
-                        # arrives as one layer per validator verdict instead of
-                        # a single blob the user has to filter by hand.
-                        prepared.extend(
-                            self._draft_review_layers(raw, layer, result_dir, safe_id)
-                        )
-                        continue
-                    path = os.path.join(result_dir, "{}.geojson".format(safe_id))
-                    kind = "vector"
-                with open(path, "wb") as handle:
-                    handle.write(raw)
-                prepared.append(
-                    {
-                        "path": path,
-                        "name": "Mapdex · {}".format(layer["name"]),
-                        "layer_id": layer_id,
-                        "kind": kind,
-                    }
+                    file_id = ""
+                planned.append(
+                    {"layer": layer, "raster": geometry_type == "raster", "file_id": file_id,
+                     "draft": run_id in draft_runs}
                 )
+
+        if not consented:
+            quote = leave_price.quote_files(
+                (item["file_id"] for item in planned if item["raster"]),
+                lambda file_id: self.api.placement_quote(file_id, project_id),
+            )
+            if not leave_price.is_free(quote):
+                return {
+                    "needs_consent": True,
+                    "quote": quote,
+                    "batch": detail,
+                    "include_review": include_review,
+                    "only_runs": tuple(only_runs),
+                    "interactive": interactive,
+                }
+
+        prepared = []
+        refused = []
+        refusal_details = {}
+        for run in runs:
+            # A survey computation's positions are not a Layer and never will
+            # be: nothing is materialized on the server, because the answer
+            # belongs to the turn rather than to the project. They arrive with
+            # the step that produced them, so they are drawn here rather than
+            # imported below.
+            from .survey_drawing import drawings_from_run  # noqa: PLC0415
+
+            self._create_survey_layers(drawings_from_run(run))
+        for item in planned:
+            layer = item["layer"]
+            layer_id = layer["layer_id"]
+            result_dir = tempfile.mkdtemp(prefix="mapdex-qgis-result-")
+            # The id comes from the server and is used as a file name.
+            safe_id = safe_filename_part(layer_id, "layer")
+            if item["raster"]:
+                try:
+                    raw = self.api.file_bytes(item["file_id"], project_id)
+                except MapdexAPIError as exc:
+                    if not leave_price.is_leave_refusal(exc):
+                        raise
+                    # The balance does not cover this placed sheet's first
+                    # download. The results already fetched still arrive, and
+                    # this one is named as not imported, rather than the whole
+                    # import failing over the one sheet.
+                    refused.append(layer["name"])
+                    refusal_details = refusal_details or dict(getattr(exc, "details", {}) or {})
+                    continue
+                path = os.path.join(result_dir, "{}.tif".format(safe_id))
+                kind = "raster"
+            else:
+                raw = self.api.layer_geojson(layer_id, project_id)
+                try:
+                    notice = geojson_truncation_notice(json.loads(raw), layer["name"])
+                except (ValueError, TypeError):
+                    notice = ""
+                if notice:
+                    self._announce(notice, level=1, duration=10)
+                if item["draft"]:
+                    # An unreviewed draft is worth reviewing IN QGIS, so it
+                    # arrives as one layer per validator verdict instead of
+                    # a single blob the user has to filter by hand.
+                    prepared.extend(
+                        self._draft_review_layers(raw, layer, result_dir, safe_id)
+                    )
+                    continue
+                path = os.path.join(result_dir, "{}.geojson".format(safe_id))
+                kind = "vector"
+            with open(path, "wb") as handle:
+                handle.write(raw)
+            prepared.append(
+                {
+                    "path": path,
+                    "name": "Mapdex · {}".format(layer["name"]),
+                    "layer_id": layer_id,
+                    "kind": kind,
+                }
+            )
+        for run in runs:
             # Artifacts are the fallback for a run that materialized no Layer;
             # the rule and its reasoning live in `fallback_artifact_imports`.
             for artifact in fallback_artifact_imports(run):
@@ -6539,15 +6620,38 @@ class MapdexPlugin:
                         "kind": "vector",
                     }
                 )
-        return {"files": prepared, "batch": detail}
+        return {"files": prepared, "batch": detail, "refused": refused, "refusal": refusal_details}
 
     @guarded
     def _results_imported(self, exception, payload):
         if exception:
+            # A placed sheet costs one placement the first time it leaves
+            # Mapdex, and importing the georeferenced GeoTIFF into QGIS is it
+            # leaving. A balance that cannot cover it is refused with the
+            # canonical code, and that refusal has a route out: the same
+            # balance dialog a batch that cannot start gets. Branching on the
+            # code, never on the message.
+            if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                # With the server's numbers: what the sheet costs and what the
+                # balance holds, never "pay" without "how much".
+                message = leave_price.refusal_text(exception)
+                self._load_balance()
+                self._refresh_ui()
+                self._set_status(message)
+                self._show_balance_dialog(
+                    message,
+                    headline=leave_price.IMPORT_REFUSED_HEADLINE,
+                    reassurance=leave_price.IMPORT_REFUSED_REASSURANCE,
+                )
+                return
             self._show_error("Could not import results", exception)
+            return
+        if (payload or {}).get("needs_consent"):
+            self._result_needs_consent(payload)
             return
         files = (payload or {}).get("files") or []
         detail = (payload or {}).get("batch") or self._last_batch or {}
+        refused = list((payload or {}).get("refused") or [])
         added = 0
         imported = []
         for item in files:
@@ -6563,6 +6667,24 @@ class MapdexPlugin:
             added += 1
             imported.append(layer)
         self._zoom_to_layers(imported)
+        if refused:
+            # Some placed sheets were not covered by the balance. What arrived
+            # stays in the project; the ones that did not are named, with the
+            # same route out a refused batch gets.
+            self._result_price_line = ""
+            message = leave_price.partial_import_message(added, refused, (payload or {}).get("refusal"))
+            self._load_balance()
+            self._refresh_ui()
+            self._set_status(message)
+            self._show_balance_dialog(
+                message,
+                headline=leave_price.IMPORT_REFUSED_HEADLINE,
+                reassurance=leave_price.IMPORT_REFUSED_REASSURANCE,
+            )
+            if added:
+                self.iface.mapCanvas().refresh()
+            return
+        self._result_price_line = ""
         review_n = len(review_run_ids(detail))
         if added:
             msg = "Added {} Mapdex result layer(s) to the project.".format(added)
@@ -6580,6 +6702,58 @@ class MapdexPlugin:
         else:
             self._set_status("Task finished, but no importable result layers were available to add.")
             self._announce("Mapdex task finished with no importable layer.", level=1)
+
+    @guarded
+    def _result_needs_consent(self, payload):
+        """State the price of an import before anything is downloaded.
+
+        Pressed by the person (`interactive`), it asks, with the price in the
+        question. Started on its own when a task finished, it does not spend
+        anything: it says what importing costs and leaves the Get result button
+        for the person to press, with the price on it.
+        """
+        quote = payload.get("quote")
+        line = leave_price.price_line(quote)
+        self._result_price_line = line
+        self._refresh_ui()
+        detail = payload.get("batch") or {}
+        include_review = bool(payload.get("include_review"))
+        only_runs = tuple(payload.get("only_runs") or ())
+        if not payload.get("interactive"):
+            # A plan run has no batch, so no Get result button: its result is
+            # offered by a control on its own turn, with the price in the label.
+            plan_run = bool(only_runs) and not (detail or {}).get("items")
+            message = leave_price.ready_message(quote, plan_run=plan_run)
+            if plan_run:
+                self._say(
+                    message,
+                    actions=[{
+                        "label": leave_price.import_label(quote),
+                        "kind": "import_run",
+                        "run_ids": list(only_runs),
+                        "tone": "normal",
+                    }],
+                )
+            self._set_status(message)
+            self._announce(message, level=1, duration=10)
+            return
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(), "Mapdex", leave_price.consent_text(quote), yes | no, no,
+        )
+        if answer != yes:
+            self._set_status("Not imported. {}".format(line))
+            return
+        self._set_status("Fetching Mapdex results…")
+        self._task(
+            "Import Mapdex results into QGIS",
+            lambda: self._fetch_result_files(
+                detail, include_review=include_review, only_runs=only_runs,
+                interactive=True, consented=True,
+            ),
+            self._results_imported,
+        )
 
     def _zoom_to_layers(self, layers) -> None:
         """Frame the imported layers, in the canvas CRS.
@@ -6702,7 +6876,7 @@ class MapdexPlugin:
             self._task(
                 "Import Mapdex result into QGIS",
                 lambda: self._fetch_result_files(
-                    self._last_batch or {}, only_runs=(run_id,)
+                    self._last_batch or {}, only_runs=(run_id,), interactive=True
                 ),
                 self._results_imported,
             )

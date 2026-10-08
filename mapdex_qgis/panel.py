@@ -2217,7 +2217,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     }
 
 
-def build_balance_dialog(notice, workflow_title="", parent=None):
+def build_balance_dialog(notice, workflow_title="", parent=None, headline=None, reassurance=None):
     """The batch did not start, and here is the one thing that changes that.
 
     A modal is the right shape for exactly this class and a poor shape for
@@ -2243,13 +2243,17 @@ def build_balance_dialog(notice, workflow_title="", parent=None):
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(10)
 
-    headline = QLabel(
-        "{} did not start.".format(workflow_title) if workflow_title
+    # `headline` and `reassurance` replace the batch wording for a refusal that
+    # is not a batch (a placed sheet's first import), where "did not start" and
+    # "nothing was uploaded" would be false.
+    title = QLabel(
+        headline if headline
+        else "{} did not start.".format(workflow_title) if workflow_title
         else "This task did not start."
     )
-    headline.setObjectName("mapdexSectionTitle")
-    headline.setWordWrap(True)
-    layout.addWidget(headline)
+    title.setObjectName("mapdexSectionTitle")
+    title.setWordWrap(True)
+    layout.addWidget(title)
 
     body = QLabel(str(notice or ""))
     body.setWordWrap(True)
@@ -2258,14 +2262,16 @@ def build_balance_dialog(notice, workflow_title="", parent=None):
 
     # Nothing was uploaded and nothing was charged. Said out loud because the
     # first question after a refused batch is whether half of it went anyway.
-    reassurance = QLabel(
-        "Nothing was uploaded and nothing was charged. Your sources are still "
-        "in the list."
+    footnote = QLabel(
+        reassurance or (
+            "Nothing was uploaded and nothing was charged. Your sources are still "
+            "in the list."
+        )
     )
-    reassurance.setObjectName("mapdexPageFootnote")
-    reassurance.setWordWrap(True)
-    allow_narrow(reassurance)
-    layout.addWidget(reassurance)
+    footnote.setObjectName("mapdexPageFootnote")
+    footnote.setWordWrap(True)
+    allow_narrow(footnote)
+    layout.addWidget(footnote)
 
     actions = QHBoxLayout()
     actions.setContentsMargins(0, 0, 0, 0)
