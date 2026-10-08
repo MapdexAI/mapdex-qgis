@@ -97,6 +97,40 @@ def price_line(quote: Optional[dict]) -> str:
     return line
 
 
+def import_label(quote: Optional[dict]) -> str:
+    """The label of a control that imports a priced result: the price is IN it.
+
+    Pressing it is the consent, so it may not leave the price to a line the
+    person may not have read.
+    """
+    if quote is None:
+        return "Import into QGIS (price not checked)"
+    cents = _int(quote.get("charge_cents"))
+    if cents <= 0:
+        return "Import into QGIS (free)"
+    return "Import into QGIS ({price})".format(price=format_cents(cents))
+
+
+def ready_message(quote: Optional[dict], plan_run: bool) -> str:
+    """What the panel says when a finished result was NOT imported on its own.
+
+    A batch has the Get result button. A plan run has no batch and so no such
+    button: telling its owner to press it pointed at a control that was not
+    on screen, and the result could never be imported. A plan run's result is
+    offered by a control on its own turn instead, and the text says so.
+    """
+    line = price_line(quote)
+    if plan_run:
+        return (
+            "The result is ready in Mapdex. Importing it into QGIS: {line} "
+            "Use the Import into QGIS button below to bring it in."
+        ).format(line=line)
+    return (
+        "Results are ready in Mapdex. Importing them into QGIS: {line} "
+        "Press Get result from Mapdex to import."
+    ).format(line=line)
+
+
 def consent_text(quote: Optional[dict]) -> str:
     """The question asked before an import that will, or may, charge."""
     return "Getting this result into QGIS:\n\n{line}\n\nImport it now?".format(line=price_line(quote))

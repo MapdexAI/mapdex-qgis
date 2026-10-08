@@ -3089,6 +3089,21 @@ class MapdexPlugin:
         if kind == "capabilities":
             self._say_capabilities()
             return
+        if kind == "import_run":
+            # The control's label carries the price, so pressing it is the
+            # consent: import exactly the runs it names, nothing else.
+            run_ids = tuple(str(run_id) for run_id in action.get("run_ids") or () if run_id)
+            if not run_ids:
+                return
+            self._set_status("Fetching Mapdex results…")
+            self._task(
+                "Import Mapdex results into QGIS",
+                lambda: self._fetch_result_files(
+                    {}, only_runs=run_ids, interactive=True, consented=True,
+                ),
+                self._results_imported,
+            )
+            return
         if kind == "connect":
             self.connect()
             return
@@ -6688,10 +6703,20 @@ class MapdexPlugin:
         include_review = bool(payload.get("include_review"))
         only_runs = tuple(payload.get("only_runs") or ())
         if not payload.get("interactive"):
-            message = (
-                "Results are ready in Mapdex. Importing them into QGIS: {} "
-                "Press Get result from Mapdex to import."
-            ).format(line)
+            # A plan run has no batch, so no Get result button: its result is
+            # offered by a control on its own turn, with the price in the label.
+            plan_run = bool(only_runs) and not (detail or {}).get("items")
+            message = leave_price.ready_message(quote, plan_run=plan_run)
+            if plan_run:
+                self._say(
+                    message,
+                    actions=[{
+                        "label": leave_price.import_label(quote),
+                        "kind": "import_run",
+                        "run_ids": list(only_runs),
+                        "tone": "normal",
+                    }],
+                )
             self._set_status(message)
             self._announce(message, level=1, duration=10)
             return
