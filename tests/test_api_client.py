@@ -349,6 +349,33 @@ def test_api_error_parses_nested_envelope(monkeypatch):
         assert exc.retry_after == 17
 
 
+def test_a_402_keeps_its_required_and_available_numbers():
+    """A short balance's refusal carries what it costs and what there is; the
+    dialog that offers the purchase cannot state either if the client drops
+    the envelope's details."""
+    api = MapdexAPI("https://api.mapdex.ai", "token")
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps({
+                "code": "INSUFFICIENT_CREDITS",
+                "message": "the balance does not cover it",
+                "details": {"reason": "placement_leave", "required": 200, "available": 100},
+            }).encode()
+
+        def close(self):
+            return None
+
+    url = "https://api.mapdex.ai/v1/files/f/download"
+    exc = error.HTTPError(url, 402, "Payment Required", hdrs={}, fp=FakeResponse())
+    try:
+        api._raise_http("GET", url, exc)
+        raise AssertionError("expected MapdexAPIError")
+    except MapdexAPIError as raised:
+        assert raised.code == "INSUFFICIENT_CREDITS"
+        assert raised.details["required"] == 200 and raised.details["available"] == 100
+
+
 def test_production_404_never_suggests_localhost(monkeypatch):
     import mapdex_qgis.build_profile as profile
 

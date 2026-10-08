@@ -18,6 +18,8 @@ from mapdex_qgis.leave_price import (  # noqa: E402
     partial_import_message,
     price_line,
     quote_files,
+    refusal_numbers,
+    refusal_text,
     sum_quotes,
 )
 
@@ -84,6 +86,25 @@ def test_only_a_short_balance_is_a_leave_refusal():
     assert is_leave_refusal(Refused())
     assert not is_leave_refusal(Other())
     assert not is_leave_refusal(RuntimeError("x"))
+
+
+class RefusedWithNumbers(Exception):
+    code = "INSUFFICIENT_CREDITS"
+    details = {"reason": "placement_leave", "required": 200, "available": 100, "sheets": 1}
+
+
+def test_a_short_balance_refusal_states_what_it_costs_and_what_there_is():
+    # The 402 carries required and available; a dialog without them asks the
+    # person to pay without saying how much.
+    assert refusal_numbers(RefusedWithNumbers.details) == "It costs $2 and the workspace has $1."
+    text = refusal_text(RefusedWithNumbers("short"))
+    assert "$2" in text and "$1" in text
+    assert refusal_numbers({"required": 200}) == ""
+    assert refusal_numbers(None) == ""
+    # Without numbers the server's own sentence stands.
+    assert refusal_text(Refused("the balance does not cover it")) == "the balance does not cover it"
+    message = partial_import_message(1, ["Sheet C"], RefusedWithNumbers.details)
+    assert message.endswith("It costs $2 and the workspace has $1.")
 
 
 def test_a_partial_import_names_what_arrived_and_what_did_not():

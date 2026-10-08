@@ -106,6 +106,7 @@ class MapdexAPIError(RuntimeError):
         method: str = "",
         retry_after: int = 0,
         code: str = "",
+        details: Optional[dict] = None,
     ):
         super().__init__(message)
         self.status = status
@@ -118,6 +119,10 @@ class MapdexAPIError(RuntimeError):
         # human copy that may be localized or reworded, and matching it would
         # be a keyword list in disguise.
         self.code = code
+        # The envelope's structured details: for a short balance, `required`
+        # and `available` in cents. A refusal shown without them asks the
+        # person to pay without saying how much.
+        self.details = dict(details) if isinstance(details, dict) else {}
 
 
 def normalize_api_base(url: str) -> str:
@@ -226,15 +231,20 @@ class MapdexAPI:
         message = None
         corr = ""
         code = ""
+        details = {}
         if isinstance(envelope, dict):
             message = envelope.get("message")
             corr = envelope.get("correlation_id") or ""
             code = str(envelope.get("code") or "")
+            if isinstance(envelope.get("details"), dict):
+                details = envelope["details"]
             err = envelope.get("error")
             if isinstance(err, dict):
                 message = message or err.get("message")
                 corr = err.get("correlation_id") or corr
                 code = code or str(err.get("code") or "")
+                if not details and isinstance(err.get("details"), dict):
+                    details = err["details"]
             elif isinstance(err, str):
                 message = message or err
         if not message:
@@ -258,7 +268,8 @@ class MapdexAPI:
         except (TypeError, ValueError):
             retry_after = 0
         raise MapdexAPIError(
-            str(message), exc.code, corr, url=url, method=method, retry_after=retry_after, code=code
+            str(message), exc.code, corr, url=url, method=method, retry_after=retry_after, code=code,
+            details=details,
         ) from exc
 
     def _request(

@@ -2836,9 +2836,11 @@ class MapdexPlugin:
         """
         QDesktopServices.openUrl(QUrl("{}/workspace/billing".format(self.web_base)))
 
-    def _show_balance_dialog(self, notice):
+    def _show_balance_dialog(self, notice, headline=None, reassurance=None):
         """Say it again where it cannot be missed, and offer the way out."""
-        dialog = build_balance_dialog(notice, self._workflow_title(), self.dock)
+        dialog = build_balance_dialog(
+            notice, self._workflow_title(), self.dock, headline=headline, reassurance=reassurance,
+        )
         if dialog.exec():
             self.open_billing()
 
@@ -6069,10 +6071,12 @@ class MapdexPlugin:
             # canonical code, never on the message - the message is human copy
             # and matching it would be a keyword list in disguise.
             if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                numbers = leave_price.refusal_numbers(getattr(exception, "details", None))
+                message = "{} {}".format(exception, numbers).strip()
                 self._load_balance()
                 self._refresh_ui()
-                self._set_status(str(exception))
-                self._show_balance_dialog(str(exception))
+                self._set_status(message)
+                self._show_balance_dialog(message)
                 return
             self._show_error("Send to Mapdex failed", exception)
             return
@@ -6535,6 +6539,7 @@ class MapdexPlugin:
 
         prepared = []
         refused = []
+        refusal_details = {}
         for run in runs:
             # A survey computation's positions are not a Layer and never will
             # be: nothing is materialized on the server, because the answer
@@ -6561,6 +6566,7 @@ class MapdexPlugin:
                     # this one is named as not imported, rather than the whole
                     # import failing over the one sheet.
                     refused.append(layer["name"])
+                    refusal_details = refusal_details or dict(getattr(exc, "details", {}) or {})
                     continue
                 path = os.path.join(result_dir, "{}.tif".format(safe_id))
                 kind = "raster"
@@ -6614,7 +6620,7 @@ class MapdexPlugin:
                         "kind": "vector",
                     }
                 )
-        return {"files": prepared, "batch": detail, "refused": refused}
+        return {"files": prepared, "batch": detail, "refused": refused, "refusal": refusal_details}
 
     @guarded
     def _results_imported(self, exception, payload):
@@ -6626,10 +6632,17 @@ class MapdexPlugin:
             # balance dialog a batch that cannot start gets. Branching on the
             # code, never on the message.
             if isinstance(exception, MapdexAPIError) and exception.code == "INSUFFICIENT_CREDITS":
+                # With the server's numbers: what the sheet costs and what the
+                # balance holds, never "pay" without "how much".
+                message = leave_price.refusal_text(exception)
                 self._load_balance()
                 self._refresh_ui()
-                self._set_status(str(exception))
-                self._show_balance_dialog(str(exception))
+                self._set_status(message)
+                self._show_balance_dialog(
+                    message,
+                    headline=leave_price.IMPORT_REFUSED_HEADLINE,
+                    reassurance=leave_price.IMPORT_REFUSED_REASSURANCE,
+                )
                 return
             self._show_error("Could not import results", exception)
             return
@@ -6659,11 +6672,15 @@ class MapdexPlugin:
             # stays in the project; the ones that did not are named, with the
             # same route out a refused batch gets.
             self._result_price_line = ""
-            message = leave_price.partial_import_message(added, refused)
+            message = leave_price.partial_import_message(added, refused, (payload or {}).get("refusal"))
             self._load_balance()
             self._refresh_ui()
             self._set_status(message)
-            self._show_balance_dialog(message)
+            self._show_balance_dialog(
+                message,
+                headline=leave_price.IMPORT_REFUSED_HEADLINE,
+                reassurance=leave_price.IMPORT_REFUSED_REASSURANCE,
+            )
             if added:
                 self.iface.mapCanvas().refresh()
             return

@@ -100,7 +100,10 @@ class FakeAPI:
 
     def file_bytes(self, file_id, project_id=""):
         if len(self.downloads) >= self.affordable:
-            raise MapdexAPIError("balance does not cover it", status=402, code="INSUFFICIENT_CREDITS")
+            raise MapdexAPIError(
+                "balance does not cover it", status=402, code="INSUFFICIENT_CREDITS",
+                details={"reason": "placement_leave", "required": 200, "available": 100},
+            )
         self.downloads.append(file_id)
         return b"II*\x00"
 
@@ -145,8 +148,11 @@ def test_a_refused_sheet_keeps_the_ones_already_fetched_and_is_named():
     answer = FETCH(panel(api), BATCH, interactive=True, consented=True)
     assert [item["name"] for item in answer["files"]] == ["Mapdex · Sheet A", "Mapdex · Sheet B"]
     assert answer["refused"] == ["Sheet C"]
-    message = leave_price.partial_import_message(len(answer["files"]), answer["refused"])
+    # The refusal's numbers travel with it to the dialog.
+    assert answer["refusal"]["required"] == 200 and answer["refusal"]["available"] == 100
+    message = leave_price.partial_import_message(len(answer["files"]), answer["refused"], answer["refusal"])
     assert message.startswith("Added 2 result layer(s).") and "Sheet C" in message
+    assert "It costs $2 and the workspace has $1." in message
 
 
 def test_any_other_failure_still_fails_the_import():

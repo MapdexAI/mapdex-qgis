@@ -141,11 +141,50 @@ def is_leave_refusal(exception) -> bool:
     return str(getattr(exception, "code", "") or "") == "INSUFFICIENT_CREDITS"
 
 
-def partial_import_message(added: int, refused: Sequence[str]) -> str:
+def refusal_numbers(details: Optional[dict]) -> str:
+    """The two numbers a short balance is refused with, as a sentence.
+
+    The server sends `required` and `available` in cents on the 402. A refusal
+    that drops them asks the person to pay without saying how much, and how
+    much they have. Empty when the server did not send both.
+    """
+    details = details if isinstance(details, dict) else {}
+    required, available = details.get("required"), details.get("available")
+    if not isinstance(required, int) or isinstance(required, bool):
+        return ""
+    if not isinstance(available, int) or isinstance(available, bool):
+        return ""
+    return "It costs {required} and the workspace has {available}.".format(
+        required=format_cents(required), available=format_cents(available)
+    )
+
+
+def refusal_text(exception) -> str:
+    """The sentence for a placed sheet's first import refused for a short balance."""
+    numbers = refusal_numbers(getattr(exception, "details", None))
+    if not numbers:
+        return str(exception)
+    return (
+        "A placed sheet is charged once, the first time it leaves Mapdex, and the "
+        "balance does not cover it. {numbers}"
+    ).format(numbers=numbers)
+
+
+# What the balance dialog says above and below the refusal when an IMPORT was
+# refused. The batch wording ("did not start", "nothing was uploaded") is about
+# a batch and is false here.
+IMPORT_REFUSED_HEADLINE = "This placed sheet was not imported."
+IMPORT_REFUSED_REASSURANCE = (
+    "Nothing was charged for it. Results already imported stay in the project."
+)
+
+
+def partial_import_message(added: int, refused: Sequence[str], details: Optional[dict] = None) -> str:
     """What happened when some results came in and some were refused.
 
     The layers that arrived are named as arrived, and the ones the balance did
-    not cover are named, so nobody has to work out which sheet is missing.
+    not cover are named, with what they cost and what the balance holds, so
+    nobody has to work out which sheet is missing or how much it needs.
     """
     if not refused:
         return ""
@@ -153,10 +192,11 @@ def partial_import_message(added: int, refused: Sequence[str]) -> str:
     head = (
         "Added {n} result layer(s). ".format(n=added) if added else ""
     )
+    numbers = refusal_numbers(details)
     return (
         "{head}Not imported, because the balance does not cover the first download of "
-        "these placed sheets: {names}."
-    ).format(head=head, names=names)
+        "these placed sheets: {names}.{numbers}"
+    ).format(head=head, names=names, numbers=(" " + numbers) if numbers else "")
 
 
 def _int(value) -> int:
