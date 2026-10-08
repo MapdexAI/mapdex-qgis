@@ -6688,7 +6688,10 @@ class MapdexPlugin:
         include_review = bool(payload.get("include_review"))
         only_runs = tuple(payload.get("only_runs") or ())
         if not payload.get("interactive"):
-            message = "Results are ready in Mapdex. Importing them into QGIS: {} Press Get result from Mapdex to import.".format(line)
+            message = (
+                "Results are ready in Mapdex. Importing them into QGIS: {} "
+                "Press Get result from Mapdex to import."
+            ).format(line)
             self._set_status(message)
             self._announce(message, level=1, duration=10)
             return
