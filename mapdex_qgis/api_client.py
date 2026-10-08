@@ -665,3 +665,24 @@ class MapdexAPI:
 
     def file_bytes(self, file_id: str, project_id: str = "") -> bytes:
         return self.download_bytes(f"/v1/files/{file_id}/download", project_id=project_id)
+
+    def placement_quote(self, file_id: str, project_id: str = ""):
+        """What downloading this file would cost now, charging nothing.
+
+        `GET /v1/credits/placement-quote`: a placed sheet costs one placement
+        the first time it leaves Mapdex. Returns the server's quote, or None
+        when it could not be read - which `leave_price` treats as unknown,
+        never as free.
+        """
+        if not file_id:
+            return None
+        try:
+            value = self._request(
+                "GET",
+                "/v1/credits/placement-quote?" + parse.urlencode({"file_id": file_id}),
+                project_id=project_id,
+                timeout=15.0,
+            )
+        except MapdexAPIError:
+            return None
+        return value if isinstance(value, dict) else None
