@@ -86,6 +86,12 @@ ERROR_REGISTRY = [
         "template": "{message}"
     },
     {
+        "code": "SOURCE_FILE_DELETED",
+        "type": "not_found",
+        "http": 404,
+        "template": "The input file was deleted before this run started."
+    },
+    {
         "code": "PROCESSING_RESOURCE_EXHAUSTED",
         "type": "processing",
         "http": 422,
