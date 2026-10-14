@@ -368,6 +368,12 @@ ERROR_REGISTRY = [
         "template": "Routing is temporarily unavailable."
     },
     {
+        "code": "PLACE_INDEX_WARMING",
+        "type": "system",
+        "http": 503,
+        "template": "Place names are still loading. Try again in {retry_after_seconds} seconds."
+    },
+    {
         "code": "PROVIDER_RATE_LIMITED",
         "type": "rate_limit",
         "http": 429,
