@@ -194,6 +194,18 @@ ERROR_REGISTRY = [
         "template": "The processing service address {address} could not be resolved. This is a deployment configuration fault and retrying will not clear it."
     },
     {
+        "code": "ASSISTANT_UNAVAILABLE",
+        "type": "system",
+        "http": 503,
+        "template": "The assistant cannot reach its model right now. Maps, georeferencing and extraction keep working. Try again in a few minutes."
+    },
+    {
+        "code": "ASSISTANT_MONTHLY_LIMIT_REACHED",
+        "type": "rate_limit",
+        "http": 429,
+        "template": "The assistant has reached its usage limit for this month and is back on {resets_on}. Maps, georeferencing and extraction keep working."
+    },
+    {
         "code": "UNAUTHENTICATED",
         "type": "auth",
         "http": 401,
