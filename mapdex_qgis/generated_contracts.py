@@ -440,6 +440,12 @@ ERROR_REGISTRY = [
         "template": "Could not open the subscription management page."
     },
     {
+        "code": "PAYMENTS_NOT_CONFIGURED",
+        "type": "system",
+        "http": 503,
+        "template": "Payments are not available on this deployment. Nothing has been charged."
+    },
+    {
         "code": "GUEST_LIMIT_REACHED",
         "type": "rate_limit",
         "http": 402,
