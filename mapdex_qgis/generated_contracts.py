@@ -140,6 +140,12 @@ ERROR_REGISTRY = [
         "template": "This page has no drawn content to extract; check that the intended page was selected and that the scan is not blank."
     },
     {
+        "code": "SCAN_LINES_NOT_SEPARABLE",
+        "type": "validation",
+        "http": 422,
+        "template": "{message}"
+    },
+    {
         "code": "GEOREFERENCE_REQUIRED",
         "type": "validation",
         "http": 422,
