@@ -104,6 +104,12 @@ ERROR_REGISTRY = [
         "template": "{message}"
     },
     {
+        "code": "PROCESSING_DISPATCH_ABANDONED",
+        "type": "conflict",
+        "http": 409,
+        "template": "{message}"
+    },
+    {
         "code": "UNSUPPORTED_TARGET_FORMAT",
         "type": "bad_request",
         "http": 400,
