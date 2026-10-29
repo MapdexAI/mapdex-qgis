@@ -146,6 +146,12 @@ ERROR_REGISTRY = [
         "template": "{message}"
     },
     {
+        "code": "SAMPLE_SHEET_NOT_TRACEABLE",
+        "type": "validation",
+        "http": 422,
+        "template": "Parcel tracing is for cadastral and parcel plans. The sample sheet is a topographic map with no parcels, so it is not traced. Try tracing on a plan of your own."
+    },
+    {
         "code": "GEOREFERENCE_REQUIRED",
         "type": "validation",
         "http": 422,
