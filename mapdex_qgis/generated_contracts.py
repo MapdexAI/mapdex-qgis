@@ -482,6 +482,12 @@ ERROR_REGISTRY = [
         "template": "Guest limit reached — sign up to continue."
     },
     {
+        "code": "SIGNUP_REQUIRED",
+        "type": "auth",
+        "http": 403,
+        "template": "Sign up to {action}."
+    },
+    {
         "code": "BATCH_ITEM_LIMIT_EXCEEDED",
         "type": "bad_request",
         "http": 422,
