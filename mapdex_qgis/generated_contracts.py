@@ -344,6 +344,18 @@ ERROR_REGISTRY = [
         "template": "This work is already running. Wait for it to finish, or open the run that is in progress."
     },
     {
+        "code": "EVAL_CONSENT_NOT_OFFERED",
+        "type": "conflict",
+        "http": 409,
+        "template": "Evaluation consent is not offered yet."
+    },
+    {
+        "code": "EVAL_CONSENT_TEXT_OUTDATED",
+        "type": "conflict",
+        "http": 409,
+        "template": "The consent text has changed. Read the current text and confirm again."
+    },
+    {
         "code": "MUTATION_NOT_REVERSIBLE",
         "type": "validation",
         "http": 422,
