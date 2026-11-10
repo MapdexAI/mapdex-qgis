@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Mapping, Sequence
 
@@ -483,5 +484,18 @@ def _transport_is_safe(url: str) -> bool:
         return True
     if not lowered.startswith("http://"):
         return False
-    host = lowered[len("http://"):].split("/")[0].split(":")[0]
-    return host in {"localhost", "127.0.0.1", "::1", "[::1]"}
+    # The host is the one a URL parser connects to, not the text before the
+    # first colon. Reading it by hand let `http://127.0.0.1:1@gateway.example/`
+    # pass as loopback: the part before `@` is userinfo, so a transport that
+    # parses URLs correctly sends the key in cleartext to gateway.example. The
+    # standard-library transport happens to fail on that shape, but a host may
+    # inject its own transport, so the check cannot rely on that. Userinfo and
+    # backslashes have no place in a loopback endpoint and are refused outright.
+    authority = lowered[len("http://"):].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in authority or "\\" in lowered:
+        return False
+    try:
+        host = urllib.parse.urlsplit(lowered).hostname
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"}

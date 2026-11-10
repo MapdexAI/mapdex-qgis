@@ -17,15 +17,15 @@
 
 source = https://github.com/MapdexAI/nivo
 canonical = mapdex/packages/nivo
-version = 0.1.0
-digest-1 = 1c09ab
-digest-2 = 08d516
-digest-3 = 3a6499
-digest-4 = e4ec95
-digest-5 = 469d8f
-digest-6 = 668a4d
-digest-7 = f819d4
-digest-8 = e6fd81
-digest-9 = d2b527
-digest-10 = e6f0f5
-digest-11 = 2574
+version = 0.2.0
+digest-1 = a09815
+digest-2 = 97dd74
+digest-3 = 7a72c3
+digest-4 = eae0a5
+digest-5 = 3339e6
+digest-6 = 87d650
+digest-7 = 4e1043
+digest-8 = 542ef1
+digest-9 = 9eaf37
+digest-10 = b2f9ac
+digest-11 = 2cdd
