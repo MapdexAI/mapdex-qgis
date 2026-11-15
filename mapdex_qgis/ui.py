@@ -20,8 +20,10 @@ QGIS theme recolours the panel without rebuilding it.
 """
 from __future__ import annotations
 
-from qgis.PyQt.QtCore import QByteArray, QEvent, QObject, QSize, Qt, pyqtSignal
-from qgis.PyQt.QtGui import QColor, QIcon, QPainter, QPixmap
+import os
+
+from qgis.PyQt.QtCore import QByteArray, QEvent, QObject, QPoint, QPointF, QSize, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPixmap, QTextLayout, QTextOption
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QFrame,
@@ -75,6 +77,37 @@ def tokens_for_interface():
     return theme.DARK if lightness is None else theme.theme_for_lightness(lightness)
 
 
+FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+FONT_FILES = ("Geist-Regular.ttf", "Geist-Medium.ttf", "Geist-SemiBold.ttf")
+_FONT = {"family": None}
+
+
+def panel_font_family():
+    """Geist, registered once for THIS panel, or "" to keep the system font.
+
+    Registered with QFontDatabase.addApplicationFont and named only in the
+    panel's own stylesheet: QApplication.setFont is never called, so QGIS's
+    own interface keeps its font. A file that fails to load falls back to the
+    system font rather than to a broken glyph set.
+    """
+    if _FONT["family"] is None:
+        family = ""
+        try:
+            from qgis.PyQt.QtGui import QFontDatabase  # noqa: PLC0415
+
+            for name in FONT_FILES:
+                font_id = QFontDatabase.addApplicationFont(os.path.join(FONT_DIR, name))
+                if font_id < 0:
+                    continue
+                families = QFontDatabase.applicationFontFamilies(font_id)
+                if families and not family:
+                    family = str(families[0])
+        except Exception:  # noqa: BLE001 - the system font is the fallback
+            family = ""
+        _FONT["family"] = family
+    return _FONT["family"]
+
+
 def apply_theme(root, value=None):
     """Restyle `root` and re-colour every icon under it.
 
@@ -85,7 +118,7 @@ def apply_theme(root, value=None):
     value = value or tokens_for_interface()
     changed = value is not tokens() or not root.property("mapdexThemed")
     set_tokens(value)
-    root.setStyleSheet(theme.stylesheet(value))
+    root.setStyleSheet(theme.stylesheet(value, panel_font_family()))
     root.setProperty("mapdexThemed", True)
     for widget in [root] + list(root.findChildren(QWidget)):
         retheme = getattr(widget, "retheme", None)
@@ -199,19 +232,149 @@ class ElidedLabel(QLabel):
 
     def paintEvent(self, event):  # noqa: N802 - Qt virtual name
         elided = self.fontMetrics().elidedText(
-            self._full, enum_member(Qt, "TextElideMode", self._mode), max(1, self.width()))
+            self._full, enum_member(Qt, "TextElideMode", self._mode),
+            max(1, self.contentsRect().width()))
         if elided != super().text():
             super().setText(elided)
         super().paintEvent(event)
 
 
+def _align_flag(*names):
+    flag = enum_member(Qt, "AlignmentFlag", names[0])
+    for name in names[1:]:
+        flag = flag | enum_member(Qt, "AlignmentFlag", name)
+    return flag
+
+
+def line_height(label):
+    """The height of one line of `label`'s text, in its polished font."""
+    label.ensurePolished()
+    return QFontMetrics(label.font()).height()
+
+
+class _LineSync(QObject):
+    """Keeps an icon on the centre of its labels' first text line.
+
+    The icon's box is as tall as the tallest first line (or the icon, if that
+    is taller); each label gets a top and bottom margin that puts its first
+    line on the same centre. Re-run whenever a font arrives from the
+    stylesheet, because that is when the line height becomes true.
+    """
+
+    _EVENTS = ("Polish", "StyleChange", "FontChange", "Show", "ShowToParent")
+
+    def __init__(self, icon, labels, size):
+        super().__init__(icon)
+        self._icon = icon
+        self._labels = list(labels)
+        self._size = size
+        self._busy = False
+        self._watched = tuple(enum_member(QEvent, "Type", name) for name in self._EVENTS)
+        icon.installEventFilter(self)
+        for label_widget in self._labels:
+            label_widget.installEventFilter(self)
+
+    def eventFilter(self, _watched, event):  # noqa: N802 - Qt virtual name
+        if event.type() in self._watched:
+            self.apply()
+        return False
+
+    def apply(self):
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            heights = [line_height(label_widget) for label_widget in self._labels]
+            box = max([self._size] + heights)
+            if self._icon.height() != box or self._icon.minimumHeight() != box:
+                self._icon.setFixedHeight(box)
+            for label_widget, height in zip(self._labels, heights):
+                top = (box - height) // 2
+                bottom = box - height - top
+                margins = label_widget.contentsMargins()
+                if margins.top() != top or margins.bottom() != bottom:
+                    label_widget.setContentsMargins(margins.left(), top, margins.right(), bottom)
+                horizontal = label_widget.alignment() & enum_member(Qt, "AlignmentFlag", "AlignHorizontal_Mask")
+                wanted = horizontal | enum_member(Qt, "AlignmentFlag", "AlignTop")
+                if label_widget.alignment() != wanted:
+                    label_widget.setAlignment(wanted)
+        except RuntimeError:  # a widget already deleted
+            pass
+        finally:
+            self._busy = False
+
+
+def register_pair(icon, *labels):
+    """Record that `icon` belongs to `labels` so `icon_alignment` can measure it."""
+    icon._mapdex_line_partners = [label_widget for label_widget in labels if label_widget is not None]
+
+
+def align_icon(icon, *labels, size=None):
+    """Centre `icon` on the first text line of `labels`, and keep it there.
+
+    Put the icon and the labels in their row with AlignTop (or AlignVCenter
+    for one-line rows): both then share the same box.
+    """
+    labels = [label_widget for label_widget in labels if label_widget is not None]
+    register_pair(icon, *labels)
+    icon.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignCenter"))
+    sync = _LineSync(icon, labels, int(size or icon.width() or 16))
+    icon._mapdex_line_sync = sync
+    sync.apply()
+    return sync
+
+
+def _text_centre(label_widget, root):
+    """Where the centre of `label_widget`'s first line sits, in root coordinates."""
+    rect = label_widget.contentsRect()
+    top = label_widget.mapTo(root, QPoint(0, rect.top())).y()
+    height = line_height(label_widget)
+    alignment = label_widget.alignment()
+    if alignment & enum_member(Qt, "AlignmentFlag", "AlignVCenter"):
+        lines = max(1, round(label_widget.heightForWidth(rect.width()) / max(1, height))
+                    if label_widget.wordWrap() else 1)
+        block = height * lines
+        return top + (rect.height() - block) / 2.0 + height / 2.0
+    if alignment & enum_member(Qt, "AlignmentFlag", "AlignBottom"):
+        return top + rect.height() - height / 2.0
+    return top + height / 2.0
+
+
+def icon_alignment(root):
+    """[(icon, label, offset_px)] for every visible icon paired with text.
+
+    `offset_px` is the icon's vertical centre minus the label's first-line
+    centre; the redesign holds it within one pixel.
+    """
+    rows = []
+    for icon in root.findChildren(QLabel):
+        partners = getattr(icon, "_mapdex_line_partners", None)
+        if not partners or not icon.isVisibleTo(root) or icon.height() <= 0:
+            continue
+        icon_rect = icon.contentsRect()
+        centre = icon.mapTo(root, QPoint(0, icon_rect.top())).y() + icon_rect.height() / 2.0
+        for label_widget in partners:
+            try:
+                if not label_widget.isVisibleTo(root) or not label_widget.text():
+                    continue
+                rows.append((icon, label_widget, centre - _text_centre(label_widget, root)))
+            except RuntimeError:
+                continue
+    return rows
+
+
 class IconLabel(QLabel):
-    """A Lucide glyph as a label, recoloured with the theme."""
+    """A Lucide glyph as a label, recoloured with the theme.
+
+    Fixed width; its height follows the text line it is paired with
+    (`align_icon`), and the glyph is drawn in the vertical centre of that box.
+    """
 
     def __init__(self, name, colour_key="slate", size=16, stroke=1.75, parent=None):
         super().__init__(parent)
         self._spec = (name, colour_key, size, stroke)
         self.setFixedSize(size, size)
+        self.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignCenter"))
         self.setObjectName("mapdexIcon")
         self.retheme()
 
@@ -225,11 +388,91 @@ class IconLabel(QLabel):
         self.setPixmap(svg_pixmap(icon_files.lucide_svg(name, tokens()[key], stroke), size))
 
 
+class StatusIcon(QLabel):
+    """A solid status icon; the working ring turns while it is on screen.
+
+    The timer runs only while the icon is shown AND working, so a hidden page or
+    a finished job costs nothing.
+    """
+
+    FRAME_MS = 80
+    STEP_DEGREES = 30
+
+    def __init__(self, tone="neutral", size=18, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexStatusIcon")
+        self._tone = tone
+        self._size = size
+        self._angle = 0
+        self._base = None
+        self.setFixedSize(size, size)
+        self.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignCenter"))
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.FRAME_MS)
+        self._timer.timeout.connect(self._tick)
+        self.retheme()
+
+    def set_tone(self, tone):
+        self._tone = tone if tone in theme.TONES else "neutral"
+        self.retheme()
+
+    def tone(self):
+        return self._tone
+
+    def spinning(self):
+        return self._timer.isActive()
+
+    def angle(self):
+        return self._angle
+
+    def retheme(self):
+        self._base = status_pixmap(self._tone, self._size)
+        self._draw()
+        self._update_timer()
+
+    def _draw(self):
+        if self._tone != "working" or self._base is None or not self._angle:
+            self.setPixmap(self._base)
+            return
+        frame = QPixmap(self._base.size())
+        frame.fill(QColor(0, 0, 0, 0))
+        frame.setDevicePixelRatio(self._base.devicePixelRatio())
+        painter = QPainter(frame)
+        painter.setRenderHint(enum_member(QPainter, "RenderHint", "SmoothPixmapTransform"), True)
+        half = self._size / 2.0
+        painter.translate(half, half)
+        painter.rotate(self._angle)
+        painter.translate(-half, -half)
+        painter.drawPixmap(0, 0, self._base)
+        painter.end()
+        self.setPixmap(frame)
+
+    def _tick(self):
+        self._angle = (self._angle + self.STEP_DEGREES) % 360
+        self._draw()
+
+    def _update_timer(self):
+        wanted = self._tone == "working" and self.isVisible()
+        if wanted and not self._timer.isActive():
+            self._timer.start()
+        elif not wanted and self._timer.isActive():
+            self._timer.stop()
+
+    def showEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().showEvent(event)
+        self._update_timer()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().hideEvent(event)
+        self._update_timer()
+
+
 class StatusLine(QWidget):
-    """A solid status icon, a bold coloured word, and a muted detail.
+    """A solid status icon, a bold coloured word, a muted detail, and a clock.
 
     Never a tinted pill and never colour alone: the icon's SHAPE and the word
-    carry the state, the colour is the third carrier.
+    carry the state, the colour is the third carrier. The icon sits on the
+    centre of the word's line, and a working ring turns.
     """
 
     def __init__(self, tone="neutral", word="", detail="", parent=None, icon_size=18):
@@ -240,16 +483,22 @@ class StatusLine(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        self.icon = QLabel()
-        self.icon.setObjectName("mapdexStatusIcon")
-        self.icon.setFixedSize(icon_size, icon_size)
+        self.icon = StatusIcon(tone, icon_size)
         self.word = QLabel()
         self.word.setObjectName("mapdexStatusWord")
         self.word.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
         self.detail = label("", "mapdexStatusDetail")
-        row.addWidget(self.icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-        row.addWidget(self.word, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-        row.addWidget(self.detail, 1, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+        self.clock = QLabel()
+        self.clock.setObjectName("mapdexClock")
+        self.clock.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        self.clock.setVisible(False)
+        top = _align_flag("AlignTop")
+        row.addWidget(self.icon, 0, top)
+        row.addWidget(self.word, 0, top)
+        row.addWidget(self.detail, 100, top)
+        row.addStretch(1)
+        row.addWidget(self.clock, 0, top)
+        align_icon(self.icon, self.word, self.detail, self.clock, size=icon_size)
         self.set_status(tone, word, detail)
 
     def set_status(self, tone, word, detail=""):
@@ -260,7 +509,12 @@ class StatusLine(QWidget):
         _repolish(self.word)
         self.detail.setText(detail or "")
         self.detail.setVisible(bool(detail))
-        self.retheme()
+        self.icon.set_tone(self._tone)
+
+    def set_clock(self, text):
+        """A live elapsed time at the right of the line, or "" for none."""
+        self.clock.setText(text or "")
+        self.clock.setVisible(bool(text))
 
     def tone(self):
         return self._tone
@@ -272,7 +526,7 @@ class StatusLine(QWidget):
         return " ".join(part for part in (self.word.text(), self.detail.text()) if part)
 
     def retheme(self):
-        self.icon.setPixmap(status_pixmap(self._tone, self._icon_size))
+        self.icon.retheme()
 
 
 class IconButton(QToolButton):
@@ -329,10 +583,13 @@ class PrimaryButton(QPushButton):
         self._price = QLabel()
         self._price.setObjectName("mapdexPrimaryPrice")
         self._price.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        middle = _align_flag("AlignVCenter")
         for child in (self._glyph, self._label, self._price):
             if child is not None:
                 child.setAttribute(enum_member(Qt, "WidgetAttribute", "WA_TransparentForMouseEvents"), True)
-                row.addWidget(child, 1 if child is self._label else 0)
+                row.addWidget(child, 1 if child is self._label else 0, middle)
+        if self._glyph is not None:
+            align_icon(self._glyph, self._label, size=18)
         self._centred = False
         self.setText(text)
         self.set_price(price)
@@ -397,40 +654,151 @@ class PrimaryButton(QPushButton):
                 _repolish(child)
 
 
-def secondary_button(text):
+class _ContentButton(QPushButton):
+    """A button drawn as a row of widgets: an optional icon, then its text.
+
+    QPushButton paints its icon and its text through the style, which under a
+    stylesheet does not keep them on one centre line. Here both are widgets in
+    one row and the icon is centred on the text's line (`align_icon`), which a
+    check measures. `text()`/`setText()` keep the QPushButton surface.
+    """
+
+    TEXT_NAME = "mapdexButtonText"
+    ICON_SIZE = 16
+    SPACING = 6
+    MARGINS = (0, 0, 0, 0)
+
+    def __init__(self, text="", icon_name="", icon_key="slate", parent=None):
+        super().__init__(parent)
+        self._text = str(text or "")
+        self._icon_name = icon_name
+        self._icon_key = icon_key
+        self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(*self.MARGINS)
+        row.setSpacing(self.SPACING)
+        self._row = row
+        self._glyph = IconLabel(icon_name or "x", icon_key, self.ICON_SIZE, 2)
+        self._glyph.setVisible(bool(icon_name))
+        self._label = QLabel(self._text)
+        self._label.setObjectName(self.TEXT_NAME)
+        self._label.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        middle = _align_flag("AlignVCenter")
+        for child in (self._glyph, self._label):
+            child.setAttribute(enum_member(Qt, "WidgetAttribute", "WA_TransparentForMouseEvents"), True)
+        self._lead = QHBoxLayout()
+        self._lead.setContentsMargins(0, 0, 0, 0)
+        self._lead.setSpacing(self.SPACING)
+        self._lead.addWidget(self._glyph, 0, middle)
+        self._lead.addWidget(self._label, 0, middle)
+        self._arrange(row)
+        align_icon(self._glyph, self._label, size=self.ICON_SIZE)
+        self.setAccessibleName(self._text)
+
+    def _arrange(self, row):
+        row.addLayout(self._lead)
+        row.addStretch(1)
+
+    # -- the QPushButton text surface ---------------------------------------------
+    def setText(self, text):  # noqa: N802 - mirrors QAbstractButton
+        self._text = str(text or "")
+        self._label.setText(self._text)
+        self.setAccessibleName(self._text)
+        self.updateGeometry()
+
+    def text(self):  # noqa: D401 - the visible text
+        return self._text
+
+    def set_icon_name(self, name):
+        self._icon_name = name
+        if name:
+            self._glyph.set_icon(name)
+        self._glyph.setVisible(bool(name))
+        self.updateGeometry()
+
+    def retheme(self):
+        key = self._icon_key if self.isEnabled() else "faint"
+        if self._icon_name:
+            self._glyph.set_icon(self._icon_name, key)
+
+    def sizeHint(self):  # noqa: N802 - Qt virtual name
+        hint = self.layout().sizeHint()
+        return QSize(hint.width(), max(hint.height(), self.minimumHeight()))
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual name
+        return self.sizeHint()
+
+    def _set_label_state(self, name, value):
+        self._label.setProperty(name, value)
+        _repolish(self._label)
+
+    def changeEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().changeEvent(event)
+        if event.type() == enum_member(QEvent, "Type", "EnabledChange"):
+            self._set_label_state("off", "false" if self.isEnabled() else "true")
+            self.retheme()
+
+    def enterEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().enterEvent(event)
+        self._set_label_state("hover", "true")
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().leaveEvent(event)
+        self._set_label_state("hover", "false")
+
+
+class SecondaryButton(_ContentButton):
+    """A raised surface with a border: its icon and text centred together."""
+
+    MARGINS = (14, 0, 14, 0)
+    SPACING = 8
+
+    def __init__(self, text="", icon_name="", parent=None):
+        super().__init__(text, icon_name, "slate", parent)
+        self.setObjectName("mapdexSecondaryButton")
+        self.setMinimumHeight(40)
+
+    def _arrange(self, row):
+        row.addStretch(1)
+        row.addLayout(self._lead)
+        row.addStretch(1)
+
+    def retheme(self):
+        key = "ink" if self.isEnabled() else "faint"
+        if self._icon_name:
+            self._glyph.set_icon(self._icon_name, key)
+
+
+def secondary_button(text, icon_name=""):
+    """The secondary control. Plain text keeps the native button; with an icon
+    it is a SecondaryButton, so the icon sits on the text's line."""
+    if icon_name:
+        return SecondaryButton(text, icon_name)
     button = QPushButton(text)
     button.setObjectName("mapdexSecondaryButton")
     button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
     return button
 
 
-class LinkButton(QPushButton):
+class LinkButton(_ContentButton):
     """A quiet action, as a text link. `kind` is link, muted or danger."""
 
+    TEXT_NAME = "mapdexLinkText"
+    ICON_SIZE = 14
     _NAMES = {"link": "mapdexLink", "muted": "mapdexMutedLink", "danger": "mapdexDangerLink"}
     _COLOURS = {"link": "link", "muted": "muted", "danger": "err_text"}
 
     def __init__(self, text, kind="link", icon_name="", parent=None):
-        super().__init__(text, parent)
-        self._kind = kind
-        self._icon_name = icon_name
-        self.setObjectName(self._NAMES.get(kind, "mapdexLink"))
+        self._kind = kind if kind in self._NAMES else "link"
+        super().__init__(text, icon_name, self._COLOURS[self._kind], parent)
+        self.setObjectName(self._NAMES[self._kind])
         self.setFlat(True)
-        self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
         self.setSizePolicy(_policy("Maximum", "Fixed"))
-        self.retheme()
+        self._label.setProperty("kind", self._kind)
+        _repolish(self._label)
 
-    def set_icon_name(self, name):
-        self._icon_name = name
-        self.retheme()
-
-    def retheme(self):
-        if self._icon_name:
-            size = 14 if self._kind != "danger" else 16
-            self.setIcon(lucide_icon(self._icon_name, self._COLOURS.get(self._kind, "link"), size, 2))
-            self.setIconSize(QSize(size, size))
-        else:
-            self.setIcon(QIcon())
+    def kind(self):
+        return self._kind
 
 
 class RadioCard(QFrame):
@@ -646,6 +1014,7 @@ class PromptCard(QFrame):
         self.glyph = IconLabel(icon_name or "message-circle", "slate", 16)
         row.addWidget(self.glyph, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
         column = QVBoxLayout()
+        column.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignTop"))
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(2)
         self.text_label = label(text, "mapdexInk")
@@ -654,6 +1023,7 @@ class PromptCard(QFrame):
         self.hint.setVisible(bool(hint))
         column.addWidget(self.hint)
         row.addLayout(column, 1)
+        align_icon(self.glyph, self.text_label, size=16)
         self.setAccessibleName(text)
         if hint:
             self.setToolTip(hint)
@@ -674,8 +1044,69 @@ class PromptCard(QFrame):
         super().keyPressEvent(event)
 
 
+class TabButton(QPushButton):
+    """One tab: its word, and a 2 px ink underline exactly as wide as the word.
+
+    A QToolButton adds a style margin each side of its text, which put the tab
+    words 4 px off the panel's left edge and the underline wider than the word.
+    """
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mapdexTab")
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+        self.setSizePolicy(_policy("Fixed", "Fixed"))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 12, 0, 10)
+        row.setSpacing(0)
+        self._label = QLabel(str(title))
+        self._label.setObjectName("mapdexTabText")
+        self._label.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        self._label.setAttribute(enum_member(Qt, "WidgetAttribute", "WA_TransparentForMouseEvents"), True)
+        row.addWidget(self._label)
+        self.setAccessibleName(str(title))
+        self.toggled.connect(self._sync)
+        self._sync(False)
+
+    def text(self):  # noqa: D401 - the tab's word
+        return self._label.text()
+
+    def setText(self, text):  # noqa: N802 - mirrors QAbstractButton
+        self._label.setText(str(text or ""))
+        self.setAccessibleName(str(text or ""))
+        self.updateGeometry()
+
+    def _sync(self, checked):
+        self._label.setProperty("on", "true" if checked else "false")
+        _repolish(self._label)
+
+    def sizeHint(self):  # noqa: N802 - Qt virtual name
+        hint = self.layout().sizeHint()
+        return QSize(hint.width(), hint.height() + 2)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual name
+        return self.sizeHint()
+
+    def enterEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().enterEvent(event)
+        self._label.setProperty("hover", "true")
+        _repolish(self._label)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt virtual name
+        super().leaveEvent(event)
+        self._label.setProperty("hover", "false")
+        _repolish(self._label)
+
+
 class TabBar(QWidget):
-    """Nivo · Task · Jobs, with an amber count on a tab that needs the user."""
+    """Nivo · Task · Jobs.
+
+    A tab can carry ONE marker: the amber count of what needs the user, or,
+    while work runs and nothing waits, a turning ring and the running count.
+    Neither when nothing runs or waits.
+    """
 
     selected = pyqtSignal(int)
 
@@ -687,16 +1118,14 @@ class TabBar(QWidget):
         row.setSpacing(24)
         self.buttons = []
         self.badges = []
+        self.activities = []
+        self.activity_counts = []
+        middle = _align_flag("AlignVCenter")
         for index, title in enumerate(titles):
             holder = QHBoxLayout()
             holder.setContentsMargins(0, 0, 0, 0)
             holder.setSpacing(6)
-            button = QToolButton()
-            button.setObjectName("mapdexTab")
-            button.setText(title)
-            button.setCheckable(True)
-            button.setAutoExclusive(True)
-            button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
+            button = TabButton(title)
             button.clicked.connect(lambda _checked=False, target=index: self.selected.emit(target))
             badge = QLabel("")
             badge.setObjectName("mapdexTabBadge")
@@ -704,11 +1133,20 @@ class TabBar(QWidget):
             badge.setFixedHeight(18)
             badge.setMinimumWidth(18)
             badge.setVisible(False)
-            holder.addWidget(button)
-            holder.addWidget(badge)
+            activity = StatusIcon("working", 14)
+            activity.setVisible(False)
+            count = QLabel("")
+            count.setObjectName("mapdexTabCount")
+            count.setVisible(False)
+            holder.addWidget(button, 0, middle)
+            holder.addWidget(badge, 0, middle)
+            holder.addWidget(activity, 0, middle)
+            holder.addWidget(count, 0, middle)
             row.addLayout(holder)
             self.buttons.append(button)
             self.badges.append(badge)
+            self.activities.append(activity)
+            self.activity_counts.append(count)
         row.addStretch(1)
 
     def set_current(self, index):
@@ -722,6 +1160,22 @@ class TabBar(QWidget):
         badge.setText(str(count) if count else "")
         badge.setVisible(bool(count))
         badge.setAccessibleName("{} need you".format(count) if count else "")
+        if count:
+            self._show_activity(index, 0)
+
+    def set_activity(self, index, running):
+        """A turning ring and the running count, unless the amber count shows."""
+        if not 0 <= index < len(self.activities):
+            return
+        if self.badges[index].isVisibleTo(self):
+            running = 0
+        self._show_activity(index, running)
+
+    def _show_activity(self, index, running):
+        self.activities[index].setVisible(bool(running))
+        self.activity_counts[index].setText(str(running) if running else "")
+        self.activity_counts[index].setVisible(bool(running))
+        self.activities[index].setAccessibleName("{} running".format(running) if running else "")
 
 
 class Disclosure(QWidget):
@@ -746,6 +1200,90 @@ class Disclosure(QWidget):
 
     def set_title(self, title):
         self.header.setText(title)
+
+
+class ProseLabel(QLabel):
+    """Plain text at a 1.5 line height, for reading.
+
+    QLabel has no line-height, and rich text would open the HTML path that
+    model and user text must never take. This keeps `PlainText` and `text()`
+    exactly as given, and lays the lines out itself with QTextLayout.
+    """
+
+    LINE_HEIGHT = 1.5
+
+    def __init__(self, text="", name="mapdexTurnBody", parent=None):
+        super().__init__(parent)
+        self.setObjectName(name)
+        self.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        self.setWordWrap(True)
+        self.setMinimumWidth(1)
+        self.setSizePolicy(_policy("Expanding", "Preferred"))
+        self.setText(text)
+
+    def _line_step(self):
+        return int(round(QFontMetrics(self.font()).height() * self.LINE_HEIGHT))
+
+    def _lines(self, width):
+        """[(layout, line_count)], each line positioned on the 1.5 line grid.
+
+        Lines are placed with setPosition and drawn by QTextLayout.draw: drawing
+        single QTextLine objects crashed QGIS 4 (Qt 6.11) outright.
+        """
+        option = QTextOption()
+        option.setWrapMode(enum_member(QTextOption, "WrapMode", "WrapAtWordBoundaryOrAnywhere"))
+        step = self._line_step()
+        layouts = []
+        for paragraph in (self.text() or "").split("\n"):
+            layout = QTextLayout(paragraph, self.font())
+            layout.setTextOption(option)
+            layout.beginLayout()
+            count = 0
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(max(1, width))
+                line.setPosition(QPointF(0, count * step + (step - line.height()) / 2.0))
+                count += 1
+            layout.endLayout()
+            layouts.append((layout, max(1, count)))
+        return layouts
+
+    def heightForWidth(self, width):  # noqa: N802 - Qt virtual name
+        margins = self.contentsMargins()
+        inner = max(1, width - margins.left() - margins.right())
+        lines = sum(count for _layout, count in self._lines(inner))
+        return lines * self._line_step() + margins.top() + margins.bottom()
+
+    def hasHeightForWidth(self):  # noqa: N802 - Qt virtual name
+        return True
+
+    def sizeHint(self):  # noqa: N802 - Qt virtual name
+        metrics = QFontMetrics(self.font())
+        widest = max([metrics.horizontalAdvance(part) if hasattr(metrics, "horizontalAdvance")
+                      else metrics.width(part) for part in (self.text() or "").split("\n")] + [1])
+        margins = self.contentsMargins()
+        width = widest + margins.left() + margins.right() + 2
+        return QSize(width, self.heightForWidth(width))
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual name
+        return QSize(1, self._line_step())
+
+    def setText(self, text):  # noqa: N802 - Qt virtual name
+        super().setText(str(text or ""))
+        self.updateGeometry()
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt virtual name
+        rect = self.contentsRect()
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        step = self._line_step()
+        y = float(rect.top())
+        for layout, count in self._lines(rect.width()):
+            layout.draw(painter, QPointF(rect.left(), y))
+            y += count * step
+        painter.end()
 
 
 def hline():

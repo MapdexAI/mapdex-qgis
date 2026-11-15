@@ -344,14 +344,3 @@ def start_action(sources: Sequence[Source], workflow: str) -> str:
         return "Add maps to start" if noun == "sheet" else "Add a dataset to start"
     amount = "1 {}".format(noun) if count == 1 else "{} {}s".format(count, noun)
     return template.format(n=amount)
-
-
-def ready_notice(sources: Sequence[Source], workflow_title: str) -> str:
-    """The status sentence once a list is ready to send."""
-    if not sources:
-        return ""
-    if is_batch(sources):
-        return "Ready to run {} over {} sheets as one batch.".format(
-            workflow_title or "this workflow", len(sources)
-        )
-    return "Ready to run {} on {}.".format(workflow_title or "this workflow", sources[0].label)

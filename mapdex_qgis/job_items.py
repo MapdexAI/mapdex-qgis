@@ -245,3 +245,105 @@ def jobs_line(items: Sequence[Dict[str, Any]]) -> str:
         if counts.get(state):
             parts.append("{} {}".format(counts[state], word))
     return ", ".join(parts)
+
+
+# -- the batch as one state, with a clock and a real fraction -----------------
+
+_QUEUED = {"created", "queued", "pending"}
+_RUNNING = {"running", "processing"}
+
+
+def batch_status(state: str, counts: Dict[str, Any], active: bool, uploading: bool = False) -> Dict[str, str]:
+    """ONE state for the batch, from the real job state: a tone and a word.
+
+    "Queued" and "Working" are never shown together: the word is what the
+    server says the job is doing now.
+    """
+    state = str(state or "").lower()
+    counts = counts or {}
+
+    def _n(key):
+        try:
+            return max(0, int(counts.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    if uploading:
+        return {"tone": "working", "word": "Uploading"}
+    if active:
+        if state == "cancelling":
+            return {"tone": "working", "word": "Cancelling"}
+        if state in _QUEUED:
+            return {"tone": "working", "word": "Queued"}
+        return {"tone": "working", "word": "Working"}
+    if _n("failed"):
+        return {"tone": "err", "word": "Failed"}
+    if _n("needs_review"):
+        return {"tone": "warn", "word": "Needs you"}
+    if _n("succeeded"):
+        return {"tone": "ok", "word": "Ready"}
+    if _n("cancelled") or state == "cancelled":
+        return {"tone": "neutral", "word": "Cancelled"}
+    return {"tone": "neutral", "word": ""}
+
+
+def sheet_fraction(counts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Sheets done of sheets sent, or None when there is no real fraction.
+
+    Only a batch of more than one sheet has one. A percentage made from steps
+    is never shown: it sits still and reads as stuck.
+    """
+    counts = counts or {}
+    try:
+        total = int(counts.get("total", 0) or 0)
+        done = sum(max(0, int(counts.get(key, 0) or 0))
+                   for key in ("succeeded", "needs_review", "failed", "cancelled"))
+    except (TypeError, ValueError):
+        return None
+    if total <= 1:
+        return None
+    done = min(done, total)
+    return {"done": done, "total": total, "text": "{} of {} sheets".format(done, total)}
+
+
+def elapsed_text(seconds: Any) -> str:
+    """A live clock: "12 s", "1 min 12 s", "1 h 3 min"."""
+    try:
+        seconds = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return ""
+    if seconds < 60:
+        return "{} s".format(seconds)
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return "{} min {} s".format(minutes, rest)
+    hours, minutes = divmod(minutes, 60)
+    return "{} h {} min".format(hours, minutes)
+
+
+def running_count(counts: Dict[str, Any]) -> int:
+    """How many sheets are still in progress (at least one while active)."""
+    counts = counts or {}
+    try:
+        total = int(counts.get("total", 0) or 0)
+        done = sum(max(0, int(counts.get(key, 0) or 0))
+                   for key in ("succeeded", "needs_review", "failed", "cancelled"))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, total - done)
+
+
+def created_at_seconds(value: Any) -> float:
+    """Epoch seconds from the server's ISO 8601 `created_at`, or 0.0."""
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()

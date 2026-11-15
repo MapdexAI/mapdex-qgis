@@ -23,7 +23,6 @@ from mapdex_qgis.task_sources import (  # noqa: E402
     is_batch,
     layer_source,
     missing_files,
-    ready_notice,
     remove_source,
     has_pdf,
     start_label,
@@ -271,14 +270,3 @@ def test_a_layer_with_no_file_is_not_read_as_a_pdf():
     # splitext as though it were one.
     layer = layer_source("layer_1.pdf", "Parcels", "vector")
     assert has_pdf([layer]) is False
-
-
-def test_the_ready_notice_names_the_sheet_or_the_count(tmp_path):
-    one = [file_source(_raster(tmp_path, "sheet.tif"))]
-    assert ready_notice(one, "Georeference maps") == "Ready to run Georeference maps on sheet.tif."
-    two = one + [file_source(_raster(tmp_path, "other.tif"))]
-    assert "2 sheets as one batch" in ready_notice(two, "Georeference maps")
-
-
-def test_an_empty_list_has_no_ready_notice():
-    assert ready_notice([], "Georeference maps") == ""

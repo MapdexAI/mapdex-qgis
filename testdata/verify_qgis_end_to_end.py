@@ -3292,6 +3292,51 @@ check("the options panel is separated from its header",
       the_options_panel_is_separated_from_its_header)
 
 
+def every_icon_sits_on_its_text_line():
+    """An icon beside text is centred on the text's first line, within 1 px.
+
+    Measured on the assembled dock, on every page, at a narrow and a wide
+    width: a row can look right in a component test and still sit a few
+    pixels low once QGIS's own font, style and layout have had their say.
+    """
+    plugin = need_plugin()
+    root = plugin._panel_root
+    dock = plugin.dock
+    if plugin.switch_page is None:
+        raise NotRun("the panel has no pages to switch")
+    worst = (0.0, "")
+    pairs = 0
+    try:
+        for width in (420, 1540):
+            dock.setFloating(True)
+            dock.resize(width, 900)
+            root.resize(width, 900)
+            for page in (0, 1, 2, 3):
+                plugin.switch_page(page)
+                for _pass in range(3):
+                    for widget in [root] + root.findChildren(QWidget):
+                        layout = widget.layout()
+                        if layout is not None:
+                            layout.activate()
+                    QGS.processEvents()
+                for icon, label, offset in ui_module.icon_alignment(root):
+                    pairs += 1
+                    if abs(offset) > abs(worst[0]):
+                        worst = (offset, "page {} at {} px: {!r}".format(
+                            page, width, label.text()[:40]))
+    finally:
+        plugin.switch_page(1)
+    if pairs == 0:
+        raise AssertionError("no icon was paired with any text, so nothing was measured")
+    if abs(worst[0]) > 1.0:
+        raise AssertionError("an icon sits {:+.1f} px off its text line ({})".format(*worst))
+    return "{} icon/text pairs over 4 pages at 420 and 1540 px, worst {:+.1f} px".format(
+        pairs, worst[0])
+
+
+check("every icon sits on its text line", every_icon_sits_on_its_text_line)
+
+
 def the_estimate_states_what_the_batch_will_cost():
     """The figure comes from the server's own per-item charge, multiplied.
 

@@ -137,7 +137,7 @@ def tone_colour(tokens: Mapping[str, str], tone: str, for_text: bool = False) ->
     return tokens.get(key) or tokens.get(tone) or tokens["muted"]
 
 
-def stylesheet(tokens: Mapping[str, str]) -> str:
+def stylesheet(tokens: Mapping[str, str], family: str = "") -> str:
     """The panel's whole stylesheet, from one token set.
 
     Selectors are object names, so a widget is styled by what it IS rather than
@@ -152,7 +152,14 @@ def stylesheet(tokens: Mapping[str, str]) -> str:
     t["body"] = BODY_PX
     t["label"] = LABEL_PX
     t["meta"] = META_PX
-    return _SHEET.format(**t)
+    sheet = _SHEET.format(**t)
+    if family:
+        # The panel's own font, named only here: this sheet is set on the
+        # panel root, so QGIS's interface keeps its font. Sizes and weights
+        # come from the rules below; only the family is set for everything.
+        safe = family.replace('"', "")
+        sheet = 'QWidget {{ font-family: "{}"; }}\n'.format(safe) + sheet
+    return sheet
 
 
 _SHEET = """
@@ -160,7 +167,8 @@ QWidget#mapdexPluginRoot {{ background: {surface}; color: {ink}; }}
 QWidget#mapdexView, QWidget#mapdexPage, QWidget#mapdexScrollBody,
 QWidget#mapdexColumn, QWidget#mapdexChatTranscriptContent {{ background: {surface}; }}
 QScrollArea#mapdexScroll, QScrollArea#mapdexChatTranscript {{ background: {surface}; border: 0; }}
-QScrollArea#mapdexScroll > QWidget > QWidget, QScrollArea#mapdexChatTranscript > QWidget > QWidget {{ background: {surface}; }}
+QScrollArea#mapdexScroll > QWidget > QWidget,
+QScrollArea#mapdexChatTranscript > QWidget > QWidget {{ background: {surface}; }}
 QFrame#mapdexBand {{ background: {surface}; border: 0; border-bottom: 1px solid {border}; }}
 QFrame#mapdexFooterBand {{ background: {surface}; border: 0; border-top: 1px solid {border}; }}
 QFrame#mapdexPlainBand {{ background: {surface}; border: 0; }}
@@ -180,7 +188,7 @@ QLabel#mapdexBody, QLabel#mapdexBalanceNotice, QLabel#mapdexLockedNotice {{
 }}
 QLabel#mapdexConnectBody {{ color: {slate}; font-size: 15px; }}
 QLabel#mapdexInk {{ color: {ink}; font-size: {body}px; }}
-QLabel#mapdexAnswer, QLabel#mapdexTurnBody {{ color: {ink}; font-size: 15px; }}
+QLabel#mapdexAnswer, QLabel#mapdexTurnBody {{ color: {ink}; font-size: {body}px; }}
 QLabel#mapdexTurnBodyUser, QLabel#mapdexJobItemTitle, QLabel#mapdexSourceName {{
     color: {ink}; font-size: {body}px;
 }}
@@ -189,7 +197,8 @@ QLabel#mapdexSectionLabel {{ color: {slate}; font-size: {label}px; font-weight: 
    rename that drops the font size reads as a different, larger voice. */
 QLabel#mapdexMeta, QLabel#mapdexHistoryState, QLabel#mapdexLayerPickerState,
 QLabel#mapdexOptionsChip, QLabel#mapdexPageFootnote, QLabel#mapdexPriceLine,
-QLabel#mapdexSourceDetail, QLabel#mapdexSourceOverflow, QLabel#mapdexSourceSummary {{
+QLabel#mapdexSourceDetail, QLabel#mapdexSourceOverflow, QLabel#mapdexSourceSummary,
+QLabel#mapdexProgressText {{
     color: {muted}; font-size: {meta}px;
 }}
 QLabel#mapdexKeyState {{ color: {slate}; font-size: {meta}px; }}
@@ -227,20 +236,21 @@ QPushButton#mapdexSecondaryButton {{
 QPushButton#mapdexSecondaryButton:hover {{ border-color: {muted}; }}
 QPushButton#mapdexSecondaryButton:disabled {{ color: {faint}; border-color: {border}; }}
 
-/* Quiet actions are text links. */
+/* Quiet actions are text links. The button is only the hit area; its icon
+   and its text are a row of widgets inside it, coloured by kind. */
 QPushButton#mapdexLink, QPushButton#mapdexQuietButton, QPushButton#mapdexDangerLink,
 QPushButton#mapdexMutedLink, QPushButton#mapdexJobItemAction, QPushButton#mapdexDropLink,
-QPushButton#mapdexOptionsHeader {{
-    background: transparent; border: 0; padding: 2px 0; text-align: left;
-    font-size: {label}px; font-weight: 500; color: {link};
+QPushButton#mapdexOptionsHeader, QPushButton#mapdexCancelLink {{
+    background: transparent; border: 0; padding: 2px 0; min-height: 0;
 }}
-QPushButton#mapdexLink:hover, QPushButton#mapdexQuietButton:hover,
-QPushButton#mapdexJobItemAction:hover, QPushButton#mapdexDropLink:hover {{ color: {link_hover}; }}
-QPushButton#mapdexMutedLink, QPushButton#mapdexOptionsHeader {{ color: {muted}; }}
-QPushButton#mapdexMutedLink:hover, QPushButton#mapdexOptionsHeader:hover {{ color: {ink}; }}
-QPushButton#mapdexDangerLink {{ color: {err_text}; font-size: {body}px; }}
-QPushButton#mapdexLink:disabled, QPushButton#mapdexQuietButton:disabled,
-QPushButton#mapdexDangerLink:disabled, QPushButton#mapdexMutedLink:disabled {{ color: {faint}; }}
+QLabel#mapdexLinkText {{ color: {link}; font-size: {label}px; font-weight: 500; }}
+QLabel#mapdexLinkText[hover="true"] {{ color: {link_hover}; }}
+QLabel#mapdexLinkText[kind="muted"] {{ color: {muted}; }}
+QLabel#mapdexLinkText[kind="muted"][hover="true"] {{ color: {ink}; }}
+QLabel#mapdexLinkText[kind="danger"] {{ color: {err_text}; }}
+QLabel#mapdexLinkText[off="true"] {{ color: {faint}; }}
+QLabel#mapdexButtonText {{ color: {ink}; font-size: {body}px; font-weight: 500; }}
+QLabel#mapdexButtonText[off="true"] {{ color: {faint}; }}
 
 QToolButton#mapdexIconButton {{
     background: transparent; border: 0; border-radius: {r}px; padding: 0;
@@ -256,16 +266,22 @@ QToolButton#mapdexStopButton {{
 }}
 
 /* Tabs: ink and a 2 px ink underline when chosen, muted otherwise. */
-QToolButton#mapdexTab {{
-    color: {muted}; background: transparent; border: 0; border-bottom: 2px solid transparent;
-    border-radius: 0; padding: 12px 0 10px 0; font-size: {body}px; font-weight: 500;
+QPushButton#mapdexTab {{
+    background: transparent; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 0; margin: 0;
 }}
-QToolButton#mapdexTab:hover {{ color: {ink}; }}
-QToolButton#mapdexTab:checked {{ color: {ink}; border-bottom: 2px solid {ink}; font-weight: 600; }}
+QPushButton#mapdexTab:checked {{ border-bottom: 2px solid {ink}; }}
+QLabel#mapdexTabText {{ color: {muted}; font-size: {body}px; font-weight: 500; }}
+QLabel#mapdexTabText[hover="true"] {{ color: {ink}; }}
+QLabel#mapdexTabText[on="true"] {{ color: {ink}; font-weight: 600; }}
+QLabel#mapdexTabCount {{ color: {working_text}; font-size: {meta}px; font-weight: 600; }}
 QLabel#mapdexTabBadge {{
     color: {badge_text}; background: {badge_bg}; border-radius: 9px;
     font-size: 11px; font-weight: 700; padding: 0 5px;
 }}
+
+QWidget#mapdexResultCard {{ background: transparent; border-radius: {r}px; }}
+QWidget#mapdexResultCard[fresh="true"] {{ background: {selected_bg}; }}
 
 /* Cards. */
 QFrame#mapdexCard {{ background: {raised}; border: 1px solid {border}; border-radius: {r}px; }}
@@ -288,6 +304,7 @@ QLabel#mapdexAvatar {{ background: {border}; border-radius: 16px; }}
 
 /* The drop zone: compact, dashed, the whole of it is the button. */
 QFrame#mapdexDropZone {{ background: transparent; border: 1px dashed {border_strong}; border-radius: {r}px; }}
+QFrame#mapdexDropZone[empty="false"] {{ border: 1px solid transparent; }}
 QFrame#mapdexDropZone[dropActive="true"] {{ background: {selected_bg}; border: 1px dashed {radio_on}; }}
 QPushButton#mapdexDropButton {{
     background: transparent; border: 0; min-height: 42px; color: {slate};

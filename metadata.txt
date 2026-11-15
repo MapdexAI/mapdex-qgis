@@ -19,7 +19,8 @@ repository=https://github.com/MapdexAI/mapdex-qgis
 changelog=0.14.0
     - The panel is redesigned to match the Mapdex web app: a slim header with
       your workspace name, three tabs (Nivo, Task, Jobs) and Settings behind
-      the header icon. It follows your QGIS theme, light or dark.
+      the header icon. It follows your QGIS theme, light or dark, and uses the
+      Geist typeface inside the panel only; the rest of QGIS keeps its font.
     - No more permanent status strip. A status appears only when it says
       something, and information fades on its own.
     - Nivo opens on "Ask about your map" with starting points for the active
@@ -28,15 +29,18 @@ changelog=0.14.0
     - A Processing operation asks for your OK in the conversation, with what
       goes in, the setting and what comes out, instead of a dialog.
     - Task offers the work as cards (Place on the map, Extract parcels, Check
-      and convert), lists the maps one per row, and the start button states
-      the count and the price inside it. Tasks go to your workspace's default
-      project; there is no project picker.
-    - Jobs leads with what needs you, shows every sheet with its status and one
-      action, and keeps earlier jobs one click away. The Jobs tab shows a count
-      when something waits on you.
+      and convert). Maps come from "From QGIS layers" or "Choose files", or are
+      dropped on the Maps area, and are listed one per row. The start button
+      states the count and the price inside it. Tasks go to your workspace's
+      default project; there is no project picker.
+    - Starting a task opens Jobs. A running job shows one state and a live
+      clock, and can be cancelled after a confirm. The Jobs tab shows a
+      turning ring with the running count, or a count when something waits on
+      you.
     - Settings shows your account, lets you choose Mapdex, your own API key or
       a local model as cards, and shows the key and model fields only when
-      they apply.
+      they apply. "Contact us" opens mapdex.ai/contact, and "Copy details"
+      copies the plugin, QGIS, Qt and system versions for a support message.
     0.13.9
     - Importing a placed map states its price before the file leaves Mapdex,
       and results already downloaded are kept if a later one is refused.

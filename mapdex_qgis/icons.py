@@ -24,7 +24,7 @@ LUCIDE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", 
 # button at runtime.
 NAMES = (
     "message-square-plus", "history", "sliders", "arrow-up", "arrow-left",
-    "ruler", "layers", "layers-2", "layer", "crosshair", "external-link",
+    "ruler", "layers", "layers-2", "crosshair", "external-link", "file-text",
     "chevron-right", "chevron-down", "x", "image", "file", "upload", "user",
     "log-out", "check", "square", "shield-check", "table", "circle-help", "map",
     "zoom-in", "message-circle", "palette",

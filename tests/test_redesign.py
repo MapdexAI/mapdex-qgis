@@ -250,3 +250,118 @@ def test_a_label_renamed_after_creation_keeps_a_style():
     sheet = theme.stylesheet(theme.DARK)
     missing = [name for _var, name in renamed if "#" + name not in sheet]
     assert not missing, missing
+
+
+# -- icons: whole Lucide glyphs, one per source kind ---------------------------
+
+def _svg_elements(name):
+    svg = (ROOT / "mapdex_qgis" / "assets" / "lucide" / "{}.svg".format(name)).read_text(encoding="utf-8")
+    return svg, re.findall(r"<(path|rect|circle|line|polyline|polygon|ellipse)\b", svg)
+
+
+def test_every_icon_is_a_whole_lucide_glyph_with_its_version():
+    for name in icons.NAMES:
+        svg, elements = _svg_elements(name)
+        assert svg.startswith("<!-- Lucide 1.17.0 (ISC)"), name
+        assert elements, name
+
+
+def test_source_kind_icons_carry_every_part_of_the_glyph():
+    # "layers" is three stacked sheets; a copy with one path drew a single
+    # diamond, which read as a different symbol.
+    assert _svg_elements("layers")[1].count("path") == 3
+    assert sorted(_svg_elements("image")[1]) == ["circle", "path", "rect"]
+    assert _svg_elements("file-text")[1].count("path") >= 4
+
+
+def test_a_source_row_icon_follows_its_kind():
+    start = PANEL.index("def _icon_for")
+    body = PANEL[start:PANEL.index("def _build_row", start)]
+    assert '.endswith(".pdf")' in body and '"file-text"' in body
+    assert '"vector"' in body and '"layers"' in body
+    assert '"raster"' in body and '"image"' in body
+
+
+# -- the panel's own font ------------------------------------------------------
+
+def test_geist_is_bundled_with_its_licence():
+    fonts = ROOT / "mapdex_qgis" / "assets" / "fonts"
+    for name in ("Geist-Regular.ttf", "Geist-Medium.ttf", "Geist-SemiBold.ttf"):
+        data = (fonts / name).read_bytes()
+        assert data[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true"), name
+    assert "SIL OPEN FONT LICENSE" in (fonts / "OFL.txt").read_text(encoding="utf-8").upper()
+
+
+def test_the_font_applies_inside_the_panel_only():
+    sheet = theme.stylesheet(theme.DARK, "Geist")
+    assert sheet.lstrip().startswith('QWidget { font-family: "Geist"; }')
+    assert "font-family" not in theme.stylesheet(theme.DARK).split("}")[0]
+    # The QGIS window keeps its own font: nothing in the plugin sets the
+    # application font.
+    call = re.compile(r"(QApplication|QGuiApplication|qApp)(\.instance\(\))?\.setFont\(")
+    for path in (ROOT / "mapdex_qgis").rglob("*.py"):
+        assert not call.search(path.read_text(encoding="utf-8")), path
+
+
+# -- Jobs: one state, a real clock, a fraction only when there is one ------------
+
+def test_one_state_for_the_job():
+    assert job_items.batch_status("queued", {"total": 1}, True)["word"] == "Queued"
+    assert job_items.batch_status("running", {"total": 1}, True)["word"] == "Working"
+    assert job_items.batch_status("", {}, True, uploading=True)["word"] == "Uploading"
+    running = job_items.batch_status("running", {"total": 1}, True)
+    assert running["tone"] == "working"
+
+
+def test_a_bar_only_for_a_real_fraction():
+    assert job_items.sheet_fraction({"total": 1, "succeeded": 0}) is None
+    fraction = job_items.sheet_fraction({"total": 4, "succeeded": 1, "failed": 1})
+    assert fraction == {"done": 2, "total": 4, "text": "2 of 4 sheets"}
+    assert "%" not in fraction["text"]
+
+
+def test_the_clock_reads_like_a_clock():
+    assert job_items.elapsed_text(12) == "12 s"
+    assert job_items.elapsed_text(72) == "1 min 12 s"
+    assert job_items.elapsed_text(3780) == "1 h 3 min"
+    assert job_items.elapsed_text("x") == ""
+
+
+def test_the_running_count_and_the_server_clock():
+    assert job_items.running_count({"total": 4, "succeeded": 1}) == 3
+    assert job_items.running_count({"total": 1}) == 1
+    assert job_items.created_at_seconds("1970-01-01T00:01:00Z") == 60.0
+    assert job_items.created_at_seconds("") == 0.0
+    assert job_items.created_at_seconds("not a date") == 0.0
+
+
+# -- Nivo: a trace only when something ran ----------------------------------------
+
+def test_a_plain_reply_shows_no_trace():
+    assert not nivo_examples.trace_worth_showing([])
+    assert not nivo_examples.trace_worth_showing([
+        {"capability": "nivo:classify", "status": "succeeded"},
+        {"capability": "nivo:compose", "status": "succeeded"},
+    ])
+    assert nivo_examples.trace_worth_showing([
+        {"capability": "nivo:classify", "status": "succeeded"},
+        {"capability": "spatial:measure@1", "status": "succeeded"},
+    ])
+    assert nivo_examples.trace_worth_showing([{"capability": "nivo:plan", "status": "failed"}])
+
+
+# -- Settings: contact, and versions only on the clipboard -------------------------
+
+def test_copy_details_carries_versions_only():
+    text = panel_state.support_details("0.14.0", "4.0.2-Norrköping", "6.11.0", "Windows-11")
+    lines = text.split("\n")
+    assert lines == [
+        "Mapdex for QGIS 0.14.0", "QGIS 4.0.2-Norrköping", "Qt 6.11.0", "System Windows-11"]
+    assert "@" not in text and "token" not in text.lower()
+
+
+def test_the_footer_offers_contact_not_an_issue_tracker():
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert 'CONTACT_URL = "https://mapdex.ai/contact"' in plugin
+    assert "Contact us" in PANEL and "Copy details" in PANEL
+    assert "Report a problem" not in PANEL

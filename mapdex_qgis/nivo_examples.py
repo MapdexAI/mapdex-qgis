@@ -22,7 +22,7 @@ from . import first_look
 MAX_EXAMPLES = 3
 
 START_TITLE = "Ask about your map"
-START_BODY = "Nivo measures the answer from your layers. It asks before it changes or creates anything."
+START_BODY = "Nivo measures answers from your layers and asks before it changes anything."
 START_LEAD = "Try with the active layer"
 START_LEAD_NO_LAYER = "Try one of these"
 
@@ -242,3 +242,24 @@ def steps_summary(steps) -> str:
         return "{} · {} ms".format(words, total)
     seconds = total / 1000.0
     return "{} · {:.1f} s".format(words, seconds) if seconds < 10 else "{} · {:.0f} s".format(words, seconds)
+
+
+def trace_worth_showing(steps) -> bool:
+    """Whether a turn's steps earn a "N steps" disclosure.
+
+    Only when a capability or tool actually ran, or a step failed or waits on
+    the person. The assistant's own bookkeeping ("nivo:classify", "nivo:plan")
+    under a plain reply is noise.
+    """
+    for row in steps or []:
+        if not isinstance(row, Mapping):
+            continue
+        status = str(row.get("status") or "")
+        if status in ("failed", "awaiting_input", "awaiting_confirmation"):
+            return True
+        capability = str(row.get("capability") or "")
+        if not capability or capability.startswith(("nivo:", "nivo.")):
+            continue
+        if status in ("succeeded", "running", "refused", ""):
+            return True
+    return False

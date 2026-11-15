@@ -91,7 +91,7 @@ def test_the_rate_does_not_change_with_the_count():
 def test_placing_is_free_and_the_download_price_is_stated_apart():
     line = price_line(KINDS, "georeference", 8)
     assert "Placing is free" in line
-    assert "$2 the first time it is downloaded or exported" in line
+    assert "$2 the first time you download it" in line
     assert "$16" not in line
     assert total_label(KINDS, "georeference", 8) == ""
     assert total_cents(KINDS, "georeference", 300) == 0
@@ -106,7 +106,7 @@ def test_a_server_that_sends_no_leave_price_mentions_none():
 
 
 def test_the_line_states_what_the_charge_is_conditional_on():
-    assert "fails or finds nothing costs nothing" in price_line(KINDS, "digitize_parcels", 3)
+    assert "Nothing if it fails or finds nothing" in price_line(KINDS, "digitize_parcels", 3)
 
 
 def test_tracing_says_it_is_in_beta_when_the_server_says_so():

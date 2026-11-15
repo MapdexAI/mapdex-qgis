@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 
-from qgis.PyQt.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer
 from qgis.PyQt.QtGui import QColor, QPainter, QPen
 from qgis.PyQt.QtWidgets import (
     QBoxLayout,
@@ -41,7 +41,6 @@ from qgis.PyQt.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QProgressBar,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedLayout,
@@ -199,11 +198,11 @@ class Notice(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        self.icon = QLabel()
-        self.icon.setFixedSize(16, 16)
+        self.icon = ui.StatusIcon("info", 16)
         self.text_label = ui.label("", "mapdexNoticeText")
         row.addWidget(self.icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-        row.addWidget(self.text_label, 1)
+        row.addWidget(self.text_label, 1, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+        ui.align_icon(self.icon, self.text_label, size=16)
         self._tone = "info"
         self.setVisible(False)
 
@@ -217,7 +216,7 @@ class Notice(QWidget):
 
     def retheme(self):
         if self._tone in ("ok", "warn", "err"):
-            self.icon.setPixmap(ui.status_pixmap(self._tone, 16))
+            self.icon.set_tone(self._tone)
 
 
 class NoticeHub(QObject):
@@ -377,45 +376,67 @@ class WorkflowChooser(ui.RadioCardGroup):
 
 
 class SourceDropZone(QFrame):
-    """Where sheets come in: dropped, or chosen from disk with one press.
+    """The Maps area: where maps come in, and the list of what came in.
 
-    Compact and dashed: the list above it is the state, and the zone is only
-    the way in. Drops are accepted for local files only, so a drag carrying a
-    QGIS layer is never read as an upload (docs/UX.md section 4).
-
-    `layers_button` is the "Add from QGIS layers" link; the page places it in
-    the Maps header, beside the list it adds to.
+    Two equal ways in, first the one a QGIS user already has open: "From QGIS
+    layers", then "Choose files". Under them one muted line says files can be
+    dropped. While the list is empty the whole area is a dashed drop zone with
+    the two buttons in its centre; once it holds maps the dashes go and the
+    list sits under the buttons. The whole area takes drops either way.
+    Drops are accepted for local files only, so a drag carrying a QGIS layer is
+    never read as an upload (docs/UX.md section 4).
     """
+
+    HINT = "or drop files here"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("mapdexDropZone")
         self.setAcceptDrops(True)
         self.on_files = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.choose_button = QPushButton("Drop files or choose · TIFF, JPG, PNG, PDF")
-        self.choose_button.setObjectName("mapdexDropButton")
-        self.choose_button.setCursor(enum_member(Qt, "CursorShape", "PointingHandCursor"))
-        self.choose_button.setFlat(True)
-        self.choose_button.setMinimumWidth(1)
-        self.choose_button.setSizePolicy(
-            enum_member(QSizePolicy, "Policy", "Ignored"),
-            enum_member(QSizePolicy, "Policy", "Fixed"),
-        )
-        layout.addWidget(self.choose_button)
-        self.layers_button = ui.LinkButton("Add from QGIS layers", "link")
-        self.layers_button.setObjectName("mapdexDropLink")
-        self.hint = self.choose_button
-        self.retheme()
+        self._layout = QVBoxLayout(self)
+        self._layout.setSpacing(8)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
+        self.layers_button = ui.secondary_button("From QGIS layers", "layers")
+        self.layers_button.setObjectName("mapdexSecondaryButton")
+        self.choose_button = ui.secondary_button("Choose files", "upload")
+        self.choose_button.setObjectName("mapdexSecondaryButton")
+        for button in (self.layers_button, self.choose_button):
+            button.setSizePolicy(
+                enum_member(QSizePolicy, "Policy", "Expanding"),
+                enum_member(QSizePolicy, "Policy", "Fixed"),
+            )
+            buttons.addWidget(button, 1)
+        self._layout.addLayout(buttons)
+        self.hint = ui.label(self.HINT, "mapdexMetaCentred")
+        self.hint.setAlignment(enum_member(Qt, "AlignmentFlag", "AlignHCenter"))
+        self._layout.addWidget(self.hint)
+        self._list_slot = QVBoxLayout()
+        self._list_slot.setContentsMargins(0, 4, 0, 0)
+        self._layout.addLayout(self._list_slot)
+        self.set_empty(True)
+
+    def set_list(self, widget):
+        self._list_slot.addWidget(widget)
+
+    def set_empty(self, empty):
+        """Dashed and roomy while empty; plain and flush once it holds maps."""
+        self.setProperty("empty", "true" if empty else "false")
+        if empty:
+            self._layout.setContentsMargins(16, 24, 16, 24)
+        else:
+            self._layout.setContentsMargins(0, 0, 0, 0)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_hint(self, _text=""):
+        """Kept for callers; the line under the buttons always says the same."""
+        self.hint.setText(self.HINT)
 
     def retheme(self):
-        self.choose_button.setIcon(ui.lucide_icon("upload", "slate", 16))
-        self.choose_button.setIconSize(QSize(16, 16))
-        self.layers_button.retheme()
-
-    def set_hint(self, text):
-        self.choose_button.setText(text)
+        return None
 
     def _paths(self, event):
         data = event.mimeData()
@@ -504,11 +525,18 @@ class SourceList(QWidget):
 
     @staticmethod
     def _icon_for(source):
-        if source.kind == "layer":
-            return "layer"
-        if str(source.label or "").lower().endswith(".pdf"):
-            return "file"
-        return "image"
+        """image for a raster (file or layer), file-text for a PDF, layers for
+        a vector layer, file for anything else."""
+        name = str(source.label or "").lower()
+        path = str(getattr(source, "path", "") or "").lower()
+        if name.endswith(".pdf") or path.endswith(".pdf"):
+            return "file-text"
+        data_kind = str(getattr(source, "data_kind", "") or "")
+        if data_kind == "vector":
+            return "layers"
+        if data_kind == "raster":
+            return "image"
+        return "file"
 
     def _build_row(self, parent, source, on_remove, last):
         row = QFrame(parent)
@@ -520,34 +548,44 @@ class SourceList(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 10, 8, 10)
         layout.setSpacing(10)
-        layout.addWidget(ui.IconLabel(self._icon_for(source), "slate", 16))
+        middle = enum_member(Qt, "AlignmentFlag", "AlignVCenter")
+        top = enum_member(Qt, "AlignmentFlag", "AlignTop")
+        glyph = ui.IconLabel(self._icon_for(source), "slate", 16)
+        layout.addWidget(glyph, 0, top)
+        # The name on its own line, the detail under it: side by side, a long
+        # layer name was cut to a few letters on a narrow dock.
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
         title = ui.ElidedLabel(source.label)
         title.setObjectName("mapdexSourceName")
-        layout.addWidget(title, 1)
+        text.addWidget(title)
         # Which route the sheet took, as a word: a file is uploaded as it is, a
         # layer may be exported first. Not a colour and not an icon alone.
         kind_word = "QGIS layer" if source.kind == "layer" else ""
         detail_text = " · ".join(part for part in (kind_word, source.detail) if part)
         if detail_text:
-            detail = ui.label(detail_text, "mapdexMeta", wrap=False)
+            detail = ui.ElidedLabel(detail_text, mode="ElideRight")
             detail.setObjectName("mapdexSourceDetail")
-            layout.addWidget(detail, 0)
+            text.addWidget(detail)
+        layout.addLayout(text, 1)
         if on_remove is not None:
             remove = ui.IconButton("x", "Remove {} from this task".format(source.label),
                                    "muted", 24, 14, "mapdexRowRemove")
             remove.setObjectName("mapdexSourceRemove")
             kind, key = source.kind, source.key
             remove.clicked.connect(lambda _checked=False, k=kind, i=key: on_remove(k, i))
-            layout.addWidget(remove, 0)
+            layout.addWidget(remove, 0, middle)
+        ui.align_icon(glyph, title, size=16)
         return row
 
 
 class OptionsDisclosure(QWidget):
-    """Options, closed by default, with what they currently say on the header.
+    """Options, closed by default; what they say sits at the row's right edge.
 
+    "default" while nothing was changed, otherwise the changes in a few words.
     Closed is right because the defaults are the behaviour that was already
-    shipping. The summary beside the title is what makes closed safe: an
-    option changed three tasks ago is otherwise invisible at Start.
+    shipping, and the right-edge summary is what makes closed safe.
     """
 
     def __init__(self, title="Options", parent=None):
@@ -560,14 +598,15 @@ class OptionsDisclosure(QWidget):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(8)
+        middle = enum_member(Qt, "AlignmentFlag", "AlignVCenter")
         self.header = ui.LinkButton(title, "muted", "chevron-right")
         self.header.setObjectName("mapdexOptionsHeader")
         self.header.setCheckable(True)
-        self.chip = ui.label("Default", "mapdexMeta", wrap=False)
+        self.chip = ui.label("default", "mapdexMeta", wrap=False)
         self.chip.setObjectName("mapdexOptionsChip")
-        header_row.addWidget(self.header, 0)
-        header_row.addWidget(self.chip, 0)
+        header_row.addWidget(self.header, 0, middle)
         header_row.addStretch(1)
+        header_row.addWidget(self.chip, 0, middle)
         layout.addLayout(header_row)
         self.body = QFrame()
         self.body.setObjectName("mapdexOptionsBody")
@@ -580,7 +619,8 @@ class OptionsDisclosure(QWidget):
         self.header.set_icon_name("chevron-down" if opened else "chevron-right")
 
     def set_summary(self, text):
-        self.chip.setText("· {}".format(text) if text else "")
+        text = str(text or "")
+        self.chip.setText("default" if not text or text.lower() == "default" else text)
 
 
 def _elastic(combo):
@@ -774,7 +814,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     connect_header.layout_.addWidget(connect_wordmark)
     connect_layout.addWidget(connect_header)
     connect_scroll, sign_in_layout, sign_in = ui.scroll_column(
-        READING_WIDTH, (20, 24, 20, 24), 24)
+        READING_WIDTH, (16, 24, 16, 24), 24)
     connect_layout.addWidget(connect_scroll, 1)
     sign_in_layout.addStretch(1)
     intro = QVBoxLayout()
@@ -789,8 +829,11 @@ def build_companion_panel(workflows, endpoint_settings=True):
     for promise in CONNECT_POINTS:
         point = QHBoxLayout()
         point.setSpacing(10)
-        point.addWidget(ui.IconLabel("check", "ok", 16, 2.25), 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-        point.addWidget(ui.label(promise, "mapdexBody"), 1)
+        tick = ui.IconLabel("check", "ok", 16, 2.25)
+        sentence = ui.label(promise, "mapdexBody")
+        point.addWidget(tick, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+        point.addWidget(sentence, 1, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+        ui.align_icon(tick, sentence, size=16)
         points.addLayout(point)
     sign_in_layout.addLayout(points)
     connect_actions = QVBoxLayout()
@@ -811,7 +854,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # Main view: header, tabs, notice, pages
     # ------------------------------------------------------------------
     main_view, main_layout = _view("main")
-    header = ui.Band("mapdexBand", READING_WIDTH, (16, 8, 12, 8))
+    header = ui.Band("mapdexBand", READING_WIDTH, (16, 8, 9, 8))
     header_row = QHBoxLayout()
     header_row.setContentsMargins(0, 0, 0, 0)
     header_row.setSpacing(10)
@@ -900,11 +943,12 @@ def build_companion_panel(workflows, endpoint_settings=True):
     context_row = QHBoxLayout()
     context_row.setContentsMargins(0, 0, 0, 0)
     context_row.setSpacing(6)
-    context_icon = ui.IconLabel("layer", "muted", 13, 2)
+    context_icon = ui.IconLabel("layers", "muted", 14, 2)
     nivo_context = ui.ElidedLabel("No active QGIS layer", mode="ElideRight")
     nivo_context.setObjectName("mapdexMeta")
-    context_row.addWidget(context_icon, 0)
-    context_row.addWidget(nivo_context, 1)
+    context_row.addWidget(context_icon, 0, enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
+    context_row.addWidget(nivo_context, 1, enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
+    ui.align_icon(context_icon, nivo_context, size=14)
     nivo_footer.layout_.addLayout(context_row)
     # Which engine answers, shown only when it is not the plain hosted default
     # (the plugin decides): a BYOK turn never reaches Mapdex, and that has to
@@ -976,20 +1020,23 @@ def build_companion_panel(workflows, endpoint_settings=True):
 
     maps_block = QVBoxLayout()
     maps_block.setSpacing(8)
-    maps_header = QHBoxLayout()
-    maps_header.setContentsMargins(0, 0, 0, 0)
-    maps_header.addWidget(_section_label("Maps"), 0)
-    maps_header.addStretch(1)
+    maps_block.addWidget(_section_label("Maps"))
     drop_zone = SourceDropZone()
-    maps_header.addWidget(drop_zone.layers_button, 0)
-    maps_block.addLayout(maps_header)
     source_list = SourceList()
     source_list.setVisible(False)
-    maps_block.addWidget(source_list)
+    drop_zone.set_list(source_list)
     maps_block.addWidget(drop_zone)
+    # A status line here only for a problem that blocks the run; the list and
+    # the button already say what is ready.
+    maps_problem = ui.StatusLine("warn", "", "")
+    maps_problem.setObjectName("mapdexMapsProblem")
+    maps_problem.setVisible(False)
+    maps_block.addWidget(maps_problem)
+    # The count and size the list already shows: kept for the code that writes
+    # it, never on screen.
     source_summary = ui.label("No sources selected", "mapdexMeta")
     source_summary.setObjectName("mapdexSourceSummary")
-    maps_block.addWidget(source_summary)
+    attic_layout.addWidget(source_summary)
     workspace_layout.addLayout(maps_block)
 
     # Three real fields, every one read by POST /v1/batches.
@@ -1021,16 +1068,14 @@ def build_companion_panel(workflows, endpoint_settings=True):
     balance_layout = QHBoxLayout(balance_row)
     balance_layout.setContentsMargins(0, 0, 0, 0)
     balance_layout.setSpacing(8)
-    balance_icon = QLabel()
-    balance_icon.setFixedSize(16, 16)
-    balance_icon.setPixmap(ui.status_pixmap("warn", 16))
-    balance_icon.retheme = lambda: balance_icon.setPixmap(ui.status_pixmap("warn", 16))
+    balance_icon = ui.StatusIcon("warn", 16)
     balance_notice = ui.label("", "mapdexBody")
     balance_notice.setObjectName("mapdexBalanceNotice")
     top_up_button = ui.LinkButton("Add balance", "link", "external-link")
     balance_layout.addWidget(balance_icon, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
-    balance_layout.addWidget(balance_notice, 1)
+    balance_layout.addWidget(balance_notice, 1, enum_member(Qt, "AlignmentFlag", "AlignTop"))
     balance_layout.addWidget(top_up_button, 0, enum_member(Qt, "AlignmentFlag", "AlignTop"))
+    ui.align_icon(balance_icon, balance_notice, size=16)
     balance_row.setVisible(False)
     task_footer.layout_.addWidget(balance_row)
     run_button = ui.PrimaryButton("Add maps to start", "", "crosshair", height=52)
@@ -1053,29 +1098,29 @@ def build_companion_panel(workflows, endpoint_settings=True):
     jobs.setObjectName("mapdexPage")
     jobs_page_layout = QVBoxLayout(jobs)
     jobs_page_layout.setContentsMargins(0, 0, 0, 0)
-    jobs_scroll, jobs_layout, _jobs_column = ui.scroll_column(READING_WIDTH, (16, 20, 16, 20), 16)
+    jobs_scroll, jobs_layout, _jobs_column = ui.scroll_column(READING_WIDTH, (4, 20, 4, 20), 16)
     jobs_page_layout.addWidget(jobs_scroll, 1)
     jobs_locked = ui.label(JOBS_LOCKED_NOTICE, "mapdexBody")
+    jobs_locked.setContentsMargins(12, 0, 12, 0)
     jobs_locked.setObjectName("mapdexLockedNotice")
     jobs_locked.setVisible(False)
     jobs_layout.addWidget(jobs_locked)
 
     jobs_empty = QWidget()
     empty_layout = QVBoxLayout(jobs_empty)
-    empty_layout.setContentsMargins(0, 0, 0, 0)
+    empty_layout.setContentsMargins(12, 0, 12, 0)
     empty_layout.setSpacing(8)
     empty_layout.addWidget(ui.label("No jobs yet", "mapdexPageTitle"))
-    empty_layout.addWidget(ui.label(
-        "Maps you send from the Task tab appear here with their progress and results.",
-        "mapdexBody"))
+    empty_layout.addWidget(ui.label("Maps you send appear here.", "mapdexBody"))
     jobs_empty_link = ui.LinkButton("Send maps to Mapdex", "link")
     empty_layout.addWidget(jobs_empty_link, 0, enum_member(Qt, "AlignmentFlag", "AlignLeft"))
     jobs_layout.addWidget(jobs_empty)
 
     batch = QWidget()
     batch.setObjectName("mapdexResultCard")
+    batch.setAttribute(enum_member(Qt, "WidgetAttribute", "WA_StyledBackground"), True)
     batch_layout = QVBoxLayout(batch)
-    batch_layout.setContentsMargins(0, 0, 0, 0)
+    batch_layout.setContentsMargins(12, 12, 12, 12)
     batch_layout.setSpacing(12)
     heading = QVBoxLayout()
     heading.setSpacing(4)
@@ -1087,11 +1132,21 @@ def build_companion_panel(workflows, endpoint_settings=True):
     phase_label = ui.StatusLine("working", "", "")
     phase_label.setObjectName("mapdexPhaseLine")
     batch_layout.addWidget(phase_label)
+    # A bar only for a real fraction (sheets done of sheets sent), with the
+    # numbers beside it. Never a percentage made from steps: it sits still and
+    # reads as stuck.
     progress_bar = QProgressBar()
     progress_bar.setRange(0, 100)
     progress_bar.setValue(0)
     progress_bar.setTextVisible(False)
-    batch_layout.addWidget(progress_bar)
+    progress_text = ui.label("", "mapdexMeta", wrap=False)
+    progress_text.setObjectName("mapdexProgressText")
+    progress_row = QHBoxLayout()
+    progress_row.setContentsMargins(0, 0, 0, 0)
+    progress_row.setSpacing(10)
+    progress_row.addWidget(progress_bar, 1, enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
+    progress_row.addWidget(progress_text, 0, enum_member(Qt, "AlignmentFlag", "AlignVCenter"))
+    batch_layout.addLayout(progress_row)
     item_list = JobItemList()
     item_list.setVisible(False)
     batch_layout.addWidget(item_list)
@@ -1114,7 +1169,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     quiet_row.setSpacing(16)
     open_button = ui.LinkButton("Open task in Mapdex", "link", "external-link")
     open_button.setObjectName("mapdexQuietButton")
-    cancel_button = ui.LinkButton("Cancel task", "danger")
+    cancel_button = ui.LinkButton("Cancel task", "danger", "x")
     cancel_button.setObjectName("mapdexDangerLink")
     quiet_row.addWidget(open_button, 0)
     quiet_row.addWidget(cancel_button, 0)
@@ -1123,6 +1178,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     jobs_layout.addWidget(batch)
 
     recent = ui.Disclosure("Earlier jobs")
+    recent.setContentsMargins(12, 0, 12, 0)
     recent_body = QVBoxLayout(recent.body)
     recent_body.setContentsMargins(0, 0, 0, 0)
     recent_body.setSpacing(8)
@@ -1140,7 +1196,7 @@ def build_companion_panel(workflows, endpoint_settings=True):
     # Settings view
     # ------------------------------------------------------------------
     settings_page, settings_layout = _view("settings")
-    settings_header = ui.Band("mapdexBand", READING_WIDTH, (12, 8, 16, 8))
+    settings_header = ui.Band("mapdexBand", READING_WIDTH, (9, 8, 16, 8))
     settings_header_row = QHBoxLayout()
     settings_header_row.setContentsMargins(0, 0, 0, 0)
     settings_header_row.setSpacing(8)
@@ -1194,8 +1250,9 @@ def build_companion_panel(workflows, endpoint_settings=True):
     for value, title, description in MODEL_CHOICES:
         model_group.addItem(title, value, description)
     model_section.addWidget(model_group)
+    # Retired: the fields appearing under the chosen card says it.
     model_hint = ui.label(MODEL_FIELDS_HINT, "mapdexMeta")
-    model_section.addWidget(model_hint)
+    attic_layout.addWidget(model_hint)
 
     # The stored provider, the single source of truth the plugin reads and
     # writes. Hidden: the cards and the vendor menu drive it.
@@ -1241,8 +1298,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
     fields_layout.addWidget(assistant_key_state)
     # Where the question goes, said with the fields that change it. Under
     # Mapdex the card's own sentence already says it.
+    # The card's own sentence says where questions go; this line is kept for
+    # the code that writes it, never on screen.
     assistant_privacy = ui.label("Mapdex-hosted assistant: bounded map context is sent to Mapdex.", "mapdexMeta")
-    fields_layout.addWidget(assistant_privacy)
+    attic_layout.addWidget(assistant_privacy)
     model_section.addWidget(provider_fields)
     save_settings_button = ui.PrimaryButton("Save settings", height=40)
     save_settings_button.set_centred(True)
@@ -1280,10 +1339,15 @@ def build_companion_panel(workflows, endpoint_settings=True):
     meta_row.setSpacing(6)
     meta_row.addWidget(ui.label("Mapdex for QGIS {} ·".format(PLUGIN_VERSION), "mapdexMeta", wrap=False))
     help_link = ui.LinkButton("Help", "link")
-    report_link = ui.LinkButton("Report a problem", "link")
+    contact_link = ui.LinkButton("Contact us", "link")
+    copy_details_link = ui.LinkButton("Copy details", "muted")
+    copy_details_link.setToolTip(
+        "Copy the plugin, QGIS, Qt and system versions to paste into a message")
     meta_row.addWidget(help_link)
     meta_row.addWidget(ui.label("·", "mapdexMeta", wrap=False))
-    meta_row.addWidget(report_link)
+    meta_row.addWidget(contact_link)
+    meta_row.addWidget(ui.label("·", "mapdexMeta", wrap=False))
+    meta_row.addWidget(copy_details_link)
     meta_row.addStretch(1)
     settings_footer.addLayout(meta_row)
     connection_layout.addLayout(settings_footer)
@@ -1317,7 +1381,6 @@ def build_companion_panel(workflows, endpoint_settings=True):
             endpoint_row.setVisible(shown["endpoint"])
             key_row.setVisible(shown["key"])
             provider_fields.setVisible(choice != "mapdex")
-            model_hint.setVisible(choice == "mapdex")
             stored = str(provider_box.property("storedProvider") or "")
             save_settings_button.setVisible(choice != "mapdex" or provider != stored)
         finally:
@@ -1451,7 +1514,10 @@ def build_companion_panel(workflows, endpoint_settings=True):
         "account_detail": account_detail,
         "plan_link": plan_link,
         "help_link": help_link,
-        "report_link": report_link,
+        "contact_link": contact_link,
+        "copy_details_link": copy_details_link,
+        "progress_text": progress_text,
+        "maps_problem": maps_problem,
         "batch": batch,
         "batch_title": batch_title,
         "phase_label": phase_label,
@@ -1556,7 +1622,7 @@ def _style_dialog(dialog):
     """Dialogs are not children of the panel, so they take the theme here."""
     tokens = ui.tokens()
     dialog.setStyleSheet(
-        theme.stylesheet(tokens)
+        theme.stylesheet(tokens, ui.panel_font_family())
         + "QDialog {{ background: {s}; color: {i}; }} "
           "QListWidget {{ background: {f}; color: {i}; border: 1px solid {b}; border-radius: 6px; }}".format(
               s=tokens["surface"], i=tokens["ink"], f=tokens["field"], b=tokens["border_strong"])

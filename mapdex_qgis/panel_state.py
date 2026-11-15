@@ -289,3 +289,17 @@ def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     sentence that made a working design look like a leak.
     """
     return "Disconnected. Connect again to ask Nivo and to start tasks."
+
+
+def support_details(plugin_version: str, qgis_version: str, qt_version: str, system: str) -> str:
+    """What "Copy details" puts on the clipboard: versions and the system only.
+
+    No account, email, token, project or file: a person pastes this into a
+    message to us, and it must be safe to paste anywhere.
+    """
+    return "\n".join((
+        "Mapdex for QGIS {}".format(plugin_version or "unknown"),
+        "QGIS {}".format(qgis_version or "unknown"),
+        "Qt {}".format(qt_version or "unknown"),
+        "System {}".format(system or "unknown"),
+    ))

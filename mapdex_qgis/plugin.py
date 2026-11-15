@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import tempfile
 import threading
 import time
@@ -21,13 +22,13 @@ from qgis.PyQt.QtCore import (
 )
 from qgis.PyQt.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon
 from qgis.PyQt.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
     QMessageBox,
     QSizePolicy,
     QVBoxLayout,
@@ -149,9 +150,8 @@ from .nivo import (
     thread_turns,
     transition,
 )
-from .panel import WORKFLOW_ICONS
+from .panel import WORKFLOW_ICONS, _kind_value
 from .panel import (
-    action_row,
     allow_narrow,
     build_companion_panel,
     build_balance_dialog,
@@ -166,7 +166,15 @@ from . import nivo_examples
 from . import panel_state
 from . import theme as ui_theme
 from . import ui
-from .job_items import jobs_headline, jobs_line
+from .job_items import (
+    batch_status as job_status,
+    created_at_seconds as job_created_at,
+    elapsed_text as job_elapsed_text,
+    jobs_headline,
+    jobs_line,
+    running_count as job_running_count,
+    sheet_fraction,
+)
 from .nivo_examples import context_line
 from ._vendor.nivo.processing import (
     PROCESSING_OPERATION_CATALOG,
@@ -291,7 +299,9 @@ DEFAULT_API = "https://api.mapdex.ai"
 DEFAULT_WEB = "https://app.mapdex.ai"
 # The two links at the foot of Settings, the same addresses metadata.txt names.
 HELP_URL = "https://mapdex.ai/qgis"
-REPORT_URL = "https://github.com/MapdexAI/mapdex-qgis/issues"
+# Most QGIS users do not use git, so the panel offers a contact page rather than
+# an issue tracker. metadata.txt keeps its tracker, which the directory requires.
+CONTACT_URL = "https://mapdex.ai/contact"
 CONNECT_TOTAL_TIMEOUT = 120.0
 CONNECT_HTTP_TIMEOUT = 10.0
 # While a task waits for browser review the panel keeps a slow watch, so an
@@ -323,7 +333,8 @@ PANEL_WIDGET_REFS = (
     "nivo_stop_button", "nivo_status",
     "nivo_new_button", "nivo_history_button",
     "tab_bar", "views", "show_connected", "open_settings_button",
-    "account_name", "account_detail", "plan_link", "help_link", "report_link",
+    "account_name", "account_detail", "plan_link", "help_link", "contact_link",
+    "copy_details_link", "progress_text", "maps_problem",
     "jobs_empty", "vendor_box", "model_group", "sync_settings", "connection_panel",
 )
 
@@ -1257,7 +1268,15 @@ class MapdexPlugin:
         self.account_detail = None
         self.plan_link = None
         self.help_link = None
-        self.report_link = None
+        self.contact_link = None
+        self.copy_details_link = None
+        self.progress_text = None
+        self.maps_problem = None
+        # The live clock on a running job, ticking only while one runs.
+        self.clock_timer = QTimer()
+        self.clock_timer.setInterval(1000)
+        self.clock_timer.timeout.connect(self._tick_job_clock)
+        self._batch_started_at = 0.0
         self.jobs_empty = None
         self.vendor_box = None
         self.model_group = None
@@ -1877,9 +1896,11 @@ class MapdexPlugin:
         if self.help_link is not None:
             self.help_link.clicked.connect(
                 lambda _checked=False: QDesktopServices.openUrl(QUrl(HELP_URL)))
-        if self.report_link is not None:
-            self.report_link.clicked.connect(
-                lambda _checked=False: QDesktopServices.openUrl(QUrl(REPORT_URL)))
+        if self.contact_link is not None:
+            self.contact_link.clicked.connect(
+                lambda _checked=False: QDesktopServices.openUrl(QUrl(CONTACT_URL)))
+        if self.copy_details_link is not None:
+            self.copy_details_link.clicked.connect(self.copy_support_details)
         if self.tab_bar is not None:
             # The header controls follow the tab: New chat and History are for
             # the conversation, so they leave with it.
@@ -2419,14 +2440,11 @@ class MapdexPlugin:
         jobs_empty = getattr(self, "jobs_empty", None)
         if jobs_empty is not None:
             jobs_empty.setVisible(connected and not has_batch)
-        # The amber count on the Jobs tab: sheets waiting on the person,
-        # failures included, because nothing else will happen to them.
-        tab_bar = getattr(self, "tab_bar", None)
-        if tab_bar is not None:
-            waiting = (needs_review + failed) if (connected and has_batch and not active) else 0
-            tab_bar.set_badge(2, waiting)
-        self.cancel_button.setVisible(active)
-        self.cancel_button.setEnabled(active and not self._busy)
+        # A running job can always be cancelled: a quiet red action, behind a
+        # confirm, never greyed out while it is the thing that is running.
+        cancellable = active and self.batch_id not in ("", "uploading")
+        self.cancel_button.setVisible(cancellable)
+        self.cancel_button.setEnabled(cancellable)
         if self.open_batch_button is not None:
             self.open_batch_button.setVisible(
                 connected and has_batch and self.batch_id not in ("", "uploading")
@@ -2461,6 +2479,7 @@ class MapdexPlugin:
             )
         items = (self._last_batch or {}).get("items") or []
         listed = has_batch and connected and (len(items) > 1 or failed > 0 or needs_review > 0)
+        uploading = self.batch_id == "uploading"
         if has_batch:
             guidance = task_guidance(
                 state,
@@ -2472,32 +2491,54 @@ class MapdexPlugin:
             self.review_button.setText(guidance["action"])
             self.review_button.setVisible(bool(guidance["action"]))
             self.review_button.setEnabled(not self._busy)
+            # The title names the job; the status line under it says its ONE
+            # state. "Queued" over "Working" was the two disagreeing.
             if listed and items:
                 headline = jobs_headline(items)
                 line = jobs_line(items) or guidance["hint"]
-            elif active and total > 1:
-                headline = "Processing {} of {} files".format(completed, total)
-                line = guidance["hint"]
             else:
-                headline = guidance["phase"]
+                headline = self._batch_heading(total)
                 line = guidance["hint"]
             if self.batch_title is not None:
-                self.batch_title.setText(headline or ("Task in progress" if active else "Latest task"))
+                self.batch_title.setText(headline)
             self.guidance_label.setText(line)
             self.guidance_label.setVisible(bool(line))
-            # The state as a status line, only when no list carries it row by row.
-            tone, word = self._batch_tone(active, failed, needs_review, succeeded)
+            status = job_status(state, counts, active, uploading=uploading)
             if hasattr(self.phase_label, "set_status"):
-                self.phase_label.set_status(tone, word, "")
-                self.phase_label.setVisible(not listed and bool(word))
+                self.phase_label.set_status(status["tone"], status["word"], "")
+                self.phase_label.setVisible(bool(status["word"]) and (active or not listed))
+                if hasattr(self.phase_label, "set_clock"):
+                    self.phase_label.set_clock(
+                        job_elapsed_text(self._job_elapsed_seconds()) if active else "")
             else:
-                self.phase_label.setText(guidance["phase"])
-            self.progress_bar.setVisible(active)
-            if guidance["busy"]:
-                self.progress_bar.setRange(0, 0)
-            else:
-                self.progress_bar.setRange(0, 100)
-                self.progress_bar.setValue(guidance["progress"])
+                self.phase_label.setText(status["word"])
+            # A bar only for a real fraction: sheets done of sheets sent.
+            fraction = sheet_fraction(counts) if active else None
+            self.progress_bar.setVisible(bool(fraction))
+            if fraction:
+                self.progress_bar.setRange(0, fraction["total"])
+                self.progress_bar.setValue(fraction["done"])
+            if self.progress_text is not None:
+                self.progress_text.setText(fraction["text"] if fraction else "")
+                self.progress_text.setVisible(bool(fraction))
+        else:
+            self.progress_bar.setVisible(False)
+            if self.progress_text is not None:
+                self.progress_text.setVisible(False)
+        # The Jobs tab: the amber count when something needs the user, else a
+        # turning ring and the running count while work runs, else nothing.
+        tab_bar = getattr(self, "tab_bar", None)
+        if tab_bar is not None:
+            waiting = (needs_review + failed) if (connected and has_batch) else 0
+            tab_bar.set_badge(2, waiting)
+            running = job_running_count(counts) if (connected and has_batch and active) else 0
+            if hasattr(tab_bar, "set_activity"):
+                tab_bar.set_activity(2, running)
+        if active and has_batch:
+            if not self.clock_timer.isActive():
+                self.clock_timer.start()
+        elif self.clock_timer.isActive():
+            self.clock_timer.stop()
         # The sheets: a batch of more than one, or a single sheet once it needs
         # a person. One row saying "Working" under a title that says so is noise.
         if self.item_list is not None:
@@ -2506,6 +2547,80 @@ class MapdexPlugin:
                 self._batch_file_names,
                 self._job_item_action,
             )
+
+    def _batch_heading(self, total=0):
+        """What the job is: the workflow and the map, or how many maps."""
+        kind = str((self._last_batch or {}).get("kind") or "")
+        if not kind and self.workflow_box is not None:
+            kind = str(_kind_value(self.workflow_box.currentData()) or "")
+        title = ""
+        for workflow_title, workflow_kind in WORKFLOWS:
+            if str(_kind_value(workflow_kind)) == kind:
+                title = workflow_title
+                break
+        names = [name for name in (self._batch_file_names or {}).values() if name]
+        if len(names) == 1:
+            subject = names[0]
+        elif total > 1:
+            subject = "{} sheets".format(total)
+        else:
+            subject = ""
+        return " · ".join(part for part in (title, subject) if part) or "Latest task"
+
+    def _job_elapsed_seconds(self):
+        """Seconds since the job was created (the server's clock when it says)."""
+        created = job_created_at((self._last_batch or {}).get("created_at"))
+        started = created or self._batch_started_at
+        return max(0, int(time.time() - started)) if started else 0
+
+    @guarded
+    def _tick_job_clock(self):
+        if self.phase_label is None or not hasattr(self.phase_label, "set_clock"):
+            self.clock_timer.stop()
+            return
+        if not self.phase_label.isVisible():
+            return
+        self.phase_label.set_clock(job_elapsed_text(self._job_elapsed_seconds()))
+
+    def _flash_batch(self):
+        """Light the job that just started for a moment, where it now lives."""
+        block = self.batch_group
+        if block is None:
+            return
+        block.setProperty("fresh", "true")
+        block.style().unpolish(block)
+        block.style().polish(block)
+
+        def _settle(widget=block):
+            try:
+                widget.setProperty("fresh", "false")
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(2500, _settle)
+
+    @guarded
+    def copy_support_details(self, *args):
+        """Versions only - plugin, QGIS, Qt, system - for a support message."""
+        from qgis.PyQt.QtCore import QT_VERSION_STR  # noqa: PLC0415
+        from qgis.core import Qgis  # noqa: PLC0415
+
+        text = panel_state.support_details(
+            PLUGIN_VERSION, Qgis.version(), QT_VERSION_STR, platform.platform())
+        QApplication.clipboard().setText(text)
+        link = self.copy_details_link
+        if link is not None:
+            link.setText("Copied")
+
+            def _restore(widget=link):
+                try:
+                    widget.setText("Copy details")
+                except RuntimeError:
+                    pass
+
+            QTimer.singleShot(2000, _restore)
 
     @staticmethod
     def _batch_tone(active, failed, needs_review, succeeded):
@@ -2752,9 +2867,9 @@ class MapdexPlugin:
                 )
             )
         else:
-            self._set_status(
-                task_sources.ready_notice(self.selected_sources, self._workflow_title())
-            )
+            # The list and the button already say what will run; a status
+            # line is for a problem only.
+            self.status.clear()
 
     def _workflow_title(self):
         if self.workflow_box is None:
@@ -2786,16 +2901,13 @@ class MapdexPlugin:
             report["summary"] if report["valid"]
             else "{} - {}".format(report["summary"], report["error"])
         )
+        # A status line under the list only for a problem that blocks the run.
+        problem = self.selected_sources and not report["valid"] and report.get("error")
+        if self.maps_problem is not None:
+            self.maps_problem.set_status("warn", "", str(problem or ""))
+            self.maps_problem.setVisible(bool(problem))
         if self.drop_zone is not None:
-            formats = (
-                "GeoPackage, GeoJSON, Shapefile"
-                if task_sources.wanted_data_kind(workflow) == task_sources.DATA_VECTOR
-                else "TIFF, JPG, PNG, PDF"
-            )
-            self.drop_zone.set_hint(
-                "Add more · drop or choose" if self.selected_sources
-                else "Drop files or choose · {}".format(formats)
-            )
+            self.drop_zone.set_empty(not self.selected_sources)
         self._render_pdf_option()
         # The Start label carries the money, so it is written by the one method
         # that knows the money. Setting it here as well was two writers of one
@@ -4202,8 +4314,8 @@ class MapdexPlugin:
         if status:
             row.addWidget(ui.StatusLine(status["tone"], status["word"], status["detail"]))
         if text:
-            body = self._plain(ui.label("", "mapdexTurnBody"), text)
-            body.setTextInteractionFlags(enum_member(Qt, "TextInteractionFlag", "TextSelectableByMouse"))
+            # Plain text, laid out at a 1.5 line height for reading.
+            body = ui.ProseLabel(str(text), "mapdexTurnBody")
             row.addWidget(body)
         if turn.get("fact"):
             # The measured line, under the sentence about it: what was counted
@@ -4211,7 +4323,9 @@ class MapdexPlugin:
             fact = self._plain(ui.label("", "mapdexMeta"), turn["fact"])
             row.addWidget(fact)
         steps = turn.get("steps") or []
-        if steps:
+        # The trace earns a line only when a capability or tool ran: under a
+        # plain reply the assistant's own bookkeeping is noise.
+        if steps and nivo_examples.trace_worth_showing(steps):
             summary = nivo_examples.steps_summary(steps)
             toggle = ui.LinkButton(summary, "muted", "chevron-right")
             toggle.setCheckable(True)
@@ -4265,7 +4379,7 @@ class MapdexPlugin:
         cap = max(160, min(BUBBLE_WIDTH, int(usable * 0.8)))
         # As wide as the sentence, up to 80% of the column. A wrapping label
         # left to its own size hint collapses to a few words per line.
-        measure = QFont(body.font())
+        measure = QFont(ui.panel_font_family() or body.font().family())
         measure.setPixelSize(ui_theme.BODY_PX)
         natural = QFontMetrics(measure).boundingRect(str(text)).width() + 28
         bubble.setMinimumWidth(min(natural, cap))
@@ -5709,10 +5823,9 @@ class MapdexPlugin:
         self._render_sources()
         layer_kind = "vector" if kind == BatchKind.VALIDATE_DELIVER else "raster"
         if self.selected_sources:
-            self._set_status(
-                task_sources.summary(self.selected_sources, str(kind or ""))["error"]
-                or task_sources.ready_notice(self.selected_sources, self._workflow_title())
-            )
+            # Said only when the list no longer suits the workflow; the maps
+            # line under the list states it, so the shared notice stays quiet.
+            self.status.clear()
             return
         # Quiet: the drop zone already says this, in the place it applies.
         self._set_status(
@@ -6235,10 +6348,16 @@ class MapdexPlugin:
         self.imported_layer_ids.clear()
         self._announced_state = ""
         self._pending_is_batch = len(paths) > 1
-        self._set_status("Uploading to Mapdex…")
+        self._set_status("Uploading to Mapdex…", quiet=True)
         self.batch_id = "uploading"
         self._last_batch = {"status": "created", "counts": {"total": len(paths)}}
+        self._batch_started_at = time.time()
+        # The job lives on the Jobs tab from the moment it starts: go there and
+        # light it, rather than leave a status on the Task page.
+        if callable(self.switch_page):
+            self.switch_page(2)
         self._refresh_ui()
+        self._flash_batch()
         options = self.task_options()
         self._task(
             "Send to Mapdex",
@@ -6373,9 +6492,7 @@ class MapdexPlugin:
             file_ids[0] if file_ids else "",
         )
         QSettings().setValue("mapdex/project_id", self.project_id)
-        self._set_status(
-            "Task started. Mapdex is working in the background…"
-        )
+        self._set_status("Task started. Mapdex is working in the background…", quiet=True)
         self._refresh_ui()
         self.progress_timer.start(3000)
 
@@ -7068,7 +7185,18 @@ class MapdexPlugin:
 
     @guarded
     def cancel_batch(self, *args):
-        if not self.batch_id:
+        if not self.batch_id or self.batch_id == "uploading":
+            return
+        yes = enum_member(QMessageBox, "StandardButton", "Yes")
+        no = enum_member(QMessageBox, "StandardButton", "No")
+        answer = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Cancel this task?",
+            "Sheets that already finished keep their results. The rest stop.",
+            yes | no,
+            no,
+        )
+        if answer != yes:
             return
         project_id = self._active_project_id()
 
