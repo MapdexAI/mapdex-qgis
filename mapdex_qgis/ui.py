@@ -20,10 +20,11 @@ QGIS theme recolours the panel without rebuilding it.
 """
 from __future__ import annotations
 
+import html
 import os
 
-from qgis.PyQt.QtCore import QByteArray, QEvent, QObject, QPoint, QPointF, QSize, Qt, QTimer, pyqtSignal
-from qgis.PyQt.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPixmap, QTextLayout, QTextOption
+from qgis.PyQt.QtCore import QByteArray, QEvent, QObject, QPoint, QSize, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPixmap
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QFrame,
@@ -1203,11 +1204,13 @@ class Disclosure(QWidget):
 
 
 class ProseLabel(QLabel):
-    """Plain text at a 1.5 line height, for reading.
+    """Text at a 1.5 line height that can be selected and copied.
 
-    QLabel has no line-height, and rich text would open the HTML path that
-    model and user text must never take. This keeps `PlainText` and `text()`
-    exactly as given, and lays the lines out itself with QTextLayout.
+    People copy measured numbers out of answers, so the text stays a
+    selectable QLabel. Its line height comes from rich text, which is the only
+    way a QLabel takes one on Qt 5 and Qt 6; the text is escaped first, so
+    model and user text is still shown as text and never read as markup.
+    `text()` returns the string exactly as given.
     """
 
     LINE_HEIGHT = 1.5
@@ -1215,75 +1218,33 @@ class ProseLabel(QLabel):
     def __init__(self, text="", name="mapdexTurnBody", parent=None):
         super().__init__(parent)
         self.setObjectName(name)
-        self.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
+        self.setTextFormat(enum_member(Qt, "TextFormat", "RichText"))
         self.setWordWrap(True)
+        self.setOpenExternalLinks(False)
+        self.setTextInteractionFlags(
+            enum_member(Qt, "TextInteractionFlag", "TextSelectableByMouse")
+            | enum_member(Qt, "TextInteractionFlag", "TextSelectableByKeyboard")
+        )
         self.setMinimumWidth(1)
         self.setSizePolicy(_policy("Expanding", "Preferred"))
+        self._plain = ""
         self.setText(text)
 
-    def _line_step(self):
-        return int(round(QFontMetrics(self.font()).height() * self.LINE_HEIGHT))
-
-    def _lines(self, width):
-        """[(layout, line_count)], each line positioned on the 1.5 line grid.
-
-        Lines are placed with setPosition and drawn by QTextLayout.draw: drawing
-        single QTextLine objects crashed QGIS 4 (Qt 6.11) outright.
-        """
-        option = QTextOption()
-        option.setWrapMode(enum_member(QTextOption, "WrapMode", "WrapAtWordBoundaryOrAnywhere"))
-        step = self._line_step()
-        layouts = []
-        for paragraph in (self.text() or "").split("\n"):
-            layout = QTextLayout(paragraph, self.font())
-            layout.setTextOption(option)
-            layout.beginLayout()
-            count = 0
-            while True:
-                line = layout.createLine()
-                if not line.isValid():
-                    break
-                line.setLineWidth(max(1, width))
-                line.setPosition(QPointF(0, count * step + (step - line.height()) / 2.0))
-                count += 1
-            layout.endLayout()
-            layouts.append((layout, max(1, count)))
-        return layouts
-
-    def heightForWidth(self, width):  # noqa: N802 - Qt virtual name
-        margins = self.contentsMargins()
-        inner = max(1, width - margins.left() - margins.right())
-        lines = sum(count for _layout, count in self._lines(inner))
-        return lines * self._line_step() + margins.top() + margins.bottom()
-
-    def hasHeightForWidth(self):  # noqa: N802 - Qt virtual name
-        return True
-
-    def sizeHint(self):  # noqa: N802 - Qt virtual name
-        metrics = QFontMetrics(self.font())
-        widest = max([metrics.horizontalAdvance(part) if hasattr(metrics, "horizontalAdvance")
-                      else metrics.width(part) for part in (self.text() or "").split("\n")] + [1])
-        margins = self.contentsMargins()
-        width = widest + margins.left() + margins.right() + 2
-        return QSize(width, self.heightForWidth(width))
-
-    def minimumSizeHint(self):  # noqa: N802 - Qt virtual name
-        return QSize(1, self._line_step())
+    @classmethod
+    def markup(cls, text):
+        """The escaped text as one paragraph per line, at the reading height."""
+        style = "margin:0; line-height:{}%;".format(int(round(cls.LINE_HEIGHT * 100)))
+        paragraphs = [html.escape(part, quote=False) or "&nbsp;"
+                      for part in str(text or "").split("\n")]
+        return "".join('<p style="{}">{}</p>'.format(style, part) for part in paragraphs)
 
     def setText(self, text):  # noqa: N802 - Qt virtual name
-        super().setText(str(text or ""))
+        self._plain = str(text or "")
+        super().setText(self.markup(self._plain))
         self.updateGeometry()
 
-    def paintEvent(self, _event):  # noqa: N802 - Qt virtual name
-        rect = self.contentsRect()
-        painter = QPainter(self)
-        painter.setPen(self.palette().color(self.foregroundRole()))
-        step = self._line_step()
-        y = float(rect.top())
-        for layout, count in self._lines(rect.width()):
-            layout.draw(painter, QPointF(rect.left(), y))
-            y += count * step
-        painter.end()
+    def text(self):  # noqa: D401 - the text as given, not the markup
+        return self._plain
 
 
 def hline():

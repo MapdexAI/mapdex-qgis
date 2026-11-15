@@ -932,13 +932,26 @@ def replayed_markup_stays_text():
                           plugin_module.transcript_turn("assistant", raw)]
     plugin._render_nivo_turns()
     plain = enum_member(Qt, "TextFormat", "PlainText")
-    matches = [
-        label for label in transcript_labels(plugin)
-        if label.text() == raw and label.textFormat() == plain
-    ]
+
+    def shows_literally(label):
+        if label.text() != raw:
+            return False
+        if label.textFormat() == plain:
+            return True
+        # A selectable answer is rich text (for its line height) with the text
+        # escaped: what is DISPLAYED, read back as a selection, must be the
+        # raw characters, so nothing in it was taken as markup.
+        if not label.textInteractionFlags() & enum_member(Qt, "TextInteractionFlag", "TextSelectableByMouse"):
+            return False
+        label.setSelection(0, len(raw))
+        shown = label.selectedText()
+        label.setSelection(0, 0)
+        return shown == raw
+
+    matches = [label for label in transcript_labels(plugin) if shows_literally(label)]
     if not matches:
         shown = [label.text() for label in transcript_labels(plugin)]
-        raise AssertionError("no PlainText label carries the raw markup; labels were {}".format(shown))
+        raise AssertionError("no label displays the raw markup as text; labels were {}".format(shown))
     return "rendered {!r} as characters, textFormat={}".format(raw[:26], plain)
 
 
@@ -3335,6 +3348,42 @@ def every_icon_sits_on_its_text_line():
 
 
 check("every icon sits on its text line", every_icon_sits_on_its_text_line)
+
+
+def an_answer_can_be_selected_and_copied():
+    """People copy measured numbers out of answers, so the answer is selectable.
+
+    Built through the plugin's own turn renderer, with text that looks like
+    markup, so the check also proves model text is shown as text.
+    """
+    from qgis.PyQt.QtCore import Qt as _Qt  # noqa: PLC0415
+    from qgis.PyQt.QtWidgets import QLabel as _QLabel  # noqa: PLC0415
+
+    plugin = need_plugin()
+    text = "P-013 is the largest: 20,000 m<sup>2</sup> & <b>not bold</b>"
+    card = plugin._turn_widget({"sender": "assistant", "text": text}, 420)
+    bodies = [w for w in card.findChildren(_QLabel) if w.objectName() == "mapdexTurnBody"]
+    if not bodies:
+        raise AssertionError("the answer has no mapdexTurnBody label")
+    body = bodies[0]
+    flags = body.textInteractionFlags()
+    mouse = _Qt.TextInteractionFlag.TextSelectableByMouse
+    keyboard = _Qt.TextInteractionFlag.TextSelectableByKeyboard
+    if not (flags & mouse) or not (flags & keyboard):
+        raise AssertionError("the answer cannot be selected: flags {!r}".format(flags))
+    if body.text() != text:
+        raise AssertionError("the answer's text changed on the way in: {!r}".format(body.text()))
+    body.setSelection(0, 5)
+    if body.selectedText() != "P-013":
+        raise AssertionError("selecting the first five characters gave {!r}".format(body.selectedText()))
+    body.setSelection(0, len(text))
+    if "<b>" not in body.selectedText():
+        raise AssertionError("markup in the answer was interpreted, not shown: {!r}".format(
+            body.selectedText()))
+    return "selectable by mouse and keyboard; selection reads {!r}".format(body.selectedText()[:24])
+
+
+check("an answer can be selected and copied", an_answer_can_be_selected_and_copied)
 
 
 def the_estimate_states_what_the_batch_will_cost():

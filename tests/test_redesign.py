@@ -365,3 +365,18 @@ def test_the_footer_offers_contact_not_an_issue_tracker():
     assert 'CONTACT_URL = "https://mapdex.ai/contact"' in plugin
     assert "Contact us" in PANEL and "Copy details" in PANEL
     assert "Report a problem" not in PANEL
+
+
+# -- answers can be copied -------------------------------------------------------
+
+def test_an_answer_can_be_selected_with_the_mouse():
+    # People copy measured numbers out of answers: the answer body is a
+    # selectable label, by mouse and by keyboard, and never a painted widget.
+    body = UI[UI.index("class ProseLabel(QLabel):"):UI.index("def hline():")]
+    assert '"TextSelectableByMouse"' in body
+    assert '"TextSelectableByKeyboard"' in body
+    assert "paintEvent" not in body
+    assert "html.escape(" in body, "model text must be escaped before it is shown as rich text"
+    assert "line-height:" in body
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert 'ui.ProseLabel(str(text), "mapdexTurnBody")' in plugin
