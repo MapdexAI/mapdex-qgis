@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.8
+version=0.13.9
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,16 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.8
+changelog=0.13.9
+    - Importing a placed map states its price before the file leaves Mapdex,
+      and results already downloaded are kept if a later one is refused.
+    - A priced plan run that finished has a control that imports its result.
+    - When the balance is short, the dialog states the required and available
+      amounts.
+    - Nivo refuses an address with "@" before the path or control characters
+      on plain http.
+    - Contracts updated to match the current Mapdex service.
+    0.13.8
     - No change to behaviour. The package digest is stored in a shape the
       plugins.qgis.org upload scan no longer reports as a possible secret.
     0.13.7
