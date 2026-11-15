@@ -139,8 +139,11 @@ Open the panel from *Web → Mapdex*, or the Mapdex toolbar button.
 1. **Connect.** Click *Connect Mapdex*; your browser opens with a short code to
    approve. The access token is stored encrypted in the QGIS Authentication
    Manager — never in plain settings.
-2. **Pick a project** in your Mapdex workspace.
-3. **Pick a workflow** from the four cards, then **add the sheets**: drop files
+2. **Your workspace** is named in the panel header. Tasks go to its default
+   project, as they do in the Mapdex web app.
+3. **On the Task tab, choose what Mapdex should do** (Place on the map, Extract
+   parcels, Check and convert, or both placing and extracting), then **add the
+   maps**: drop files
    onto the panel, choose them from disk, or tick open QGIS layers — all three
    add to the same list. **More than one sheet runs as one batch**, with its own
    per-item progress, retry and review. A vector layer is exported to GeoPackage
@@ -149,15 +152,19 @@ Open the panel from *Web → Mapdex*, or the Mapdex toolbar button.
    already completed, and how many run at a time.
 4. **Ask Nivo** when you want to inspect the active layer, zoom, select, style,
    prepare a Processing action, or send a Mapdex workflow in natural language.
-5. **Start task.** Progress, the current phase, and the next action appear in
-   the panel.
+   Anything that would change or create data waits on a "Needs your OK" card
+   in the conversation that states what goes in and what comes out.
+5. **Start.** The blue button counts the sheets it will send and states the
+   price inside it ("Place 2 sheets · No charge"). Each sheet's progress, and
+   what needs you, appear on the *Jobs* tab.
 6. **Review** flagged features in the browser when the task asks for it
    (*Review in Mapdex*).
 7. **Add result to QGIS** loads the finished layer into your project.
 
 ## Self-hosted / custom endpoint
 
-*Settings* in the panel header exposes the API and web addresses. They must be
+*Settings* (the sliders icon in the panel header) exposes the API and web
+addresses in a development build. They must be
 `https://`, except for a Mapdex running on your own machine
 (`http://127.0.0.1:…`). Changing the endpoint clears the stored token: a
 session belongs to the deployment that issued it, so you re-authorize against

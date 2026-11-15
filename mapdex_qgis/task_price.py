@@ -121,6 +121,23 @@ def price_line(batch_kinds, kind: str, sheets: int, trace_beta: bool = False) ->
     ) + leave_line
 
 
+def button_price(batch_kinds, kind: str, sheets: int) -> str:
+    """The money shown INSIDE the Start control, on its right.
+
+    "No charge" when the server priced this workflow at nothing, the total when
+    it costs something, and "" when the price is unknown. Unknown is not free,
+    so it is never rendered as "No charge" and never as "$0".
+    """
+    figures = estimate(batch_kinds, kind, max(int(sheets or 0), 1))
+    if figures is None:
+        return ""
+    if not sheets:
+        return ""
+    if figures["total_cents"] == 0:
+        return "No charge"
+    return format_cents(figures["total_cents"])
+
+
 def total_label(batch_kinds, kind: str, sheets: int) -> str:
     """The money for the Start control, or "" when there is none to state.
 

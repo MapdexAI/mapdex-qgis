@@ -33,8 +33,8 @@ def test_nivo_is_a_primary_tab_not_an_inline_task_card():
     panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
     assert "QStackedWidget" in panel
     assert "QTabWidget," not in panel
-    assert 'page_order = (nivo, workspace, jobs, settings_page)' in panel
-    assert 'enumerate(("Nivo AI", "Task", "Jobs", "Settings"))' in panel
+    assert 'page_order = (nivo, workspace, jobs)' in panel
+    assert 'TAB_TITLES = ("Nivo", "Task", "Jobs")' in panel
     assert 'page.setVisible(index == target)' in panel
 
 
@@ -42,13 +42,11 @@ def test_settings_is_a_page_and_not_a_panel_that_expands_the_column():
     # It used to be a disclosure in the middle of the column, so opening it
     # pushed everything below it down by the height of a nine-field form -
     # which meant pressing "use my own model" answered the question by shoving
-    # the choice it belonged to off the screen.
+    # the choice it belonged to off the screen. It is its own view now, with a
+    # Back control, reached from the header.
     panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
-    assert "settings_page_layout.addWidget(connection_panel)" in panel
-    # Anchored on the indent, because the page's own line ends in the same
-    # characters: `settings_page_layout.addWidget(connection_panel)` contains
-    # `layout.addWidget(connection_panel)`, so a bare substring check here
-    # fails against the correct code.
+    assert "views.setCurrentWidget(settings_page)" in panel
+    assert "for view in (connect_view, main_view, settings_page):" in panel
     assert "\n    layout.addWidget(connection_panel)" not in panel, (
         "the settings form is back in the scrolling column"
     )
@@ -100,16 +98,11 @@ def test_the_header_settings_control_is_gone():
 def test_a_demoted_connect_row_keeps_a_container_and_changes_its_sentence():
     # Reported as "the background is broken": Connect Mapdex rendered as indigo
     # text floating on the panel with no container, directly above a bordered
-    # card, while still carrying the word "Recommended". Losing a rank means
-    # losing the FILL, not losing the object - and not keeping a sentence that
-    # tells somebody who has already started that they should start.
+    # card, while still carrying the word "Recommended". Connect is now the one
+    # filled control of the connect view and never degrades into bare text:
+    # it IS a PrimaryButton, so it always has its fill and its shape.
     panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
-    # The standalone rule, not the shared `QFrame#mapdexRow, ...Primary,
-    # ...Quiet { border-radius }` one that also contains this selector. Anchored
-    # on the line start so the two cannot be confused.
-    quiet = panel[panel.index("\n        QFrame#mapdexRowQuiet {") :]
-    quiet = quiet[: quiet.index("}")]
-    assert "border: 1px solid" in quiet, "the demoted rank has no container"
+    assert "class _ConnectButton(ui.PrimaryButton):" in panel
 
     plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
     assert "CONNECT_PROMISE_UPGRADE" in plugin

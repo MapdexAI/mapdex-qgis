@@ -51,13 +51,26 @@ _MARK = {
     STATE_CANCELLED: "x",
 }
 
+# The web app's words (My maps): what waits on the person is "Needs you", what
+# is finished and usable is "Ready", what is in flight is "Working".
 _LABEL = {
     STATE_FAILED: "Failed",
-    STATE_NEEDS_REVIEW: "Needs review",
-    STATE_RUNNING: "Running",
+    STATE_NEEDS_REVIEW: "Needs you",
+    STATE_RUNNING: "Working",
     STATE_PENDING: "Queued",
-    STATE_SUCCEEDED: "Done",
+    STATE_SUCCEEDED: "Ready",
     STATE_CANCELLED: "Cancelled",
+}
+
+# The status tone each state is drawn with (`theme.TONES`): a solid icon and a
+# coloured word. Amber waits on you, red failed, green is done, blue is working.
+_TONE = {
+    STATE_FAILED: "err",
+    STATE_NEEDS_REVIEW: "warn",
+    STATE_RUNNING: "working",
+    STATE_PENDING: "neutral",
+    STATE_SUCCEEDED: "ok",
+    STATE_CANCELLED: "neutral",
 }
 
 
@@ -139,6 +152,7 @@ def item_status(item: Dict[str, Any]) -> Dict[str, str]:
         # An unheard-of state is shown as itself. Mapping it onto a known label
         # would report something this build cannot actually know.
         "label": _LABEL.get(state, state.replace("_", " ").capitalize() or "Unknown"),
+        "tone": _TONE.get(state, "neutral"),
         "detail": detail,
     }
 
@@ -153,11 +167,11 @@ def item_action(item: Dict[str, Any]) -> Dict[str, str]:
     state = item_state(item)
     run_id = str((item or {}).get("run_id") or "")
     if state == STATE_FAILED:
-        return {"key": "open", "label": "Why", "run_id": run_id}
+        return {"key": "open", "label": "See why in Mapdex", "run_id": run_id}
     if state == STATE_NEEDS_REVIEW:
-        return {"key": "review", "label": "Review", "run_id": run_id}
+        return {"key": "review", "label": "Open in Mapdex", "run_id": run_id}
     if state == STATE_SUCCEEDED:
-        return {"key": "import", "label": "Add", "run_id": run_id}
+        return {"key": "import", "label": "Add to QGIS", "run_id": run_id}
     return {"key": "", "label": "", "run_id": run_id}
 
 
@@ -184,3 +198,50 @@ def items_summary(items: Sequence[Dict[str, Any]]) -> str:
     if done:
         parts.append("{} done".format(done))
     return " · ".join(parts)
+
+
+def _counts(items: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in items or []:
+        state = item_state(item)
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def jobs_headline(items: Sequence[Dict[str, Any]]) -> str:
+    """The Jobs page title: how many sheets, and how many need the person.
+
+    "4 sheets: 1 needs you" leads with what is waiting, the web app's rule for
+    a batch digest. A failure counts as needing the person: nothing else will
+    happen to it until somebody looks.
+    """
+    items = list(items or [])
+    if not items:
+        return ""
+    total = len(items)
+    counts = _counts(items)
+    waiting = counts.get(STATE_NEEDS_REVIEW, 0) + counts.get(STATE_FAILED, 0)
+    sheets = "1 sheet" if total == 1 else "{} sheets".format(total)
+    if waiting:
+        return "{}: {} {}".format(sheets, waiting, "needs you" if waiting == 1 else "need you")
+    if counts.get(STATE_RUNNING, 0) or counts.get(STATE_PENDING, 0):
+        return "{}: working".format(sheets)
+    if counts.get(STATE_SUCCEEDED, 0) == total:
+        return "{}: ready".format(sheets) if total == 1 else "{}: all ready".format(sheets)
+    return "{}: finished".format(sheets)
+
+
+def jobs_line(items: Sequence[Dict[str, Any]]) -> str:
+    """The line under the title, naming the other states by count."""
+    counts = _counts(items)
+    parts = []
+    for state, word in (
+        (STATE_SUCCEEDED, "ready"),
+        (STATE_RUNNING, "working"),
+        (STATE_PENDING, "queued"),
+        (STATE_FAILED, "failed"),
+        (STATE_CANCELLED, "cancelled"),
+    ):
+        if counts.get(state):
+            parts.append("{} {}".format(counts[state], word))
+    return ", ".join(parts)

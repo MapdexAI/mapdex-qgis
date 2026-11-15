@@ -68,4 +68,4 @@ def test_each_paired_widget_is_added_to_its_row_exactly_once():
 
 def test_the_api_key_row_uses_a_plain_container():
     assert "api_key_row = QWidget()" in PANEL
-    assert 'assistant_form.addRow("API key", api_key_row)' in PANEL
+    assert '_field_row("API key", api_key_row)' in PANEL

@@ -93,22 +93,80 @@ JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their
 # notice and prepared turns belong to the conversation after a provider can
 # answer; showing them here made onboarding and chat look like one broken
 # transcript. Keep the value proposition short enough to survive a 420 px dock.
-FIRST_OPEN_TITLE = "Your map-aware assistant, inside QGIS"
+FIRST_OPEN_TITLE = "Ask your map in plain language"
 FIRST_OPEN_PROMPT = (
-    "Connect Mapdex to use Nivo in QGIS. You can choose Mapdex, your own "
-    "provider or a local model after connecting."
+    "Nivo measures answers from your layers, styles them and runs QGIS tools "
+    "after you say yes. Send scanned maps to Mapdex and get them back placed."
+)
+# Three things that are true of the product, each checkable on first use. A
+# list of features would be a brochure; these are the promises the person can
+# hold the panel to.
+CONNECT_POINTS = (
+    "Numbers come from QGIS measurements, not guesses",
+    "It asks before it changes or creates data",
+    "Use Mapdex, your own API key or a local model",
 )
 
-# The connection action states the product value; model routing is a Settings
-# decision after identity, project and capability context exist.
-CONNECT_PROMISE = (
-    "Recommended. Free to start. Ask Nivo and run verified Georeference, "
-    "digitize, validate and batch workflows."
-)
-# The same action to somebody already answering from their own model. It is an
-# upgrade for them, not the thing to press, and telling them it is
-# "Recommended. Free to start." describes a decision they have already made.
+# The line under the one button: what pressing it does next, so a browser
+# opening is not a surprise.
+CONNECT_PROMISE = "Opens your browser to sign in or create a free account."
+# Kept as a separate name for the plugin's existing reference; there is one
+# connection gate now, so the sentence is the same.
 CONNECT_PROMISE_UPGRADE = CONNECT_PROMISE
+
+# ---------------------------------------------------------------------------
+# Which model answers in Nivo
+# ---------------------------------------------------------------------------
+#
+# Three choices, as radio cards, mapped onto the provider values the stored
+# settings already use. The vendor menu appears only under "My own API key",
+# because the person choosing Mapdex or a local model has no vendor to pick.
+MODEL_CHOICES = (
+    ("mapdex", "Mapdex",
+     "Included in your plan. What you ask about the map is sent to Mapdex."),
+    ("own", "My own API key",
+     "Questions go straight from QGIS to your provider. The key stays in QGIS's encrypted store."),
+    ("local", "A local model",
+     "Runs on your machine, for example with Ollama."),
+)
+MODEL_FIELDS_HINT = (
+    "The key and model fields appear only when you choose your own key or a local model."
+)
+LOCAL_PROVIDER = "ollama"
+KEY_PROVIDER_CHOICES = tuple(
+    (label, value) for label, value in (
+        ("OpenAI", "openai"),
+        ("Anthropic", "anthropic"),
+        ("Google Gemini", "gemini"),
+        ("OpenAI-compatible endpoint", "openai_compatible"),
+    )
+)
+
+
+def model_choice_for(provider: str) -> str:
+    """Which of the three cards a stored provider value belongs to."""
+    provider = str(provider or "")
+    if not provider:
+        return "mapdex"
+    if provider == LOCAL_PROVIDER:
+        return "local"
+    return "own"
+
+
+def model_fields_for(provider: str) -> dict[str, bool]:
+    """Which fields the Settings view shows for a provider value.
+
+    Mapdex shows none. A local model needs a model and an endpoint and no key.
+    A vendor key needs the vendor, a model and the key; only a compatible
+    endpoint also needs its address.
+    """
+    choice = model_choice_for(provider)
+    return {
+        "vendor": choice == "own",
+        "model": choice != "mapdex",
+        "endpoint": provider in ("openai_compatible", LOCAL_PROVIDER),
+        "key": choice == "own",
+    }
 
 
 def is_first_open(connected: bool, has_provider: bool = False) -> bool:

@@ -66,3 +66,39 @@ def review_workspace_path(project_id: str, run: dict[str, Any] | None) -> str:
         return "{}?open=review&run={}".format(base, run_id) if run_id else base
     path = "{}/review/{}".format(base, file_id)
     return "{}?run={}".format(path, run_id) if run_id else path
+
+
+def default_project_id(projects, remembered: str = "") -> str:
+    """The project work goes to, now that the panel has no project selector.
+
+    The web app removed project choice: work lands in the workspace's default
+    project. A remembered project that still exists wins (a resumed task names
+    one, and a conversation is bound to its project); then the project the
+    server marks `is_default`; then the first one listed. "" when there is none.
+    """
+    rows = [row for row in (projects or []) if isinstance(row, dict) and row.get("id")]
+    wanted = str(remembered or "")
+    if wanted and any(str(row.get("id")) == wanted for row in rows):
+        return wanted
+    for row in rows:
+        if row.get("is_default"):
+            return str(row["id"])
+    return str(rows[0]["id"]) if rows else ""
+
+
+def identity_from_me(payload) -> tuple:
+    """(workspace name, account email) from GET /v1/auth/me, "" when absent.
+
+    The active workspace is the membership whose org matches `org_id`; the
+    first membership when none does, which is the server's own fallback.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    memberships = [row for row in (payload.get("memberships") or []) if isinstance(row, dict)]
+    active = str(payload.get("org_id") or "")
+    chosen = next((row for row in memberships if str(row.get("org_id") or "") == active), None)
+    if chosen is None and memberships:
+        chosen = memberships[0]
+    name = str((chosen or {}).get("org_name") or "").strip()
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    email = str(user.get("email") or "").strip()
+    return name, email

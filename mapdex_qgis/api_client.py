@@ -389,6 +389,16 @@ class MapdexAPI:
         """
         return self._request("POST", "/v1/auth/device/revoke", {"device_code": device_code})
 
+    def me(self) -> dict[str, Any]:
+        """Who is signed in and which workspace is active, when this token may ask.
+
+        A connector token is confined to the workspace surface and is refused
+        here by design (ADR 0021); the caller treats that refusal as "unknown"
+        and names nothing rather than guessing a workspace.
+        """
+        response = self._request("GET", "/v1/auth/me")
+        return response if isinstance(response, dict) else {}
+
     def projects(self):
         response = self._request("GET", "/v1/projects")
         # API returns a bare JSON array (see ListProjects). Older clients used

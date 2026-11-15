@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.13.9
+version=0.14.0
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,28 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.13.9
+changelog=0.14.0
+    - The panel is redesigned to match the Mapdex web app: a slim header with
+      your workspace name, three tabs (Nivo, Task, Jobs) and Settings behind
+      the header icon. It follows your QGIS theme, light or dark.
+    - No more permanent status strip. A status appears only when it says
+      something, and information fades on its own.
+    - Nivo opens on "Ask about your map" with starting points for the active
+      layer. Answers that come from a QGIS measurement say "Measured", and the
+      steps behind an answer fold into one line you can open.
+    - A Processing operation asks for your OK in the conversation, with what
+      goes in, the setting and what comes out, instead of a dialog.
+    - Task offers the work as cards (Place on the map, Extract parcels, Check
+      and convert), lists the maps one per row, and the start button states
+      the count and the price inside it. Tasks go to your workspace's default
+      project; there is no project picker.
+    - Jobs leads with what needs you, shows every sheet with its status and one
+      action, and keeps earlier jobs one click away. The Jobs tab shows a count
+      when something waits on you.
+    - Settings shows your account, lets you choose Mapdex, your own API key or
+      a local model as cards, and shows the key and model fields only when
+      they apply.
+    0.13.9
     - Importing a placed map states its price before the file leaves Mapdex,
       and results already downloaded are kept if a later one is refused.
     - A priced plan run that finished has a control that imports its result.

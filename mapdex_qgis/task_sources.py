@@ -321,6 +321,31 @@ def start_label(sources: Sequence[Source], price: str = "") -> str:
     return "{} · {}".format(label, price) if price else label
 
 
+# What the Start control does, as a verb the person recognises. The web app's
+# own words: a map is placed, parcels are extracted, a dataset is checked.
+_START_VERBS = {
+    "georeference": ("Place {n}", "sheet"),
+    "digitize_parcels": ("Extract parcels from {n}", "sheet"),
+    "validate_deliver": ("Check {n}", "dataset"),
+    "full_pipeline": ("Place and extract {n}", "sheet"),
+}
+
+
+def start_action(sources: Sequence[Source], workflow: str) -> str:
+    """The Start control's label: the verb and how many sheets it acts on.
+
+    "Place 4 sheets" says what pressing does and to how much; "Start task"
+    said neither. The count is the list's, because that is what is sent; a
+    PDF split into pages is counted by the server, not guessed here.
+    """
+    template, noun = _START_VERBS.get(str(workflow or ""), ("Start {n}", "sheet"))
+    count = len(sources or [])
+    if not count:
+        return "Add maps to start" if noun == "sheet" else "Add a dataset to start"
+    amount = "1 {}".format(noun) if count == 1 else "{} {}s".format(count, noun)
+    return template.format(n=amount)
+
+
 def ready_notice(sources: Sequence[Source], workflow_title: str) -> str:
     """The status sentence once a list is ready to send."""
     if not sources:

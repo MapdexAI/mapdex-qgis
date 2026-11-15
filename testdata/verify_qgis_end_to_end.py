@@ -159,6 +159,7 @@ from mapdex_qgis import task_price as task_price_module  # noqa: E402
 from mapdex_qgis.panel import build_companion_panel  # noqa: E402
 from mapdex_qgis.qgis_runtime import QGISRuntime, bound_capability_ids  # noqa: E402
 from mapdex_qgis.qt_compat import enum_member  # noqa: E402
+from mapdex_qgis import ui as ui_module  # noqa: E402
 
 WORKFLOWS = (
     ("Georeference maps", BatchKind.GEOREFERENCE),
@@ -208,44 +209,44 @@ check("the companion panel builds under PyQt6", panel_builds)
 
 
 def nivo_header_structure():
-    """The message header identifies the assistant; the tab row holds the
-    conversation controls.
+    """The header names where the work goes; the conversation controls sit in it.
 
-    They used to share one row - avatar, name, layer context, runtime line,
-    New chat and History - and no real dock width holds six things. New chat
-    and History act on the transcript as a whole rather than on the message
-    they sat beside, so they belong on the toolbar row with the tabs.
+    0.14.0: one header row - the Mapdex wordmark, the workspace, then New chat,
+    History and Settings as icon controls. New chat and History act on the
+    transcript as a whole, so they share the row, and the layer context and
+    the engine line sit with the composer they describe.
     """
     refs = PANEL.get("refs")
     if not refs:
         raise NotRun("the panel did not build")
     new_button = refs["nivo_new_button"]
     history_button = refs["nivo_history_button"]
-    header = refs["nivo_context"].parentWidget().parentWidget()
-    row_widgets = widgets_of(new_button.parentWidget().layout())
-    if history_button not in row_widgets:
-        raise AssertionError("History is not in the same row as New chat")
+    settings_button = refs["open_settings_button"]
+    for button, word in ((history_button, "History"), (settings_button, "Settings")):
+        if button.parentWidget() is not new_button.parentWidget():
+            raise AssertionError("{} is not in the same row as New chat".format(word))
     if refs["tabs"] is None:
-        raise AssertionError("the conversation controls are not on the tab row")
+        raise AssertionError("there is no tab bar under the header")
     if new_button.text() != "New chat":
         raise AssertionError("the new-conversation control reads {!r}".format(new_button.text()))
     if history_button.text() != "History":
         raise AssertionError("the history control reads {!r}".format(history_button.text()))
-    titles = [
-        label.text() for label in descendants(header, QLabel)
-        if label.objectName() == "mapdexNivoTitle"
-    ]
-    if "Nivo" not in titles:
-        raise AssertionError("the header carries no Nivo title; labels were {}".format(titles))
-    if refs["nivo_context"] not in descendants(header, QLabel):
-        raise AssertionError("the context line is not in the header row")
-    if refs["nivo_runtime"] not in descendants(header, QLabel):
-        raise AssertionError("the header does not say which engine answers")
-    for button in (new_button, history_button):
+    header = new_button.parentWidget()
+    words = [label.text() for label in descendants(header, QLabel)]
+    if "Mapdex" not in words:
+        raise AssertionError("the header carries no Mapdex wordmark; labels were {}".format(words))
+    if refs["connection_label"] not in descendants(header, QLabel):
+        raise AssertionError("the workspace name is not in the header row")
+    nivo_page = refs["tabs"].widget(0)
+    if refs["nivo_context"] not in descendants(nivo_page, QLabel):
+        raise AssertionError("the context line is not on the Nivo page")
+    if refs["nivo_runtime"] not in descendants(nivo_page, QLabel):
+        raise AssertionError("the Nivo page does not say which engine answers")
+    for button in (new_button, history_button, settings_button):
         if not button.toolTip():
             raise AssertionError("{} carries no tooltip".format(button.text()))
-    return "title 'Nivo', context {!r}, then {} / {}".format(
-        refs["nivo_context"].text(), new_button.text(), history_button.text())
+    return "wordmark, workspace {!r}, then {} / {} / Settings in one row".format(
+        refs["connection_label"].text(), new_button.text(), history_button.text())
 
 
 check("the Nivo header carries title, context, History and New chat", nivo_header_structure)
@@ -908,7 +909,8 @@ TASK_STATES = synchronous_tasks(PLUGIN) if PLUGIN is not None else []
 
 
 def transcript_cards(plugin):
-    content = plugin.nivo_reply.widget()
+    # The turns live in the capped transcript column inside the scroll body.
+    content = getattr(plugin.nivo_reply, "transcript", None) or plugin.nivo_reply.widget()
     return widgets_of(content.layout())
 
 
@@ -1818,16 +1820,17 @@ check("forbidden capabilities are refused and never advertised",
 def a_processing_operation_asks_before_running():
     """The confirmation-required path, taken as far as a script honestly can.
 
-    Answered No: the prompt is the thing being checked. Whether the algorithm
-    then produces the right buffer is a Processing question, not a dispatch one.
+    0.14.0: the question is a "Needs your OK" card in the conversation rather
+    than a modal. Nothing may run until its button is pressed; Cancel is pressed
+    here, and the check is that nothing ran and the card says so.
     """
     plugin = need_plugin()
     MessageBoxStub.asked = []
-    MessageBoxStub.answers = [MessageBoxStub.StandardButton.No]
     ACTION_SEQUENCE[0] += 1
+    action_id = "act_confirm_{}".format(ACTION_SEQUENCE[0])
     response = {"text": "ok", "companion_actions": [{
         "kind": "qgis:processing_operation@1",
-        "action_id": "act_confirm_{}".format(ACTION_SEQUENCE[0]),
+        "action_id": action_id,
         "confirmation_id": "conf_1",
         "idempotency_key": "idem_1",
         "requires_confirmation": True,
@@ -1838,16 +1841,35 @@ def a_processing_operation_asks_before_running():
     offered = nivo_module.confirmation_actions(response)
     if not offered:
         raise AssertionError("the confirmation payload was rejected before it could be offered")
+    before = set(PROJECT.mapLayers())
     plugin.status.setText("")
     plugin._nivo_turns = []
     plugin._nivo_state = "idle"
     plugin._nivo_request_id += 1
     plugin._nivo_composed(plugin._nivo_request_id, None, {"thread_id": "", "response": response})
-    MessageBoxStub.answers = []
-    if not MessageBoxStub.asked:
-        raise AssertionError("a Processing run was dispatched with no confirmation")
-    _title, text = MessageBoxStub.asked[-1]
-    return "asked: {!r}".format(text.replace("\n", " ")[:76])
+    cards = [turn for turn in plugin._nivo_turns if turn.get("kind") == "confirm"]
+    if not cards:
+        raise AssertionError("a Processing run was offered with no confirmation card")
+    if plugin._tasks or set(PROJECT.mapLayers()) - before:
+        raise AssertionError("the Processing run started before anyone pressed the card")
+    card = cards[-1]["payload"]["card"]
+    rows = dict(card["rows"])
+    if "Input" not in rows or "Result" not in rows:
+        raise AssertionError("the card does not say what goes in and what comes out: {}".format(rows))
+    from qgis.PyQt.QtWidgets import QAbstractButton as _Button
+    buttons = [button for button in descendants(plugin.nivo_reply, _Button)
+               if button.text() == card["cancel"]]
+    if not buttons:
+        raise AssertionError("the card offers no {} button".format(card["cancel"]))
+    buttons[-1].click()
+    QGS.processEvents()
+    state = cards[-1]["payload"]["state"]
+    if state != "cancelled":
+        raise AssertionError("pressing Cancel left the card {!r}".format(state))
+    if plugin._tasks or set(PROJECT.mapLayers()) - before:
+        raise AssertionError("Cancel still ran the operation")
+    return "card {!r}: {}; Cancel ran nothing".format(
+        card["title"], "; ".join("{} {}".format(k, v) for k, v in card["rows"]))
 
 
 check("a Processing operation asks before it runs", a_processing_operation_asks_before_running)
@@ -2186,7 +2208,8 @@ def _turn_outcome(plugin, reply):
     leaves exactly one turn whose text is no longer the server's reply. Reading
     "a second turn means it ran" classified every such success as silent.
     """
-    turns = list(plugin._nivo_turns)
+    # A confirmation card is the QUESTION, not an outcome.
+    turns = [turn for turn in plugin._nivo_turns if turn.get("kind") != "confirm"]
     if len(turns) > 1:
         return turns[1:]
     if turns and str(turns[0].get("text") or "") != reply:
@@ -2239,6 +2262,13 @@ def replay_one(case, layer, keep_layers=False):
     try:
         plugin._nivo_composed(plugin._nivo_request_id, None,
                               {"thread_id": "", "response": copy.deepcopy(response)})
+        # Prompts answered Yes: a pending "Needs your OK" card is pressed,
+        # and counted as the prompt it is.
+        for turn in list(plugin._nivo_turns):
+            payload = turn.get("payload") or {}
+            if turn.get("kind") == "confirm" and payload.get("state") == "pending":
+                MessageBoxStub.asked.append(("Needs your OK", str(turn.get("text") or "")))
+                plugin._resolve_confirmation((payload.get("action") or {}).get("id"), True)
         finished = _wait_for_processing(plugin)
     except Exception as error:  # noqa: BLE001
         return "error", "{}: {}".format(type(error).__name__, error), []
@@ -2648,19 +2678,19 @@ def one_failed_sheet_does_get_a_list():
 
 
 def a_finished_sheet_offers_exactly_one_action():
-    from qgis.PyQt.QtWidgets import QToolButton as _QToolButton
+    from qgis.PyQt.QtWidgets import QAbstractButton as _Button
 
     plugin = _drive_batch([
         {"index": 0, "file_id": "f0", "state": "succeeded", "run_id": "run_0"},
         {"index": 1, "file_id": "f1", "state": "running", "run_id": "run_1"},
     ])
     actions = [
-        button.text() for button in descendants(plugin.item_list, _QToolButton)
-        if button.objectName() == "mapdexJobItemAction"
+        button.text() for button in descendants(plugin.item_list, _Button)
+        if button.objectName() == "mapdexJobItemAction" and button.isVisibleTo(plugin.item_list)
     ]
     # One button, on the finished sheet. The one still running offers nothing,
     # because a control that cannot act yet is one a person learns to distrust.
-    if actions != ["Add"]:
+    if actions != ["Add to QGIS"]:
         raise AssertionError("row actions were {}".format(actions))
     return "one action, on the sheet that has a result"
 
@@ -2700,7 +2730,8 @@ def settings_is_a_reachable_tab():
         raise NotRun("the panel did not build")
     switch = refs.get("switch_page")
     page = refs.get("settings_page")
-    panel_root = refs.get("column") or PANEL.get("root")
+    # Settings is its own view in 0.14.0, so the question is asked of the root.
+    panel_root = PANEL.get("root")
     if switch is None or page is None:
         raise AssertionError("the panel hands back no settings page")
 
@@ -2764,7 +2795,11 @@ def choosing_your_own_model_lands_on_the_settings_page():
 def the_demoted_connect_row_keeps_a_container():
     """Reported as "the background is broken": Connect Mapdex rendered as
     indigo text on the panel with no container, above a bordered card, while
-    still saying "Recommended"."""
+    still saying "Recommended".
+
+    0.14.0: Connect is the one filled control of the connect view and stays a
+    filled button in every tone - a tone may never strip its container.
+    """
     refs = PANEL.get("refs") or {}
     connect = refs.get("connect_button")
     if connect is None or not hasattr(connect, "set_tone"):
@@ -2772,14 +2807,14 @@ def the_demoted_connect_row_keeps_a_container():
     connect.set_tone("quiet")
     name = connect.objectName()
     connect.set_tone("primary")
-    if name != "mapdexRowQuiet":
-        raise AssertionError("the demoted row is {}".format(name))
-    quiet = PANEL["root"].styleSheet()
-    block = quiet[quiet.index("\n        QFrame#mapdexRowQuiet {"):]
+    if name != "mapdexPrimaryButton":
+        raise AssertionError("the demoted control is {}, not a filled button".format(name))
+    sheet = PANEL["root"].styleSheet()
+    block = sheet[sheet.index("QPushButton#mapdexPrimaryButton {"):]
     block = block[: block.index("}")]
-    if "border: 1px solid" not in block:
-        raise AssertionError("the demoted rank has no container")
-    return "losing a rank loses the fill, not the object"
+    if "background" not in block:
+        raise AssertionError("the filled button has no fill")
+    return "Connect keeps its fill and its shape in every tone"
 
 
 check("Settings is a reachable tab", settings_is_a_reachable_tab)
@@ -2835,7 +2870,7 @@ os.makedirs(SANDBOX, exist_ok=True)
 def the_four_workflows_are_cards():
     plugin = _task_page(need_plugin())
     chooser = plugin.workflow_box
-    cards = descendants(chooser, _TaskButton)
+    cards = descendants(chooser, ui_module.RadioCard)
     if len(cards) != 4:
         raise AssertionError("expected 4 workflow cards, found {}".format(len(cards)))
     checked = [card for card in cards if card.isChecked()]
@@ -2853,7 +2888,7 @@ check("the four workflows are cards, one chosen", the_four_workflows_are_cards)
 def pressing_a_card_changes_the_workflow():
     plugin = _task_page(need_plugin())
     chooser = plugin.workflow_box
-    cards = descendants(chooser, _TaskButton)
+    cards = descendants(chooser, ui_module.RadioCard)
     start = chooser.currentIndex()
     target = 1 if start != 1 else 2
     cards[target].click()
@@ -2897,9 +2932,11 @@ def two_sheets_say_batch_on_the_button():
     # Left as the two files the previous check added.
     if len(plugin.selected_sources) != 2:
         raise AssertionError("expected 2 sheets, have {}".format(len(plugin.selected_sources)))
+    # 0.14.0: Start counts the SHEETS it will send ("Place 2 sheets"); two of
+    # them are one batch, which the line under the button states.
     label = plugin.run_button.text()
-    if "2" not in label or "atch" not in label:
-        raise AssertionError("the Start control does not say it starts a batch: {!r}".format(label))
+    if "2" not in label or "sheet" not in label:
+        raise AssertionError("the Start control does not count the sheets: {!r}".format(label))
     return label
 
 
@@ -3138,13 +3175,18 @@ def every_workflow_card_is_drawn_whole():
                 layout.activate()
         QGS.processEvents()
     chooser = plugin.workflow_box
-    cards = descendants(chooser, _TaskButton)
+    cards = descendants(chooser, ui_module.RadioCard)
     # The decisive one, and the reason the first version of this check passed
     # over a visibly clipped render: card geometry can be entirely
     # self-consistent - cards at 0 and 74, each 74 tall - inside a widget that
     # was handed 141 px. Nothing about the cards is wrong there; the widget is
     # shorter than the layout it contains, and only the painted pixels say so.
-    needed = chooser.minimumSizeHint().height()
+    # A column of wrapping cards is laid out height-for-width; its plain
+    # minimumSizeHint is the height at ONE pixel of width, which no dock has.
+    layout = chooser.layout()
+    needed = (layout.totalHeightForWidth(chooser.width())
+              if layout is not None and layout.hasHeightForWidth()
+              else chooser.minimumSizeHint().height())
     if chooser.height() < needed:
         raise AssertionError(
             "the chooser is {} px for a layout needing {} px, so its last row "
@@ -3157,27 +3199,28 @@ def every_workflow_card_is_drawn_whole():
                 "card {!r} ends at {} px inside a {} px chooser, so it is clipped".format(
                     card.text(), bottom, chooser.height())
             )
-        if card.height() < card.CARD_HEIGHT:
+        own = card.layout().totalHeightForWidth(card.width())
+        if card.height() < own:
             raise AssertionError(
-                "card {!r} is {} px tall, under its own {} px minimum".format(
-                    card.text(), card.height(), card.CARD_HEIGHT)
+                "card {!r} is {} px tall, under the {} px its text needs".format(
+                    card.text(), card.height(), own)
             )
     rows = sorted({card.y() for card in cards})
-    if len(rows) != 2:
-        raise AssertionError("expected a 2x2 grid, found {} row(s)".format(len(rows)))
+    if len(rows) != 4:
+        raise AssertionError("expected one card per row, found {} row(s)".format(len(rows)))
     # And it must not paint into whatever comes next. A card whose bottom edge
     # lands on the section label below it is 3 px of overlap that every geometry
     # number agrees with, because the two widgets are siblings and neither
     # knows about the other.
     below = plugin.source_list.parentWidget()
     for sibling in below.findChildren(QLabel):
-        if sibling.text() != "Source":
+        if sibling.text() != "Maps":
             continue
         gap = sibling.mapTo(below, sibling.rect().topLeft()).y() - (
             chooser.mapTo(below, chooser.rect().bottomLeft()).y())
         if gap < 0:
             raise AssertionError(
-                "the workflow cards overlap the Source label by {} px".format(-gap)
+                "the workflow cards overlap the Maps label by {} px".format(-gap)
             )
         break
     return "{} cards over {} rows, chooser {} px tall".format(
