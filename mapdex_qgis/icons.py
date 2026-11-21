@@ -1,6 +1,7 @@
 """The panel's icons, as SVG text coloured for the theme on screen.
 
-Every glyph in the panel is a Lucide icon (ISC, `assets/lucide/LICENSE.txt`),
+Every glyph in the panel is a Lucide icon (ISC; the Feather-derived ones are
+MIT; both notices in `assets/lucide/LICENSE.txt`, the published file verbatim),
 vendored as a file with `stroke="currentColor"` and coloured here from the
 active token set. Colouring at load time rather than shipping a `_dark` and a
 light copy of each is what lets one file follow both QGIS themes, and it keeps
