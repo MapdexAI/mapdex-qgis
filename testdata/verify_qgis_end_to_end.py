@@ -3386,6 +3386,44 @@ def an_answer_can_be_selected_and_copied():
 check("an answer can be selected and copied", an_answer_can_be_selected_and_copied)
 
 
+def send_is_lit_only_with_a_question():
+    """One filled blue per screen: the send arrow lights only when it can send.
+
+    Over an empty field it was a second filled blue beside a "Needs your OK"
+    card's own button, and pressing it sent nothing. Driven through the real
+    field's textChanged signal, so the wiring is checked and not only the rule.
+    """
+    plugin = need_plugin()
+    field, send = plugin.nivo_input, plugin.nivo_send_button
+    if field is None or send is None:
+        raise NotRun("the composer did not build")
+    saved_text, saved_can_ask, saved_field = field.text(), plugin._nivo_can_ask, field.isEnabled()
+    try:
+        plugin._nivo_can_ask = True
+        field.setEnabled(True)
+        field.setText("")
+        QGS.processEvents()
+        if send.isEnabled():
+            raise AssertionError("send is lit over an empty field")
+        field.setText("Total area of parcels?")
+        QGS.processEvents()
+        if not send.isEnabled() and not plugin._busy and plugin._nivo_compose_task is None:
+            raise AssertionError("send stayed dark with a question in the field")
+        field.setText("   ")
+        QGS.processEvents()
+        if send.isEnabled():
+            raise AssertionError("send is lit over a field holding only spaces")
+    finally:
+        plugin._nivo_can_ask = saved_can_ask
+        field.setEnabled(saved_field)
+        field.setText(saved_text)
+        QGS.processEvents()
+    return "dark when empty or blank, lit with a question"
+
+
+check("send is lit only with a question to send", send_is_lit_only_with_a_question)
+
+
 def the_estimate_states_what_the_batch_will_cost():
     """The figure comes from the server's own per-item charge, multiplied.
 

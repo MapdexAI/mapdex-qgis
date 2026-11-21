@@ -1347,6 +1347,7 @@ class MapdexPlugin:
         self.nivo_status = None
         self.nivo_input = None
         self.nivo_send_button = None
+        self._nivo_can_ask = False
         self.composer = None
         self.nivo_stop_button = None
         self.nivo_new_button = None
@@ -1934,6 +1935,7 @@ class MapdexPlugin:
         self.nivo_send_button.clicked.connect(self.ask_nivo)
         self.nivo_stop_button.clicked.connect(self.stop_nivo)
         self.nivo_input.returnPressed.connect(self.ask_nivo)
+        self.nivo_input.textChanged.connect(self._refresh_send_button)
         self.nivo_new_button.clicked.connect(self.new_nivo_task)
         self.nivo_history_button.clicked.connect(self.open_nivo_history)
         self._workflow_changed(self.workflow_box.currentIndex())
@@ -3477,10 +3479,10 @@ class MapdexPlugin:
         # reason Ask is blocked must be read where the question is typed.
         self.nivo_runtime.setVisible(
             bool(self.api.token) and (engine["engine"] != "mapdex" or not engine["can_ask"]))
-        if self.nivo_send_button is not None:
-            self.nivo_send_button.setEnabled(engine["can_ask"] and not self._busy)
+        self._nivo_can_ask = bool(engine["can_ask"])
         if self.nivo_input is not None:
             self.nivo_input.setEnabled(engine["can_ask"])
+        self._refresh_send_button()
         # Deliberately does NOT write nivo_status. That line is a transient
         # reply to what the user just did, and this method runs on every layer
         # click and every connection refresh; writing a standing reason there
@@ -3555,6 +3557,15 @@ class MapdexPlugin:
         else:
             self._refresh_assistant_state()
         self._refresh_stop_button()
+
+    @guarded
+    def _refresh_send_button(self, *_args):
+        """Send is lit only when there is a question in the field (see `send_enabled`)."""
+        if self.nivo_send_button is None:
+            return
+        text = self.nivo_input.text() if self.nivo_input is not None else ""
+        busy = self._busy or self._nivo_compose_task is not None
+        self.nivo_send_button.setEnabled(panel_state.send_enabled(self._nivo_can_ask, busy, text))
 
     def _refresh_stop_button(self):
         """Stop is offered whenever there is something to stop.

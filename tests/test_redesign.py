@@ -380,3 +380,16 @@ def test_an_answer_can_be_selected_with_the_mouse():
     assert "line-height:" in body
     plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
     assert 'ui.ProseLabel(str(text), "mapdexTurnBody")' in plugin
+
+
+# -- one filled blue: send is lit only with a question in the field ---------------
+
+def test_send_is_lit_only_with_a_question_to_send():
+    assert panel_state.send_enabled(True, False, "Total area of polygon1?")
+    assert not panel_state.send_enabled(True, False, "")
+    assert not panel_state.send_enabled(True, False, "   ")
+    assert not panel_state.send_enabled(True, False, None)
+    assert not panel_state.send_enabled(True, True, "Total area?")
+    assert not panel_state.send_enabled(False, False, "Total area?")
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    assert "self.nivo_input.textChanged.connect(self._refresh_send_button)" in plugin

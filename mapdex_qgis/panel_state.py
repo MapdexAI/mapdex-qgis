@@ -282,6 +282,17 @@ def key_state_line(provider: str, has_key: bool) -> str:
     return "No key stored yet. Paste one, or choose Mapdex (hosted) to use your plan."
 
 
+def send_enabled(can_ask: bool, busy: bool, text: str | None) -> bool:
+    """Send is live only when there is a question to send.
+
+    The send arrow is a filled blue control, and a screen carries one filled
+    blue action. Lit over an empty field it competed with the action that did
+    matter: a "Needs your OK" card's own button showed as a second blue on the
+    same screen, and pressing the arrow there sent nothing.
+    """
+    return bool(can_ask) and not busy and bool(str(text or "").strip())
+
+
 def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     """What Disconnect reports, including what it did NOT stop.
 
