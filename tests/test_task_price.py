@@ -91,7 +91,10 @@ def test_the_rate_does_not_change_with_the_count():
 def test_placing_is_free_and_the_download_price_is_stated_apart():
     line = price_line(KINDS, "georeference", 8)
     assert "Placing is free" in line
-    assert "$2 the first time you download it" in line
+    assert "A placed map costs $2 the first time it is downloaded or exported." in line
+    # The figure is the server's published leave price, never a literal.
+    dearer = [dict(kind, leave_cents=350) if kind.get("leave_cents") else kind for kind in KINDS]
+    assert "costs $3.50 the first time it is downloaded or exported" in price_line(dearer, "georeference", 8)
     assert "$16" not in line
     assert total_label(KINDS, "georeference", 8) == ""
     assert total_cents(KINDS, "georeference", 300) == 0

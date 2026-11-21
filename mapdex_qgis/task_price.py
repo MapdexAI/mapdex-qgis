@@ -103,7 +103,7 @@ def price_line(batch_kinds, kind: str, sheets: int, trace_beta: bool = False) ->
         return ""
     leave = figures["per_item_leave_cents"]
     leave_line = (
-        " Placing is free. A placed map costs {unit} the first time you download it."
+        " Placing is free. A placed map costs {unit} the first time it is downloaded or exported."
     ).format(unit=format_cents(leave)) if leave > 0 else ""
     if figures["total_cents"] == 0:
         if leave > 0:
