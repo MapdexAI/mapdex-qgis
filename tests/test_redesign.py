@@ -393,3 +393,70 @@ def test_send_is_lit_only_with_a_question_to_send():
     assert not panel_state.send_enabled(False, False, "Total area?")
     plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
     assert "self.nivo_input.textChanged.connect(self._refresh_send_button)" in plugin
+
+
+# -- a confirmation card ends in what happened --------------------------------------
+
+def test_an_answered_card_ends_in_an_outcome_with_icon_and_word():
+    tones = set(theme.TONES)
+    for state in ("pending", "running", "done", "empty", "not_run", "failed", "cancelled", "approved"):
+        tone, word, _detail = confirm_card.outcome_status(state)
+        assert tone in tones and word, state
+    assert confirm_card.outcome_status("done", "added roads buffer, 3 features") == (
+        "ok", "Done", "added roads buffer, 3 features")
+    assert confirm_card.outcome_status("not_run", "the layer is no longer in the project")[:2] == ("err", "Not run")
+    assert confirm_card.outcome_status("failed", "QGIS stopped the buffer")[:2] == ("err", "Failed")
+    assert confirm_card.outcome_status("cancelled") == ("neutral", "Cancelled", "nothing was changed")
+    # A card saved by an earlier build never claims it is still running.
+    assert confirm_card.outcome_status("approved")[1:] == ("Approved", "the outcome was not recorded")
+
+
+def test_the_card_states_the_result_or_its_absence():
+    assert confirm_card.done_detail("roads buffer", 3) == "added roads buffer, 3 features"
+    assert confirm_card.done_detail("roads buffer", 1) == "added roads buffer, 1 feature"
+    assert confirm_card.done_detail("roads buffer", None) == "added roads buffer"
+    assert confirm_card.done_detail("", None) == "nothing was produced"
+    assert confirm_card.check_detail(0) == "no invalid shapes"
+    assert confirm_card.check_detail(2) == "2 invalid shapes"
+
+
+def _method_body(name):
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    start = plugin.index("    def {}(".format(name))
+    end = plugin.find("\n    @guarded\n    def ", start + 1)
+    return plugin[start:end]
+
+
+def test_every_exit_of_a_confirmed_run_settles_its_card():
+    body = _method_body("_run_processing_operation")
+    # Layer gone, no algorithm, empty input, the task failing, and both
+    # successes each settle the card; every other refusal goes through not_run.
+    assert '"not_run", "the layer is no longer in the project"' in body
+    assert '"not_run", missing' in body
+    assert body.count("self._action_failed(") == 1, "a refusal bypasses not_run and leaves the card running"
+    assert '"failed", "QGIS stopped the {} before it finished"' in body
+    assert body.count('self._settle_confirmation(action, "done"') == 1
+    assert '"done" if (output_name and produced != 0) else "empty"' in body
+    # Every early return in the body sits right after a settle or not_run().
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "return" and "def completed" not in "\n".join(lines[max(0, index - 3):index]):
+            window = "\n".join(lines[max(0, index - 14):index])
+            assert "_settle_confirmation" in window or "not_run(" in window or "self.dock is None" in window, (
+                "an exit leaves the card running:\n" + window)
+
+
+# -- statuses: outcomes stay, only progress notes fade -------------------------------
+
+def test_an_outcome_refusal_or_error_status_does_not_clear_itself():
+    for tone in ("info", "ok", "warn", "err"):
+        assert not panel_state.status_fades(tone, False), tone
+    assert not panel_state.status_fades("warn", True)
+    assert not panel_state.status_fades("err", True)
+    assert panel_state.status_fades("info", True)
+    panel = (ROOT / "mapdex_qgis" / "panel.py").read_text(encoding="utf-8")
+    assert "panel_state.status_fades(tone, transient)" in panel
+    plugin = (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8")
+    for sentence in ("QGIS rejected the new features.", "Approve code {user_code} in your browser"):
+        line = next(line for line in plugin.splitlines() if sentence in line)
+        assert "transient=True" not in line, sentence

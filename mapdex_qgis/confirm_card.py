@@ -95,3 +95,54 @@ def processing_card(
         "confirm": "Run check" if check else "Create layer",
         "cancel": "Cancel",
     }
+
+
+# What a card says once it has been answered. "Approved, running in QGIS" used
+# to stay on the card forever, including when nothing ran because the layer had
+# gone or the algorithm was missing: an approval is not an outcome. Every
+# answered card now ends in one of these, each a solid icon and a bold word
+# (theme.TONES) with the reason or the result beside it.
+_OUTCOMES = {
+    "pending": ("warn", "Needs your OK"),
+    "running": ("working", "Running"),
+    "done": ("ok", "Done"),
+    "empty": ("warn", "No result"),
+    "not_run": ("err", "Not run"),
+    "failed": ("err", "Failed"),
+    "cancelled": ("neutral", "Cancelled"),
+}
+
+
+def outcome_status(state: str, detail: str = "") -> tuple[str, str, str]:
+    """(tone, word, detail) for a card in this state.
+
+    A card saved by an earlier build in the old "approved" state carries no
+    outcome, and says so rather than claiming it is still running.
+    """
+    state = str(state or "pending")
+    if state == "approved":
+        return ("neutral", "Approved", detail or "the outcome was not recorded")
+    tone, word = _OUTCOMES.get(state, _OUTCOMES["pending"])
+    if not detail:
+        detail = {"running": "in QGIS", "cancelled": "nothing was changed"}.get(state, "")
+    return (tone, word, str(detail))
+
+
+def done_detail(output_name: str, produced: int | None) -> str:
+    """The result of a finished operation, for the card's status line."""
+    if not output_name:
+        return "nothing was produced"
+    if produced is None:
+        return "added {}".format(output_name)
+    if produced == 0:
+        return "{} is empty".format(output_name)
+    return "added {}, {:,} {}".format(output_name, produced, "feature" if produced == 1 else "features")
+
+
+def check_detail(invalid: int | None) -> str:
+    """The result of a geometry check, for the card's status line."""
+    if invalid is None:
+        return "the check finished"
+    if invalid == 0:
+        return "no invalid shapes"
+    return "{:,} invalid {}".format(invalid, "shape" if invalid == 1 else "shapes")

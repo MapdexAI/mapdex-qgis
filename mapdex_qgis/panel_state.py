@@ -293,6 +293,24 @@ def send_enabled(can_ask: bool, busy: bool, text: str | None) -> bool:
     return bool(can_ask) and not busy and bool(str(text or "").strip())
 
 
+# Tones that never fade, whatever the caller says: a warning or an error is
+# read when the person looks back, not within nine seconds.
+_STAYING_TONES = frozenset(("warn", "err"))
+
+
+def status_fades(tone: str, transient: bool) -> bool:
+    """Whether a status under the tabs clears itself after a few seconds.
+
+    The one rule for every status the panel shows. A status stays until the
+    next one replaces it, as it did before the redesign: a result ("QGIS
+    rejected the new features."), a refusal, an error, or something the person
+    must do ("Approve code X in your browser") cannot vanish while they look
+    away. Only a progress note the caller marks transient fades, and never one
+    in a warning or error tone.
+    """
+    return bool(transient) and str(tone or "info") not in _STAYING_TONES
+
+
 def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     """What Disconnect reports, including what it did NOT stop.
 

@@ -50,6 +50,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
+from . import panel_state
 from . import theme
 from . import ui
 from .build_profile import endpoint_choices
@@ -184,10 +185,11 @@ _ElidedLabel = ui.ElidedLabel
 
 
 class Notice(QWidget):
-    """An inline status: shown only when it says something, then gone.
+    """An inline status: shown only when it says something.
 
-    Information fades after a few seconds; a warning or an error stays until
-    the next status replaces it. Never a permanent strip.
+    A status stays until the next one replaces it, as it did on master. Only a
+    progress note the caller marks transient ("Fetching results...") fades on
+    its own (`panel_state.status_fades`). Never a permanent strip.
     """
 
     INFO_MS = 9000
@@ -239,7 +241,7 @@ class NoticeHub(QObject):
         self._notices.append(notice)
         return notice
 
-    def setText(self, text, tone="info", quiet=False):  # noqa: N802 - mirrors QLabel
+    def setText(self, text, tone="info", quiet=False, transient=False):  # noqa: N802 - mirrors QLabel
         self._text = str(text or "")
         shown = "" if quiet else self._text
         for notice in self._notices:
@@ -248,7 +250,7 @@ class NoticeHub(QObject):
             except RuntimeError:
                 continue
         self._timer.stop()
-        if shown and tone in ("info", "ok"):
+        if shown and panel_state.status_fades(tone, transient):
             self._timer.start(Notice.INFO_MS)
 
     def text(self):

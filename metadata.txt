@@ -22,7 +22,7 @@ changelog=0.14.0
       the header icon. It follows your QGIS theme, light or dark, and uses the
       Geist typeface inside the panel only; the rest of QGIS keeps its font.
     - No more permanent status strip. A status appears only when it says
-      something, and information fades on its own.
+      something and stays until the next one; only progress notes fade.
     - Nivo opens on "Ask about your map" with starting points for the active
       layer. Answers that come from a QGIS measurement say "Measured", and the
       steps behind an answer fold into one line you can open.

@@ -2011,17 +2011,21 @@ class MapdexPlugin:
                 self.dock,
             )
 
-    def _set_status(self, text: str, toast: bool = False, tone: str = "info", quiet: bool = False):
+    def _set_status(self, text: str, toast: bool = False, tone: str = "info", quiet: bool = False,
+                    transient: bool = False):
         """Say something inline, under the tabs, only when it is news.
 
-        There is no permanent status strip any more. Information fades on its
-        own; a warning or an error (`tone`) stays until the next status. A
-        `quiet` status is recorded (the harness and the logs read it) but not
-        shown, because the screen already says it.
+        There is no permanent status strip any more, but a status stays until
+        the next one replaces it: a result, a refusal, an error or something
+        the person must do cannot vanish while they look away. Only a progress
+        note marked `transient` ("Fetching results...") fades on its own; the
+        rule is `panel_state.status_fades`. A `quiet` status is recorded (the
+        harness and the logs read it) but not shown, because the screen already
+        says it.
         """
         if self.status is not None:
             try:
-                self.status.setText(text, tone, quiet)
+                self.status.setText(text, tone, quiet, transient)
             except TypeError:  # a plain label, in a harness or an older panel
                 self.status.setText(text)
         if toast:
@@ -2662,7 +2666,7 @@ class MapdexPlugin:
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
-            self._set_status("Please wait — Mapdex is still working…")
+            self._set_status("Please wait — Mapdex is still working…", transient=True)
             return
         if busy:
             self._busy = True
@@ -3316,7 +3320,7 @@ class MapdexPlugin:
             run_ids = tuple(str(run_id) for run_id in action.get("run_ids") or () if run_id)
             if not run_ids:
                 return
-            self._set_status("Fetching Mapdex results…")
+            self._set_status("Fetching Mapdex results…", transient=True)
             self._task(
                 "Import Mapdex results into QGIS",
                 lambda: self._fetch_result_files(
@@ -4412,12 +4416,8 @@ class MapdexPlugin:
         column = QVBoxLayout(frame)
         column.setContentsMargins(16, 16, 16, 16)
         column.setSpacing(12)
-        if state == "pending":
-            column.addWidget(ui.StatusLine("warn", "Needs your OK", ""))
-        elif state == "approved":
-            column.addWidget(ui.StatusLine("ok", "Approved", "running in QGIS"))
-        else:
-            column.addWidget(ui.StatusLine("neutral", "Cancelled", "nothing was changed"))
+        tone, word, detail = confirm_card.outcome_status(state, str(payload.get("outcome") or ""))
+        column.addWidget(ui.StatusLine(tone, word, detail))
         column.addWidget(self._plain(ui.label("", "mapdexCardTitle"), card_data.get("title") or turn.get("text", "")))
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
@@ -4465,11 +4465,33 @@ class MapdexPlugin:
             return
         if not action_id or action_id in self._executed_nivo_actions:
             return
-        turn["payload"]["state"] = "approved"
+        turn["payload"]["state"] = "running"
         self._executed_nivo_actions.add(action_id)
         self._nivo_state = transition(self._nivo_state, "apply")
         self._render_nivo_turns()
         self._run_processing_operation(action)
+
+    def _settle_confirmation(self, action, state, detail=""):
+        """End the card that asked for this action in what actually happened.
+
+        An approval is not an outcome: the card used to read "Approved, running
+        in QGIS" forever, including when the layer had gone or the algorithm was
+        missing and nothing ran. A run that no card asked for (a named
+        capability) settles nothing.
+        """
+        action_id = str((action or {}).get("id") or "")
+        if not action_id:
+            return
+        for item in self._nivo_turns:
+            payload = item.get("payload") or {}
+            if item.get("kind") != "confirm" or str((payload.get("action") or {}).get("id") or "") != action_id:
+                continue
+            if payload.get("state") not in ("running", "approved"):
+                return
+            payload["state"] = state
+            payload["outcome"] = str(detail or "")
+            self._render_nivo_turns()
+            return
 
     # ----------------------------------------------------------------------
     # Conversations: New chat, History, and the thread the panel is continuing
@@ -5628,6 +5650,7 @@ class MapdexPlugin:
         target = action.get("target")
         layer = self._nivo_layer_for_action(target)
         if layer is None or not layer.isValid():
+            self._settle_confirmation(action, "not_run", "the layer is no longer in the project")
             self._set_status("Nivo did not run Processing because the target layer is no longer available.")
             self._nivo_state = transition(self._nivo_state, "error")
             return
@@ -5638,19 +5661,27 @@ class MapdexPlugin:
             # installation has no algorithm" named nothing and offered no next
             # move, which is the same failure as an unexplained error code. The
             # route is ours to name: the vendored package is vendor-neutral.
-            self._set_status(describe_missing_algorithm(operation, service_name="Mapdex"))
+            missing = describe_missing_algorithm(operation, service_name="Mapdex")
+            self._settle_confirmation(action, "not_run", missing)
+            self._set_status(missing)
             self._nivo_state = transition(self._nivo_state, "error")
             return
         source_name = layer.name() if hasattr(layer, "name") else ""
+
+        def not_run(reason):
+            self._settle_confirmation(action, "not_run", reason)
+            self._action_failed("Nivo could not run that: {}".format(reason))
+
         refusal = self._processing_refusal(operation, layer)
         if refusal:
-            self._action_failed("Nivo could not run that: {}".format(refusal))
+            not_run(refusal)
             return
         count = layer.featureCount() if hasattr(layer, "featureCount") else None
         if count == 0:
             # Only an exact zero counts as empty: several providers answer -1 for
             # "unknown". Running anyway SUCCEEDS and writes an empty layer, which
             # is how "buffer yap" ended with a new layer and no buffer in it.
+            self._settle_confirmation(action, "not_run", "{} has no features".format(source_name or "the layer"))
             self._say(describe_empty_input(operation, source_name))
             self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
             self._nivo_state = transition(self._nivo_state, "done")
@@ -5658,7 +5689,7 @@ class MapdexPlugin:
         # A length stated in metres is applied in metres (processing_units).
         plan = self._metric_plan(operation, layer, action.get("params", {}))
         if plan["strategy"] == "refuse":
-            self._action_failed("Nivo could not run that: {}".format(plan["reason"]))
+            not_run(plan["reason"])
             return
         # The second layer is resolved against this project and handed to QGIS
         # as a layer object, never as text. Processing reads a string layer
@@ -5673,16 +5704,15 @@ class MapdexPlugin:
 
         resolved_params = resolve_target_layer(plan["params"], project_layer)
         if resolved_params is None:
-            self._action_failed(
-                "Nivo could not run that: the second layer it names is not a layer in this project")
+            not_run("the second layer it names is not a layer in this project")
             return
         plan = dict(plan, params=resolved_params)
         # First, before any algorithm writes a layer: a JSON field stops every
         # one of them, the reprojection below included.
         working, textual = self._textual_copy(layer)
         if working is None:
-            self._action_failed(
-                "Nivo could not run that: {} hold lists QGIS cannot copy into a new layer, "
+            not_run(
+                "{} hold lists QGIS cannot copy into a new layer, "
                 "and they could not be converted to text".format(
                     ", ".join("'{}'".format(name) for name in textual)))
             return
@@ -5690,8 +5720,8 @@ class MapdexPlugin:
         if plan["strategy"] == "reproject":
             working = self._reprojected_copy(working, plan["crs"], name=source_name)
             if working is None:
-                self._action_failed(
-                    "Nivo could not run that: the {} is measured in metres and this layer is "
+                not_run(
+                    "the {} is measured in metres and this layer is "
                     "in degrees, and it could not be reprojected to {} to measure it".format(
                         operation_label(operation), plan["crs"]))
                 return
@@ -5705,6 +5735,7 @@ class MapdexPlugin:
                 if key not in parameters
             })
         except Exception as exc:
+            self._settle_confirmation(action, "not_run", "QGIS refused the settings: {}".format(exc))
             self._show_error("Nivo Processing validation failed", exc)
             self._nivo_state = transition(self._nivo_state, "error")
             return
@@ -5724,6 +5755,8 @@ class MapdexPlugin:
             if self.dock is None:
                 return
             if not successful:
+                self._settle_confirmation(action, "failed", "QGIS stopped the {} before it finished".format(
+                    operation_label(operation)))
                 # Said where the request is, not only on the status line. The
                 # status line is rewritten by the next layer click, and the
                 # transcript still shows the confirmation the user accepted, so a
@@ -5792,6 +5825,7 @@ class MapdexPlugin:
                 if produced == 0 and output_layer is not None:
                     QgsProject.instance().removeMapLayer(output_layer.id())
                     self.iface.setActiveLayer(layer)
+                self._settle_confirmation(action, "done", confirm_card.check_detail(produced))
                 self._say(describe_validation_outcome(source_name, produced))
                 self.iface.mapCanvas().refresh()
                 self._nivo_state = transition(self._nivo_state, "done")
@@ -5803,6 +5837,9 @@ class MapdexPlugin:
             outcome = describe_processing_outcome(operation, output_name, produced, source_name)
             if output_name and produced != 0:
                 outcome += describe_textual_fields(textual)
+            self._settle_confirmation(
+                action, "done" if (output_name and produced != 0) else "empty",
+                confirm_card.done_detail(output_name, produced))
             self._say(outcome)
             self.iface.mapCanvas().refresh()
             self._nivo_state = transition(self._nivo_state, "done")
@@ -5817,7 +5854,7 @@ class MapdexPlugin:
         # before control returns here would otherwise have its outcome
         # overwritten by "is running".
         self._set_status("Nivo is running the {} on '{}'.".format(
-            operation_label(operation), source_name))
+            operation_label(operation), source_name), transient=True)
         QgsApplication.taskManager().addTask(task)
 
     @guarded
@@ -5849,7 +5886,7 @@ class MapdexPlugin:
     def connect(self, *args):
         if self._connect_task is not None:
             self._connect_cancel.set()
-            self._set_status("Cancelling the Mapdex connection…")
+            self._set_status("Cancelling the Mapdex connection…", transient=True)
             self._refresh_ui()
             return
         if not self._apply_connection_settings_from_fields():
@@ -5860,7 +5897,7 @@ class MapdexPlugin:
         # decision belongs on the worker too: made here, pressing Connect sat
         # silent for seconds and read as a dead button.
         self._connect_cancel.clear()
-        self._set_status("Connecting to {}…".format(self.api.base_url))
+        self._set_status("Connecting to {}…".format(self.api.base_url), transient=True)
         self._connect_task = self._task(
             "Connect Mapdex", self._connect_work, self._connect_finished
         )
@@ -6208,7 +6245,8 @@ class MapdexPlugin:
             if exc.status == 429:
                 delay = max(5, exc.retry_after or 30)
                 self.poll_timer.setInterval(delay * 1000)
-                self._set_status("Mapdex asked QGIS to slow down. Retrying in {} seconds…".format(delay))
+                self._set_status("Mapdex asked QGIS to slow down. Retrying in {} seconds…".format(delay),
+                                 transient=True)
                 return
             self.poll_timer.stop()
             self._show_error("Mapdex connection failed", exc)
@@ -6548,7 +6586,7 @@ class MapdexPlugin:
         self._nivo_state = transition(self._nivo_state, "action")
         text = str((response or {}).get("text") or "")
         plan, plan_hash = offer["plan"], offer["plan_hash"]
-        self._set_status("Running in Mapdex…")
+        self._set_status("Running in Mapdex…", transient=True)
         self._task(
             "Run Mapdex plan",
             lambda: self.api.create_run(project_id, text, plan, plan_hash),
@@ -6591,7 +6629,7 @@ class MapdexPlugin:
         if not run_id:
             return
         project_id = self._active_project_id()
-        self._set_status("Asking Mapdex to stop the run…")
+        self._set_status("Asking Mapdex to stop the run…", transient=True)
         self._task(
             "Cancel Mapdex run",
             lambda: self.api.cancel_run(project_id, run_id),
@@ -6646,7 +6684,7 @@ class MapdexPlugin:
             return
         # The result is the point. Announcing a finished run and leaving its
         # layers in the browser is the same silence this whole path removes.
-        self._set_status("Bringing the result into QGIS…")
+        self._set_status("Bringing the result into QGIS…", transient=True)
         self._task(
             "Import Mapdex results into QGIS",
             lambda: self._fetch_result_files({}, only_runs=(finished_run,)),
@@ -6718,7 +6756,8 @@ class MapdexPlugin:
             if isinstance(exception, MapdexAPIError) and exception.status == 429:
                 delay = max(3, exception.retry_after or 15)
                 self.progress_timer.setInterval(delay * 1000)
-                self._set_status("Rate limit reached. Retrying task status in {} seconds…".format(delay))
+                self._set_status("Rate limit reached. Retrying task status in {} seconds…".format(delay),
+                                 transient=True)
                 return
             self._show_error("Batch status failed", exception)
             return
@@ -6825,7 +6864,8 @@ class MapdexPlugin:
             self._last_batch = fresh
             return self._fetch_result_files(fresh, include_review=include_review, interactive=True)
 
-        self._set_status("Fetching the draft from Mapdex…" if include_review else "Fetching Mapdex results…")
+        self._set_status("Fetching the draft from Mapdex…" if include_review else "Fetching Mapdex results…",
+                         transient=True)
         self._task("Import Mapdex results into QGIS", work, self._results_imported)
 
     def _draft_review_layers(self, raw: bytes, layer: dict, result_dir: str, safe_id: str):
@@ -7149,7 +7189,7 @@ class MapdexPlugin:
         if answer != yes:
             self._set_status("Not imported. {}".format(line))
             return
-        self._set_status("Fetching Mapdex results…")
+        self._set_status("Fetching Mapdex results…", transient=True)
         self._task(
             "Import Mapdex results into QGIS",
             lambda: self._fetch_result_files(
@@ -7398,7 +7438,7 @@ class MapdexPlugin:
             self.project_box.setCurrentIndex(project_index)
         self._last_batch = None
         self._announced_state = ""
-        self._set_status("Refreshing the selected Mapdex task…")
+        self._set_status("Refreshing the selected Mapdex task…", transient=True)
         self._refresh_ui()
         self._poll_batch()
         self.progress_timer.start(3000)

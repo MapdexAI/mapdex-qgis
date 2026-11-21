@@ -50,7 +50,7 @@ def panel():
     fake = types.SimpleNamespace(
         _result_price_line="",
         _refresh_ui=lambda: None,
-        _set_status=statuses.append,
+        _set_status=lambda text, **_kwargs: statuses.append(text),
         _announce=lambda *a, **k: None,
         _say=lambda text, **kwargs: said.append((text, kwargs)),
         _task=lambda title, work, done: tasks.append((title, work, done)),

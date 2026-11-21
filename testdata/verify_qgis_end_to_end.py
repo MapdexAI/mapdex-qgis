@@ -3424,6 +3424,125 @@ def send_is_lit_only_with_a_question():
 check("send is lit only with a question to send", send_is_lit_only_with_a_question)
 
 
+class _FailingTaskManager:
+    """A task manager whose every task fails without running: the "QGIS stopped
+    it" path, which a real algorithm on this fixture never takes."""
+
+    def addTask(self, task):  # noqa: N802 - QgsTaskManager's spelling
+        task.finished(False)
+        return True
+
+    def countActiveTasks(self):  # noqa: N802
+        return 0
+
+
+class _ApplicationWithFailingTasks(_ApplicationWithSynchronousTasks):
+    _tasks = _FailingTaskManager()
+
+
+def a_confirmation_card_ends_in_what_happened():
+    """An approval is not an outcome. Each answered card ends in a solid icon and
+    a bold word saying what happened, and the reason when nothing ran: the card
+    used to read "Approved, running in QGIS" forever, including after the layer
+    had gone."""
+    from qgis.PyQt.QtWidgets import QLabel as _QLabel  # noqa: PLC0415
+
+    plugin = need_plugin()
+    _initialise_processing()
+    saved_turns = list(plugin._nivo_turns)
+    real_application = plugin_module.QgsApplication
+    real_resolve = plugin_module.resolve_processing_algorithm
+    made = []
+    results = {}
+
+    def ask(name):
+        layer = _geographic_copy_of_the_fixture()
+        made.append(layer)
+        action = {"id": "act_card_{}".format(name), "tool": "qgis:processing_operation@1",
+                  "target": layer.id(), "params": {"operation": "buffer", "distance": 25}, "summary": ""}
+        plugin._confirm_nivo_action(action)
+        return layer, action
+
+    def answer(action):
+        before = set(PROJECT.mapLayers())
+        plugin._resolve_confirmation(action["id"], True)
+        QCoreApplication.processEvents()
+        made.extend(PROJECT.mapLayer(i) for i in set(PROJECT.mapLayers()) - before)
+        turn = next(t for t in plugin._nivo_turns if t.get("kind") == "confirm"
+                    and t["payload"]["action"]["id"] == action["id"])
+        card = plugin._confirm_card_widget(turn)
+        words = [w.text() for w in card.findChildren(_QLabel) if w.objectName() == "mapdexStatusWord"]
+        return turn["payload"]["state"], turn["payload"].get("outcome", ""), words
+
+    try:
+        plugin._nivo_turns = []
+        plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+        _layer, action = ask("done")
+        results["done"] = answer(action)
+
+        layer, action = ask("gone")
+        PROJECT.removeMapLayer(layer.id())
+        made.remove(layer)
+        results["gone"] = answer(action)
+
+        plugin_module.resolve_processing_algorithm = lambda _registry, _operation: (None, None)
+        _layer, action = ask("noalg")
+        results["noalg"] = answer(action)
+        plugin_module.resolve_processing_algorithm = real_resolve
+
+        plugin_module.QgsApplication = _ApplicationWithFailingTasks()
+        _layer, action = ask("failed")
+        results["failed"] = answer(action)
+    finally:
+        plugin_module.QgsApplication = real_application
+        plugin_module.resolve_processing_algorithm = real_resolve
+        plugin._nivo_turns = saved_turns
+        plugin._render_nivo_turns()
+        for layer in made:
+            if layer is not None and PROJECT.mapLayer(layer.id()) is not None:
+                PROJECT.removeMapLayer(layer.id())
+        IFACE.setActiveLayer(LAYER)
+    expected = {"done": ("done", "Done", "added"), "gone": ("not_run", "Not run", "no longer"),
+                "noalg": ("not_run", "Not run", ""), "failed": ("failed", "Failed", "stopped")}
+    for name, (state, word, phrase) in expected.items():
+        got_state, outcome, words = results[name]
+        if got_state != state or word not in words or phrase not in outcome or not outcome:
+            raise AssertionError("{}: card reads {!r} {!r} ({}), expected {} {!r} with {!r}".format(
+                name, words, outcome, got_state, state, word, phrase))
+    return "; ".join("{}: {} {}".format(n, results[n][2][0], results[n][1][:38]) for n in expected)
+
+
+check("a confirmation card ends in what happened", a_confirmation_card_ends_in_what_happened)
+
+
+def an_outcome_status_stays():
+    """A result, a refusal or an error stays under the tabs until replaced.
+
+    Only a progress note marked transient clears itself; an error never does."""
+    plugin = need_plugin()
+    hub = plugin.status
+    timer = getattr(hub, "_timer", None)
+    if timer is None:
+        raise NotRun("the status is not the notice hub")
+    saved = hub.text()
+    try:
+        hub.setText("QGIS rejected the new features.", "info", False, False)
+        if timer.isActive():
+            raise AssertionError("an outcome status was set to fade")
+        hub.setText("Nivo could not run that.", "err", False, True)
+        if timer.isActive():
+            raise AssertionError("an error marked transient was set to fade")
+        hub.setText("Fetching Mapdex results…", "info", False, True)
+        if not timer.isActive():
+            raise AssertionError("a transient progress note does not fade")
+    finally:
+        hub.setText(saved, "info", True)
+    return "outcomes and errors stay; a transient progress note fades"
+
+
+check("an outcome or error status stays until replaced", an_outcome_status_stays)
+
+
 def the_estimate_states_what_the_batch_will_cost():
     """The figure comes from the server's own per-item charge, multiplied.
 
