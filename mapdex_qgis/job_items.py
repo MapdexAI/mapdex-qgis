@@ -231,19 +231,33 @@ def jobs_headline(items: Sequence[Dict[str, Any]]) -> str:
     return "{}: finished".format(sheets)
 
 
+_LINE_WORDS = (
+    (STATE_SUCCEEDED, "ready"),
+    (STATE_RUNNING, "working"),
+    (STATE_PENDING, "queued"),
+    (STATE_NEEDS_REVIEW, "waiting for review"),
+    (STATE_FAILED, "failed"),
+    (STATE_CANCELLED, "cancelled"),
+)
+
+
 def jobs_line(items: Sequence[Dict[str, Any]]) -> str:
-    """The line under the title, naming the other states by count."""
+    """The line under the title, naming every sheet by state.
+
+    Its counts add up to the total in the title. "4 sheets: 2 need you" over
+    "1 ready, 1 working, 1 failed" left the sheet waiting on review out, so the
+    line read as three of four. A state this build does not know is counted
+    too, rather than dropped.
+    """
     counts = _counts(items)
     parts = []
-    for state, word in (
-        (STATE_SUCCEEDED, "ready"),
-        (STATE_RUNNING, "working"),
-        (STATE_PENDING, "queued"),
-        (STATE_FAILED, "failed"),
-        (STATE_CANCELLED, "cancelled"),
-    ):
+    for state, word in _LINE_WORDS:
         if counts.get(state):
             parts.append("{} {}".format(counts[state], word))
+    known = {state for state, _word in _LINE_WORDS}
+    other = sum(count for state, count in counts.items() if state not in known)
+    if other:
+        parts.append("{} in another state".format(other))
     return ", ".join(parts)
 
 
