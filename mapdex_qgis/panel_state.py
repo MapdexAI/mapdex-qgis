@@ -18,6 +18,7 @@ assembled across three widget callbacks that can drift apart.
 """
 from __future__ import annotations
 
+import html
 from typing import Any, Mapping
 
 from ._vendor.nivo.providers import RUNTIME_BYOK
@@ -291,6 +292,21 @@ def send_enabled(can_ask: bool, busy: bool, text: str | None) -> bool:
     same screen, and pressing the arrow there sent nothing.
     """
     return bool(can_ask) and not busy and bool(str(text or "").strip())
+
+
+def plain_tooltip(text: str | None) -> str:
+    """A tooltip that shows its text as characters, whatever the text holds.
+
+    Qt guesses whether a tooltip is rich text from its content, so a workspace,
+    layer or file named "<b>Atlas</b>" rendered bold, and an <img> in a name
+    could point anywhere. These tooltips carry server, file, layer and account
+    text, so the text is escaped and marked as rich text explicitly: the guess
+    is never made, and every character reads as typed.
+    """
+    text = str(text or "")
+    if not text:
+        return ""
+    return "<qt>{}</qt>".format(html.escape(text, quote=False).replace("\n", "<br>"))
 
 
 # Tones that never fade, whatever the caller says: a warning or an error is

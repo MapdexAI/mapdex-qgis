@@ -40,6 +40,7 @@ from qgis.PyQt.QtWidgets import (
 
 from . import icons as icon_files
 from . import theme
+from .panel_state import plain_tooltip
 from .qt_compat import enum_member, event_point
 
 try:  # QtSvg ships with every QGIS build, but the wrapper module name has moved.
@@ -221,11 +222,11 @@ class ElidedLabel(QLabel):
         self.setTextFormat(enum_member(Qt, "TextFormat", "PlainText"))
         self.setMinimumWidth(1)
         self.setSizePolicy(_policy("Ignored", "Preferred"))
-        self.setToolTip(self._full)
+        self.setToolTip(plain_tooltip(self._full))
 
     def setText(self, text):  # noqa: N802 - Qt virtual name
         self._full = text or ""
-        self.setToolTip(self._full)
+        self.setToolTip(plain_tooltip(self._full))
         super().setText(self._full)
 
     def text(self):  # noqa: D401 - the full text, not the elided paint
@@ -627,7 +628,7 @@ class PrimaryButton(QPushButton):
     def setText(self, text):  # noqa: N802 - Qt virtual name
         self._label.setText(str(text or ""))
         self.setAccessibleName(self.text())
-        self.setToolTip(self.text() if len(self.text()) > 40 else "")
+        self.setToolTip(plain_tooltip(self.text()) if len(self.text()) > 40 else "")
 
     def text(self):  # noqa: D401 - the visible label, price included when set
         price = self._price.text() if self._price.isVisibleTo(self) else ""
@@ -1027,7 +1028,7 @@ class PromptCard(QFrame):
         align_icon(self.glyph, self.text_label, size=16)
         self.setAccessibleName(text)
         if hint:
-            self.setToolTip(hint)
+            self.setToolTip(plain_tooltip(hint))
 
     def text(self):
         return self.text_label.text()

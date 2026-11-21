@@ -2652,6 +2652,15 @@ def a_failed_sheet_says_why_on_its_own_row():
     return "the reason is on the row, not behind a trip to the browser"
 
 
+def _shown_tooltip(tip):
+    """What a tooltip displays: a <qt> tooltip is rendered, plain text is itself."""
+    from qgis.PyQt.QtGui import QTextDocumentFragment  # noqa: PLC0415
+
+    if tip and tip.startswith("<qt>"):
+        return QTextDocumentFragment.fromHtml(tip).toPlainText()
+    return tip
+
+
 def the_sheet_name_the_user_chose_is_the_row_title():
     plugin = need_plugin()
     plugin._batch_file_names = {"f0": "CA_Cannell Peak_100592.tiff"}
@@ -2659,7 +2668,7 @@ def the_sheet_name_the_user_chose_is_the_row_title():
                   {"index": 1, "file_id": "f1", "state": "failed", "run_id": "run_1"}])
     # The label elides for the dock width, so the whole name lives on the
     # tooltip; checking the painted text would measure the font, not the wiring.
-    tips = [label.toolTip() for label in descendants(plugin.item_list, QLabel)]
+    tips = [_shown_tooltip(label.toolTip()) for label in descendants(plugin.item_list, QLabel)]
     plugin._batch_file_names = {}
     if "CA_Cannell Peak_100592.tiff" not in tips:
         raise AssertionError("the chosen file name never reached the row: {}".format(tips))
@@ -3541,6 +3550,24 @@ def an_outcome_status_stays():
 
 
 check("an outcome or error status stays until replaced", an_outcome_status_stays)
+
+
+def a_name_in_a_tooltip_is_shown_as_characters():
+    """Workspace, layer, file and account names reach tooltips; markup in one is text."""
+    from mapdex_qgis import ui as _ui  # noqa: PLC0415
+
+    name = 'Atlas <b>Survey</b> & <img src="x"> Co.'
+    label = _ui.ElidedLabel(name)
+    label.setText(name)
+    shown = _shown_tooltip(label.toolTip())
+    if shown != name:
+        raise AssertionError("the tooltip shows {!r} for the name {!r}".format(shown, name))
+    if "<b>" in label.toolTip() or "<img" in label.toolTip():
+        raise AssertionError("raw markup reached the tooltip: {!r}".format(label.toolTip()))
+    return "shows {!r}".format(shown)
+
+
+check("a name in a tooltip is shown as characters", a_name_in_a_tooltip_is_shown_as_characters)
 
 
 def the_estimate_states_what_the_batch_will_cost():

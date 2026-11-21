@@ -460,3 +460,23 @@ def test_an_outcome_refusal_or_error_status_does_not_clear_itself():
     for sentence in ("QGIS rejected the new features.", "Approve code {user_code} in your browser"):
         line = next(line for line in plugin.splitlines() if sentence in line)
         assert "transient=True" not in line, sentence
+
+
+# -- tooltips: names are text, never markup ------------------------------------------
+
+def test_markup_in_a_name_is_shown_as_characters_in_a_tooltip():
+    import html as _html
+
+    name = 'Atlas <b>Survey</b> & <img src="x"> Co.'
+    tip = panel_state.plain_tooltip(name)
+    assert tip.startswith("<qt>") and tip.endswith("</qt>")
+    assert "<b>" not in tip and "<img" not in tip
+    assert _html.unescape(tip[len("<qt>"):-len("</qt>")]) == name
+    assert panel_state.plain_tooltip("") == ""
+    assert panel_state.plain_tooltip(None) == ""
+    # Every tooltip that can carry a workspace, layer, file or account name.
+    start = UI.index("class ElidedLabel(QLabel):")
+    elided = UI[start:UI.index("def paintEvent", start)]
+    assert elided.count("self.setToolTip(plain_tooltip(self._full))") == 2
+    assert "self.setToolTip(self._full)" not in UI
+    assert "self.setToolTip(hint)" not in UI

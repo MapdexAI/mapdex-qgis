@@ -2473,10 +2473,10 @@ class MapdexPlugin:
                 "Add result to QGIS" if succeeded == 1
                 else "Add {} results to QGIS".format(succeeded)
             )
-            self.import_button.setToolTip(
+            self.import_button.setToolTip(panel_state.plain_tooltip(
                 "Add the approved Mapdex result to this project."
                 + (" " + self._result_price_line if self._result_price_line else "")
-            )
+            ))
         else:
             self.import_button.setText("Add the draft to QGIS")
             self.import_button.setToolTip(
