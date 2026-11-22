@@ -14,7 +14,8 @@ No Qt and no QGIS.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Mapping
 
 from ._vendor.nivo.processing import operation_label
 
@@ -139,10 +140,95 @@ def done_detail(output_name: str, produced: int | None) -> str:
     return "added {}, {:,} {}".format(output_name, produced, "feature" if produced == 1 else "features")
 
 
-def check_detail(invalid: int | None) -> str:
-    """The result of a geometry check, for the card's status line."""
+def check_outcome(has_report: bool, invalid: int | None) -> tuple[str, str]:
+    """(state, detail) for a geometry check that QGIS reported as finished.
+
+    Done only when there is something to say: a count of invalid shapes, or a
+    report layer whose count could not be read. With no report layer at all the
+    check finished but nothing can be said about the shapes, so it is No result,
+    never Done.
+    """
+    if not has_report:
+        return ("empty", "the check finished but returned no report, so nothing is known about the shapes")
     if invalid is None:
-        return "the check finished"
+        return ("done", "the report layer is in the project")
     if invalid == 0:
-        return "no invalid shapes"
-    return "{:,} invalid {}".format(invalid, "shape" if invalid == 1 else "shapes")
+        return ("done", "no invalid shapes")
+    return ("done", "{:,} invalid {}".format(invalid, "shape" if invalid == 1 else "shapes"))
+
+
+def failure_outcome(error: BaseException, started: bool, layer_may_exist: bool) -> tuple[str, str]:
+    """(state, detail) when something raised during a confirmed run.
+
+    Before QGIS accepted the task nothing ran (Not run); after, it is Failed.
+    When a result layer may already be in the project the card says so, because
+    the person will see it there. Never Done: an exception is not an outcome.
+    """
+    name = type(error).__name__
+    detail = "an unexpected error ({}) stopped it{}; the Mapdex log has the details".format(
+        name, "" if started else " before QGIS started")
+    if layer_may_exist:
+        detail += "; a result layer may already have been added to the project"
+    return ("failed" if started else "not_run", detail)
+
+
+class Settlement:
+    """Guarantees that one confirmed run ends in a terminal state.
+
+    Every exit of the run path used to settle the card by hand, and an exit
+    nobody listed (an exception from a QGIS call, a task manager that refused
+    the task) left the card reading "Running, in QGIS" for good. This object is
+    the one place that decision lives:
+
+    - ``settle`` records the first terminal state and ignores later ones;
+    - ``guarding()`` settles Failed or Not run when the block raises, then
+      re-raises, so the error still reaches the plugin's error boundary;
+    - ``handed_over`` marks the task as accepted by QGIS, after which the
+      callback owns the outcome; ``close_body`` settles Not run when the body
+      returned without settling and without handing the task over;
+    - ``close_callback`` settles Failed when the callback returned without an
+      outcome.
+
+    No Qt and no QGIS, so a test can drive every path.
+    """
+
+    def __init__(self, settle: Callable[[str, str], Any]):
+        self._settle = settle
+        self.state = ""
+        self.handed_over = False
+        self.layer_may_exist = False
+        self.settle_error: BaseException | None = None
+
+    @property
+    def settled(self) -> bool:
+        return bool(self.state)
+
+    def settle(self, state: str, detail: str = "") -> None:
+        if self.state:
+            return
+        self.state = state
+        try:
+            self._settle(state, detail)
+        except Exception as error:  # noqa: BLE001 - the card's own failure must not hide the run's
+            self.settle_error = error
+
+    def fail(self, error: BaseException) -> None:
+        self.settle(*failure_outcome(error, self.handed_over, self.layer_may_exist))
+
+    @contextmanager
+    def guarding(self) -> Iterator["Settlement"]:
+        try:
+            yield self
+        except Exception as error:
+            self.fail(error)
+            raise
+
+    def close_body(self) -> None:
+        if not self.handed_over:
+            self.settle("not_run", "the operation did not start")
+
+    def close_callback(self) -> None:
+        detail = "QGIS finished without reporting a result"
+        if self.layer_may_exist:
+            detail += "; a result layer may already have been added to the project"
+        self.settle("failed", detail)

@@ -122,7 +122,7 @@ from ._vendor.nivo.features import (
     plan_points,
     scatter_in_rectangle,
 )
-from .guard import describe_exception, format_traceback, guarded, log_debug
+from .guard import describe_exception, format_traceback, guarded, log_debug, report_unexpected
 from .guidance import (
     ACTIVE_STATES,
     failure_next_step,
@@ -2666,7 +2666,8 @@ class MapdexPlugin:
 
     def _task(self, description: str, work: Callable, done: Callable, busy: bool = True):
         if busy and self._busy:
-            self._set_status("Please wait — Mapdex is still working…", transient=True)
+            # A refused click, not a progress note: it stays until replaced.
+            self._set_status("Please wait, Mapdex is still working…")
             return
         if busy:
             self._busy = True
@@ -5647,10 +5648,24 @@ class MapdexPlugin:
 
     @guarded
     def _run_processing_operation(self, action):
+        """Run a confirmed Processing operation; its card always ends in an outcome.
+
+        The steps live in `_run_processing_steps`. This wrapper is the one place
+        that guarantees a terminal state (`confirm_card.Settlement`): an
+        exception anywhere in the steps settles the card as Not run, then
+        re-raises so the error boundary still reports it.
+        """
+        settlement = confirm_card.Settlement(
+            lambda state, detail: self._settle_confirmation(action, state, detail))
+        with settlement.guarding():
+            self._run_processing_steps(action, settlement)
+        settlement.close_body()
+
+    def _run_processing_steps(self, action, settlement):
         target = action.get("target")
         layer = self._nivo_layer_for_action(target)
         if layer is None or not layer.isValid():
-            self._settle_confirmation(action, "not_run", "the layer is no longer in the project")
+            settlement.settle("not_run", "the layer is no longer in the project")
             self._set_status("Nivo did not run Processing because the target layer is no longer available.")
             self._nivo_state = transition(self._nivo_state, "error")
             return
@@ -5662,14 +5677,14 @@ class MapdexPlugin:
             # move, which is the same failure as an unexplained error code. The
             # route is ours to name: the vendored package is vendor-neutral.
             missing = describe_missing_algorithm(operation, service_name="Mapdex")
-            self._settle_confirmation(action, "not_run", missing)
+            settlement.settle("not_run", missing)
             self._set_status(missing)
             self._nivo_state = transition(self._nivo_state, "error")
             return
         source_name = layer.name() if hasattr(layer, "name") else ""
 
         def not_run(reason):
-            self._settle_confirmation(action, "not_run", reason)
+            settlement.settle("not_run", reason)
             self._action_failed("Nivo could not run that: {}".format(reason))
 
         refusal = self._processing_refusal(operation, layer)
@@ -5681,7 +5696,7 @@ class MapdexPlugin:
             # Only an exact zero counts as empty: several providers answer -1 for
             # "unknown". Running anyway SUCCEEDS and writes an empty layer, which
             # is how "buffer yap" ended with a new layer and no buffer in it.
-            self._settle_confirmation(action, "not_run", "{} has no features".format(source_name or "the layer"))
+            settlement.settle("not_run", "{} has no features".format(source_name or "the layer"))
             self._say(describe_empty_input(operation, source_name))
             self._set_status("Nivo did not run the {}.".format(operation_label(operation)))
             self._nivo_state = transition(self._nivo_state, "done")
@@ -5735,7 +5750,7 @@ class MapdexPlugin:
                 if key not in parameters
             })
         except Exception as exc:
-            self._settle_confirmation(action, "not_run", "QGIS refused the settings: {}".format(exc))
+            settlement.settle("not_run", "QGIS refused the settings: {}".format(exc))
             self._show_error("Nivo Processing validation failed", exc)
             self._nivo_state = transition(self._nivo_state, "error")
             return
@@ -5748,14 +5763,13 @@ class MapdexPlugin:
         task._algorithm = algorithm
         self._tasks.append(task)
 
-        @guarded
-        def completed(successful, results):
+        def finish(successful, results):
             if task in self._tasks:
                 self._tasks.remove(task)
             if self.dock is None:
                 return
             if not successful:
-                self._settle_confirmation(action, "failed", "QGIS stopped the {} before it finished".format(
+                settlement.settle("failed", "QGIS stopped the {} before it finished".format(
                     operation_label(operation)))
                 # Said where the request is, not only on the status line. The
                 # status line is rewritten by the next layer click, and the
@@ -5807,6 +5821,9 @@ class MapdexPlugin:
                 if returned is not None:
                     output_layer = returned
             if output_layer is not None and output_layer.isValid():
+                # From here a result layer may be in the project, and a failure
+                # below must say so rather than leave the card running.
+                settlement.layer_may_exist = True
                 QgsProject.instance().addMapLayer(output_layer)
                 self.iface.setActiveLayer(output_layer)
                 output_name = output_layer.name()
@@ -5825,7 +5842,7 @@ class MapdexPlugin:
                 if produced == 0 and output_layer is not None:
                     QgsProject.instance().removeMapLayer(output_layer.id())
                     self.iface.setActiveLayer(layer)
-                self._settle_confirmation(action, "done", confirm_card.check_detail(produced))
+                settlement.settle(*confirm_card.check_outcome(output_layer is not None, produced))
                 self._say(describe_validation_outcome(source_name, produced))
                 self.iface.mapCanvas().refresh()
                 self._nivo_state = transition(self._nivo_state, "done")
@@ -5849,13 +5866,39 @@ class MapdexPlugin:
                 self._set_status("The {} finished without producing anything.".format(
                     operation_label(operation)))
 
+        def completed(successful, results):
+            # Not @guarded: that decorator reports through `self`, which a nested
+            # function does not have, so a failure here was swallowed unseen.
+            # The card is settled first (Failed, saying whether a layer may
+            # already be in the project), then the error is reported.
+            try:
+                with settlement.guarding():
+                    finish(successful, results)
+                settlement.close_callback()
+            except Exception as exc:  # noqa: BLE001 - a Qt slot must never raise into QGIS
+                report_unexpected(self, "the Processing result", exc)
+
         task.executed.connect(completed)
         # Before the task is handed over, not after: a task that finishes
         # before control returns here would otherwise have its outcome
         # overwritten by "is running".
         self._set_status("Nivo is running the {} on '{}'.".format(
             operation_label(operation), source_name), transient=True)
-        QgsApplication.taskManager().addTask(task)
+        settlement.handed_over = True
+        try:
+            accepted = QgsApplication.taskManager().addTask(task)
+        except Exception:
+            settlement.handed_over = False
+            raise
+        if not accepted and not settlement.settled:
+            # QgsTaskManager.addTask answers the task id, and 0 when it did not
+            # take the task: `executed` will then never fire.
+            settlement.handed_over = False
+            if task in self._tasks:
+                self._tasks.remove(task)
+            settlement.settle("not_run", "QGIS did not accept the task")
+            self._set_status("QGIS did not start the {}.".format(operation_label(operation)))
+            self._nivo_state = transition(self._nivo_state, "error")
 
     @guarded
     def _workflow_changed(self, _index):

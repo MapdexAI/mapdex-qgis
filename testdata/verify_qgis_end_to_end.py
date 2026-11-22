@@ -3524,6 +3524,120 @@ def a_confirmation_card_ends_in_what_happened():
 check("a confirmation card ends in what happened", a_confirmation_card_ends_in_what_happened)
 
 
+class _RefusingTaskManager:
+    """A task manager that does not take the task: QgsTaskManager.addTask answers 0."""
+
+    def addTask(self, task):  # noqa: N802 - QgsTaskManager's spelling
+        return 0
+
+    def countActiveTasks(self):  # noqa: N802
+        return 0
+
+
+class _ApplicationRefusingTasks(_ApplicationWithSynchronousTasks):
+    _tasks = _RefusingTaskManager()
+
+
+def an_error_at_any_stage_still_ends_the_card():
+    """No exception anywhere in the run or its callback leaves a card running.
+
+    Raises at each stage of the real run path and checks the card's final state
+    and that the error reached the plugin's error report."""
+    plugin = need_plugin()
+    _initialise_processing()
+    saved_turns = list(plugin._nivo_turns)
+    real_application = plugin_module.QgsApplication
+    real_task = plugin_module.QgsProcessingAlgRunnerTask
+    reports = []
+    made = []
+    results = {}
+    plugin._report_unexpected = lambda action, exc: reports.append((action, type(exc).__name__))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("injected by the harness")
+
+    def attempt(name, prepare, restore):
+        layer = _geographic_copy_of_the_fixture()
+        made.append(layer)
+        action = {"id": "act_stage_{}".format(name), "tool": "qgis:processing_operation@1",
+                  "target": layer.id(), "params": {"operation": "buffer", "distance": 25}, "summary": ""}
+        plugin._confirm_nivo_action(action)
+        before = set(PROJECT.mapLayers())
+        del reports[:]
+        prepare()
+        try:
+            plugin._resolve_confirmation(action["id"], True)
+            QCoreApplication.processEvents()
+        finally:
+            restore()
+        added = [PROJECT.mapLayer(i) for i in set(PROJECT.mapLayers()) - before]
+        made.extend(added)
+        turn = next(t for t in plugin._nivo_turns if t.get("kind") == "confirm"
+                    and t["payload"]["action"]["id"] == action["id"])
+        results[name] = (turn["payload"]["state"], turn["payload"].get("outcome", ""), list(reports), len(added))
+
+    def nothing():
+        return None
+
+    real_copy = plugin._reprojected_copy
+    calls = []
+
+    def copy_then_fail(*args, **kwargs):
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("injected by the harness")
+        return real_copy(*args, **kwargs)
+
+    def set_attr(obj, name, value):
+        return lambda: setattr(obj, name, value)
+
+    try:
+        plugin._nivo_turns = []
+        plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+        attempt("pre_task", set_attr(plugin, "_metric_plan", boom),
+                lambda: delattr(plugin, "_metric_plan"))
+        attempt("task_construction", set_attr(plugin_module, "QgsProcessingAlgRunnerTask", boom),
+                set_attr(plugin_module, "QgsProcessingAlgRunnerTask", real_task))
+        plugin_module.QgsApplication = _ApplicationRefusingTasks()
+        attempt("add_task_refused", nothing, nothing)
+        plugin_module.QgsApplication = _ApplicationWithSynchronousTasks()
+        attempt("callback_before_layer", set_attr(plugin, "_reprojected_copy", copy_then_fail),
+                lambda: delattr(plugin, "_reprojected_copy"))
+        attempt("callback_after_layer", set_attr(IFACE, "setActiveLayer", boom),
+                lambda: delattr(IFACE, "setActiveLayer"))
+    finally:
+        plugin_module.QgsApplication = real_application
+        plugin_module.QgsProcessingAlgRunnerTask = real_task
+        for name in ("_report_unexpected", "_metric_plan", "_reprojected_copy"):
+            plugin.__dict__.pop(name, None)
+        IFACE.__dict__.pop("setActiveLayer", None)
+        plugin._nivo_turns = saved_turns
+        plugin._render_nivo_turns()
+        for layer in made:
+            if layer is not None and PROJECT.mapLayer(layer.id()) is not None:
+                PROJECT.removeMapLayer(layer.id())
+        IFACE.setActiveLayer(LAYER)
+    expected = {
+        "pre_task": ("not_run", "before QGIS started", True),
+        "task_construction": ("not_run", "before QGIS started", True),
+        "add_task_refused": ("not_run", "did not accept", False),
+        "callback_before_layer": ("failed", "unexpected error", True),
+        "callback_after_layer": ("failed", "may already have been added", True),
+    }
+    for name, (state, phrase, reported) in expected.items():
+        got, outcome, got_reports, added = results[name]
+        if got != state or phrase not in outcome:
+            raise AssertionError("{}: card is {} {!r}, expected {} with {!r}".format(name, got, outcome, state, phrase))
+        if reported and not got_reports:
+            raise AssertionError("{}: the error never reached the plugin's report".format(name))
+        if name == "callback_before_layer" and ("may already" in outcome or added):
+            raise AssertionError("{}: says or leaves a layer before one was added".format(name))
+    return "; ".join("{}: {}{}".format(n, results[n][0], " (reported)" if results[n][2] else "") for n in expected)
+
+
+check("an error at any stage still ends the card", an_error_at_any_stage_still_ends_the_card)
+
+
 def an_outcome_status_stays():
     """A result, a refusal or an error stays under the tabs until replaced.
 

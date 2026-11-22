@@ -64,7 +64,7 @@ def _method(source, name):
 
 
 def test_a_second_layer_is_resolved_against_the_project_before_processing_sees_it():
-    body = _method(PLUGIN, "_run_processing_operation")
+    body = _method(PLUGIN, "_run_processing_steps")
     assert "resolve_target_layer(" in body
     assert body.index("resolve_target_layer(") < body.index("build_algorithm_parameters(")
 

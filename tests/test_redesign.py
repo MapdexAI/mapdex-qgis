@@ -416,8 +416,12 @@ def test_the_card_states_the_result_or_its_absence():
     assert confirm_card.done_detail("roads buffer", 1) == "added roads buffer, 1 feature"
     assert confirm_card.done_detail("roads buffer", None) == "added roads buffer"
     assert confirm_card.done_detail("", None) == "nothing was produced"
-    assert confirm_card.check_detail(0) == "no invalid shapes"
-    assert confirm_card.check_detail(2) == "2 invalid shapes"
+    assert confirm_card.check_outcome(True, 0) == ("done", "no invalid shapes")
+    assert confirm_card.check_outcome(True, 2) == ("done", "2 invalid shapes")
+    assert confirm_card.check_outcome(True, None) == ("done", "the report layer is in the project")
+    # No report layer at all: the check finished, but nothing is known. Never Done.
+    state, detail = confirm_card.check_outcome(False, None)
+    assert state == "empty" and "no report" in detail
 
 
 def _method_body(name):
@@ -429,21 +433,30 @@ def _method_body(name):
 
 def test_every_exit_of_a_confirmed_run_settles_its_card():
     body = _method_body("_run_processing_operation")
+    # One place guarantees a terminal state: the wrapper runs the steps inside
+    # Settlement.guarding() and closes the body; the callback does the same.
+    wrapper = body[:body.index("    def _run_processing_steps(")]
+    assert "with settlement.guarding():\n            self._run_processing_steps(action, settlement)" in wrapper
+    assert "settlement.close_body()" in wrapper
+    assert "with settlement.guarding():\n                    finish(successful, results)" in body
+    assert "settlement.close_callback()" in body
+    assert 'report_unexpected(self, "the Processing result", exc)' in body
+    # addTask answers 0 when QGIS did not take the task; that must settle too.
+    assert "accepted = QgsApplication.taskManager().addTask(task)" in body
+    assert 'settlement.settle("not_run", "QGIS did not accept the task")' in body
+    assert "settlement.layer_may_exist = True\n                QgsProject.instance().addMapLayer(output_layer)" in body
+    # The settlement writes to the card, and nothing settles it around the object.
+    assert "lambda state, detail: self._settle_confirmation(action, state, detail)" in wrapper
+    assert "self._settle_confirmation(action" not in body.replace(
+        "lambda state, detail: self._settle_confirmation(action, state, detail)", "")
     # Layer gone, no algorithm, empty input, the task failing, and both
     # successes each settle the card; every other refusal goes through not_run.
-    assert '"not_run", "the layer is no longer in the project"' in body
-    assert '"not_run", missing' in body
+    assert 'settlement.settle("not_run", "the layer is no longer in the project")' in body
+    assert 'settlement.settle("not_run", missing)' in body
     assert body.count("self._action_failed(") == 1, "a refusal bypasses not_run and leaves the card running"
     assert '"failed", "QGIS stopped the {} before it finished"' in body
-    assert body.count('self._settle_confirmation(action, "done"') == 1
     assert '"done" if (output_name and produced != 0) else "empty"' in body
-    # Every early return in the body sits right after a settle or not_run().
-    lines = body.splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() == "return" and "def completed" not in "\n".join(lines[max(0, index - 3):index]):
-            window = "\n".join(lines[max(0, index - 14):index])
-            assert "_settle_confirmation" in window or "not_run(" in window or "self.dock is None" in window, (
-                "an exit leaves the card running:\n" + window)
+    assert "settlement.settle(*confirm_card.check_outcome(output_layer is not None, produced))" in body
 
 
 # -- statuses: outcomes stay, only progress notes fade -------------------------------
@@ -480,3 +493,8 @@ def test_markup_in_a_name_is_shown_as_characters_in_a_tooltip():
     assert elided.count("self.setToolTip(plain_tooltip(self._full))") == 2
     assert "self.setToolTip(self._full)" not in UI
     assert "self.setToolTip(hint)" not in UI
+    # An icon button's tooltip can name a file or layer ("Remove <file> from this task").
+    assert "self.setToolTip(tooltip)" not in UI
+    assert "self.setToolTip(plain_tooltip(tooltip))" in UI
+    remove = panel_state.plain_tooltip("Remove {} from this task".format("<b>plan</b>.pdf"))
+    assert "<b>" not in remove and "&lt;b&gt;plan&lt;/b&gt;.pdf" in remove

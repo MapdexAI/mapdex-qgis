@@ -539,7 +539,8 @@ class IconButton(QToolButton):
         super().__init__(parent)
         self.setObjectName(object_name)
         self._spec = (icon_name, colour_key, icon_size)
-        self.setToolTip(tooltip)
+        # Some of these name a file or a layer ("Remove <file> from this task").
+        self.setToolTip(plain_tooltip(tooltip))
         self.setAccessibleName(tooltip)
         self.setText(tooltip)
         self.setToolButtonStyle(enum_member(Qt, "ToolButtonStyle", "ToolButtonIconOnly"))
