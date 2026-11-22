@@ -162,7 +162,7 @@ def test_the_path_the_server_uses_applies_the_checks():
     # through _run_processing_operation. The raster and degrees checks lived
     # only in the named-capability wrapper, so on that path they did not exist.
     # A guard nothing on the user's path calls is not a guard.
-    calls = _calls(_method("_run_processing_operation"))
+    calls = _calls(_method("_run_processing_steps"))
     assert "_processing_refusal" in calls
     assert "_metric_plan" in calls
     assert "_reprojected_copy" in calls
@@ -175,5 +175,5 @@ def test_the_textual_copy_is_made_before_the_reprojection():
     # JSON field stops it exactly as it stops the buffer.
     source = ast.get_source_segment(
         (ROOT / "mapdex_qgis" / "plugin.py").read_text(encoding="utf-8"),
-        _method("_run_processing_operation"))
+        _method("_run_processing_steps"))
     assert source.index("self._textual_copy(") < source.index("self._reprojected_copy(")

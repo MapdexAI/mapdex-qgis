@@ -127,6 +127,8 @@ def _row(step: Mapping[str, Any], position: int) -> dict[str, Any]:
         "tone": _TONES.get(status, "quiet"),
         "detail": detail,
         "duration": format_duration(step.get("duration_ms")),
+        # The raw value too, so a collapsed trace can state the turn's total.
+        "duration_ms": max(0, _int(step.get("duration_ms"))),
         "params": format_params(step.get("params")),
         "reason": str(step.get("reason") or "").strip(),
         "error_code": str(error.get("code") or "") if error else "",

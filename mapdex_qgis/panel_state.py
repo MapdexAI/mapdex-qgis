@@ -18,6 +18,7 @@ assembled across three widget callbacks that can drift apart.
 """
 from __future__ import annotations
 
+import html
 from typing import Any, Mapping
 
 from ._vendor.nivo.providers import RUNTIME_BYOK
@@ -93,22 +94,80 @@ JOBS_LOCKED_NOTICE = "Connect Mapdex to see your tasks, their progress and their
 # notice and prepared turns belong to the conversation after a provider can
 # answer; showing them here made onboarding and chat look like one broken
 # transcript. Keep the value proposition short enough to survive a 420 px dock.
-FIRST_OPEN_TITLE = "Your map-aware assistant, inside QGIS"
+FIRST_OPEN_TITLE = "Ask your map in plain language"
 FIRST_OPEN_PROMPT = (
-    "Connect Mapdex to use Nivo in QGIS. You can choose Mapdex, your own "
-    "provider or a local model after connecting."
+    "Nivo measures answers from your layers, styles them and runs QGIS tools "
+    "after you say yes. Send scanned maps to Mapdex and get them back placed."
+)
+# Three things that are true of the product, each checkable on first use. A
+# list of features would be a brochure; these are the promises the person can
+# hold the panel to.
+CONNECT_POINTS = (
+    "Numbers come from QGIS measurements, not guesses",
+    "It asks before it changes or creates data",
+    "Use Mapdex, your own API key or a local model",
 )
 
-# The connection action states the product value; model routing is a Settings
-# decision after identity, project and capability context exist.
-CONNECT_PROMISE = (
-    "Recommended. Free to start. Ask Nivo and run verified Georeference, "
-    "digitize, validate and batch workflows."
-)
-# The same action to somebody already answering from their own model. It is an
-# upgrade for them, not the thing to press, and telling them it is
-# "Recommended. Free to start." describes a decision they have already made.
+# The line under the one button: what pressing it does next, so a browser
+# opening is not a surprise.
+CONNECT_PROMISE = "Opens your browser to sign in or create a free account."
+# Kept as a separate name for the plugin's existing reference; there is one
+# connection gate now, so the sentence is the same.
 CONNECT_PROMISE_UPGRADE = CONNECT_PROMISE
+
+# ---------------------------------------------------------------------------
+# Which model answers in Nivo
+# ---------------------------------------------------------------------------
+#
+# Three choices, as radio cards, mapped onto the provider values the stored
+# settings already use. The vendor menu appears only under "My own API key",
+# because the person choosing Mapdex or a local model has no vendor to pick.
+MODEL_CHOICES = (
+    ("mapdex", "Mapdex",
+     "Included in your plan. What you ask about the map is sent to Mapdex."),
+    ("own", "My own API key",
+     "Questions go straight from QGIS to your provider. The key stays in QGIS's encrypted store."),
+    ("local", "A local model",
+     "Runs on your machine, for example with Ollama."),
+)
+MODEL_FIELDS_HINT = (
+    "The key and model fields appear only when you choose your own key or a local model."
+)
+LOCAL_PROVIDER = "ollama"
+KEY_PROVIDER_CHOICES = tuple(
+    (label, value) for label, value in (
+        ("OpenAI", "openai"),
+        ("Anthropic", "anthropic"),
+        ("Google Gemini", "gemini"),
+        ("OpenAI-compatible endpoint", "openai_compatible"),
+    )
+)
+
+
+def model_choice_for(provider: str) -> str:
+    """Which of the three cards a stored provider value belongs to."""
+    provider = str(provider or "")
+    if not provider:
+        return "mapdex"
+    if provider == LOCAL_PROVIDER:
+        return "local"
+    return "own"
+
+
+def model_fields_for(provider: str) -> dict[str, bool]:
+    """Which fields the Settings view shows for a provider value.
+
+    Mapdex shows none. A local model needs a model and an endpoint and no key.
+    A vendor key needs the vendor, a model and the key; only a compatible
+    endpoint also needs its address.
+    """
+    choice = model_choice_for(provider)
+    return {
+        "vendor": choice == "own",
+        "model": choice != "mapdex",
+        "endpoint": provider in ("openai_compatible", LOCAL_PROVIDER),
+        "key": choice == "own",
+    }
 
 
 def is_first_open(connected: bool, has_provider: bool = False) -> bool:
@@ -224,6 +283,50 @@ def key_state_line(provider: str, has_key: bool) -> str:
     return "No key stored yet. Paste one, or choose Mapdex (hosted) to use your plan."
 
 
+def send_enabled(can_ask: bool, busy: bool, text: str | None) -> bool:
+    """Send is live only when there is a question to send.
+
+    The send arrow is a filled blue control, and a screen carries one filled
+    blue action. Lit over an empty field it competed with the action that did
+    matter: a "Needs your OK" card's own button showed as a second blue on the
+    same screen, and pressing the arrow there sent nothing.
+    """
+    return bool(can_ask) and not busy and bool(str(text or "").strip())
+
+
+def plain_tooltip(text: str | None) -> str:
+    """A tooltip that shows its text as characters, whatever the text holds.
+
+    Qt guesses whether a tooltip is rich text from its content, so a workspace,
+    layer or file named "<b>Atlas</b>" rendered bold, and an <img> in a name
+    could point anywhere. These tooltips carry server, file, layer and account
+    text, so the text is escaped and marked as rich text explicitly: the guess
+    is never made, and every character reads as typed.
+    """
+    text = str(text or "")
+    if not text:
+        return ""
+    return "<qt>{}</qt>".format(html.escape(text, quote=False).replace("\n", "<br>"))
+
+
+# Tones that never fade, whatever the caller says: a warning or an error is
+# read when the person looks back, not within nine seconds.
+_STAYING_TONES = frozenset(("warn", "err"))
+
+
+def status_fades(tone: str, transient: bool) -> bool:
+    """Whether a status under the tabs clears itself after a few seconds.
+
+    The one rule for every status the panel shows. A status stays until the
+    next one replaces it, as it did before the redesign: a result ("QGIS
+    rejected the new features."), a refusal, an error, or something the person
+    must do ("Approve code X in your browser") cannot vanish while they look
+    away. Only a progress note the caller marks transient fades, and never one
+    in a warning or error tone.
+    """
+    return bool(transient) and str(tone or "info") not in _STAYING_TONES
+
+
 def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     """What Disconnect reports, including what it did NOT stop.
 
@@ -231,3 +334,17 @@ def disconnect_notice(runtime: Mapping[str, Any] | None) -> str:
     sentence that made a working design look like a leak.
     """
     return "Disconnected. Connect again to ask Nivo and to start tasks."
+
+
+def support_details(plugin_version: str, qgis_version: str, qt_version: str, system: str) -> str:
+    """What "Copy details" puts on the clipboard: versions and the system only.
+
+    No account, email, token, project or file: a person pastes this into a
+    message to us, and it must be safe to paste anywhere.
+    """
+    return "\n".join((
+        "Mapdex for QGIS {}".format(plugin_version or "unknown"),
+        "QGIS {}".format(qgis_version or "unknown"),
+        "Qt {}".format(qt_version or "unknown"),
+        "System {}".format(system or "unknown"),
+    ))

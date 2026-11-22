@@ -367,22 +367,25 @@ def test_the_panel_offers_both_conversation_controls():
     They used to be in the message header beside the avatar, the assistant's
     name, the layer context and the runtime line - six things in a row that no
     real dock width can hold, and two of them acting on something other than
-    the message they sat next to.
+    the message they sat next to. In the redesign the identity row is the
+    header: wordmark, workspace, then the icon controls.
     """
-    row = PANEL[PANEL.index("header_actions_row = QHBoxLayout"):PANEL.index("status = QLabel(")]
+    row = PANEL[PANEL.index('wordmark = ui.label("Mapdex"'):PANEL.index("header.layout_.addLayout(header_row)")]
     for handle in ("nivo_new_button", "nivo_history_button"):
         assert handle in row, "{} is not in the identity row".format(handle)
         assert '"{}": {}'.format(handle, handle) in PANEL, "not handed back to plugin.py"
     # Icon-only, measured: as text buttons on the tab row they took its minimum
     # width to 614 px, which forced the whole panel to 638 and clipped every
     # message at a normal dock width.
-    assert "ToolButtonIconOnly" in row, "they carry labels again, and the panel cannot afford them"
+    assert row.count("ui.IconButton(") >= 2, "they carry labels again, and the panel cannot afford them"
+    ui_source = (ROOT / "mapdex_qgis" / "ui.py").read_text(encoding="utf-8")
+    icon_button = ui_source[ui_source.index("class IconButton"):ui_source.index("class PrimaryButton")]
+    assert "ToolButtonIconOnly" in icon_button
 
 
 def test_new_task_is_described_as_local_so_it_never_reads_as_a_delete():
-    body = PANEL[PANEL.index("nivo_new_button = QToolButton()"):PANEL.index("nivo_history_button =")]
-    tooltip = body[body.index("setToolTip("):]
-    assert "History" in tooltip and "deleted" in tooltip
+    body = PANEL[PANEL.index("nivo_new_button = ui.IconButton("):PANEL.index("nivo_history_button =")]
+    assert "History" in body and "deleted" in body
 
 
 def test_new_task_deletes_nothing_on_the_server():
@@ -575,9 +578,18 @@ def test_the_transcript_renders_history_as_text_and_never_as_markup():
     # as HTML. Replaying stored messages must not open a rich-text path.
     plain = _method(PLUGIN, "_plain", "\n    @guarded")
     assert 'enum_member(Qt, "TextFormat", "PlainText")' in plain
-    render = _method(PLUGIN, "_render_nivo_turns", "\n    # ---")
-    assert "QLabel(str(text))" not in render, "a raw QLabel(text) is an auto-rich-text path"
-    assert render.count("self._plain(QLabel(), text)") == 2
+    # The turns are drawn by small painters now; every one of them puts text
+    # through _plain, and none builds a raw QLabel from it.
+    for painter in ("_render_nivo_turns", "_turn_widget", "_user_bubble", "_start_widget"):
+        body = _method(PLUGIN, painter, "\n    def ")
+        assert "QLabel(str(text))" not in body, painter
+        assert "QLabel(text)" not in body, painter
+    assert "self._plain(" in _method(PLUGIN, "_turn_widget", "\n    def ")
+    assert "self._plain(" in _method(PLUGIN, "_user_bubble", "\n    def ")
+    # And the shared label helper pins plain text by default.
+    ui_source = (ROOT / "mapdex_qgis" / "ui.py").read_text(encoding="utf-8")
+    helper = ui_source[ui_source.index("def label("):ui_source.index("class ElidedLabel")]
+    assert "plain=True" in helper and '"PlainText"' in helper
 
 
 def test_the_network_helpers_touch_no_qgis_state_or_widget():

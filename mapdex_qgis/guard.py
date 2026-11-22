@@ -87,6 +87,20 @@ def _report_safely(report: Callable[..., Any], action: str, exc: BaseException) 
         pass
 
 
+def report_unexpected(owner: Any, action: str, exc: BaseException) -> None:
+    """Report a failure caught outside a guarded method, through the owner's reporter.
+
+    For callbacks that are not methods (a nested function handed to a QGIS
+    signal): `guarded` finds the reporter on its first argument, which such a
+    function does not have, so the error would otherwise be swallowed unseen.
+    """
+    report = getattr(owner, "_report_unexpected", None)
+    if callable(report):
+        _report_safely(report, action, exc)
+    else:
+        log_debug(action, exc)
+
+
 def _max_positional_args(method: Callable[..., Any]) -> int | None:
     """How many positional arguments the method accepts, excluding ``self``.
 

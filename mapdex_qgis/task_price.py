@@ -103,8 +103,7 @@ def price_line(batch_kinds, kind: str, sheets: int, trace_beta: bool = False) ->
         return ""
     leave = figures["per_item_leave_cents"]
     leave_line = (
-        " Placing is free; each placed sheet costs {unit} the first time it is"
-        " downloaded or exported."
+        " Placing is free. A placed map costs {unit} the first time it is downloaded or exported."
     ).format(unit=format_cents(leave)) if leave > 0 else ""
     if figures["total_cents"] == 0:
         if leave > 0:
@@ -116,9 +115,24 @@ def price_line(batch_kinds, kind: str, sheets: int, trace_beta: bool = False) ->
         line += " Tracing is in beta."
     # The total is on the button and is deliberately NOT repeated here: one
     # number in two adjacent places reads as two numbers.
-    return line + (
-        " A trace that fails or finds nothing costs nothing."
-    ) + leave_line
+    return line + " Nothing if it fails or finds nothing." + leave_line
+
+
+def button_price(batch_kinds, kind: str, sheets: int) -> str:
+    """The money shown INSIDE the Start control, on its right.
+
+    "No charge" when the server priced this workflow at nothing, the total when
+    it costs something, and "" when the price is unknown. Unknown is not free,
+    so it is never rendered as "No charge" and never as "$0".
+    """
+    figures = estimate(batch_kinds, kind, max(int(sheets or 0), 1))
+    if figures is None:
+        return ""
+    if not sheets:
+        return ""
+    if figures["total_cents"] == 0:
+        return "No charge"
+    return format_cents(figures["total_cents"])
 
 
 def total_label(batch_kinds, kind: str, sheets: int) -> str:

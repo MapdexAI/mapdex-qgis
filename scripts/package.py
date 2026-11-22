@@ -80,13 +80,38 @@ REQUIRED_ENTRIES = (
 )
 
 
+# Third-party terms that must travel with the third-party files they cover,
+# each with text the file must contain. They used to ship only because the
+# whole assets tree is packed; a glob that changes would drop them silently,
+# and the Lucide notice was once cut down to its ISC half while twelve of the
+# bundled icons are Feather-derived and MIT, whose condition is that the notice
+# ships in every copy.
+REQUIRED_LICENCES = {
+    f"{PLUGIN_DIR_NAME}/assets/lucide/LICENSE.txt": ("ISC License", "Copyright (c) 2013-present Cole Bemis"),
+    f"{PLUGIN_DIR_NAME}/assets/LUCIDE-LICENSE.txt": ("ISC License", "Copyright (c) 2013-present Cole Bemis"),
+    f"{PLUGIN_DIR_NAME}/assets/fonts/OFL.txt": ("SIL OPEN FONT LICENSE",),
+}
+
+
 def _verify(zip_path: Path) -> None:
-    """Refuse to hand over an archive that cannot load."""
+    """Refuse to hand over an archive that cannot load, or that ships without its terms."""
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
-    missing = [name for name in REQUIRED_ENTRIES if name not in names]
-    if missing:
-        raise SystemExit("the package is missing files it needs to import: {}".format(", ".join(missing)))
+        missing = [name for name in REQUIRED_ENTRIES if name not in names]
+        if missing:
+            raise SystemExit("the package is missing files it needs to import: {}".format(", ".join(missing)))
+        problems = []
+        for name, markers in REQUIRED_LICENCES.items():
+            if name not in names:
+                problems.append("{} is missing".format(name))
+                continue
+            text = archive.read(name).decode("utf-8", errors="replace").upper()
+            absent = [marker for marker in markers if marker.upper() not in text]
+            if absent:
+                problems.append("{} lacks {}".format(name, ", ".join(repr(m) for m in absent)))
+    if problems:
+        raise SystemExit("the package would ship third-party files without their licence: {}".format(
+            "; ".join(problems)))
 
 
 def main(argv) -> int:

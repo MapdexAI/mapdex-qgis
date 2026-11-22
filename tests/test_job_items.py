@@ -113,3 +113,19 @@ def test_the_summary_counts_the_list_it_sits_above():
 
 def test_an_empty_batch_says_nothing_rather_than_zero():
     assert items_summary([]) == ""
+
+
+def test_the_jobs_line_names_every_sheet_and_adds_up_to_the_title():
+    import re
+
+    from mapdex_qgis.job_items import jobs_headline, jobs_line
+
+    items = [_item(0, "succeeded"), _item(1, "needs_review"), _item(2, "running"), _item(3, "failed")]
+    assert jobs_headline(items) == "4 sheets: 2 need you"
+    line = jobs_line(items)
+    assert line == "1 ready, 1 working, 1 waiting for review, 1 failed"
+    assert sum(int(n) for n in re.findall(r"(\d+) ", line)) == len(items)
+    # A state this build does not know is counted, never dropped.
+    odd = items + [_item(4, "paused")]
+    assert jobs_line(odd).endswith("1 in another state")
+    assert sum(int(n) for n in re.findall(r"(\d+) ", jobs_line(odd))) == len(odd)

@@ -168,16 +168,20 @@ def test_the_state_is_derived_so_it_can_come_back():
 
 
 def test_first_open_explains_model_choice_comes_after_connection():
-    assert "Connect Mapdex" in panel_state.FIRST_OPEN_PROMPT
-    assert "after connecting" in panel_state.FIRST_OPEN_PROMPT
+    # The connect board says what Nivo is, and that the model is a choice -
+    # made in Settings once connected, never a second door on the first screen.
+    assert "Nivo" in panel_state.FIRST_OPEN_PROMPT
+    assert any("own API key" in point and "local model" in point
+               for point in panel_state.CONNECT_POINTS)
 
 
 def test_connect_says_what_it_is_for_and_that_it_is_free():
     """A button that asks for a decision and supplies no reason reads as
     configuration, which is what Connect read as."""
-    assert "Free" in panel_state.CONNECT_PROMISE
-    for work in ("Georeference", "digitize", "validate", "batch"):
-        assert work in panel_state.CONNECT_PROMISE, work
+    assert "free" in panel_state.CONNECT_PROMISE.lower()
+    assert "browser" in panel_state.CONNECT_PROMISE
+    for work in ("measures", "QGIS tools", "scanned maps"):
+        assert work in panel_state.FIRST_OPEN_PROMPT, work
 
 
 # -- drift guards ------------------------------------------------------------

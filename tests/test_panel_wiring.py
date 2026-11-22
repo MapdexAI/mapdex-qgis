@@ -245,23 +245,15 @@ def test_the_choice_sits_above_the_reading():
     follows as the argument for them. The reading is still first-hand and still
     needs no account; it is no longer in front of the door.
     """
-    order = [PANEL.index(marker) for marker in (
-        "layout.addWidget(sign_in)", "layout.addWidget(pages, 1)")]
-    assert order == sorted(order), "the choice fell below the transcript again"
-    # And it is left-aligned by a stretch, not by an alignment flag: given one,
-    # Qt hands the widget its sizeHint instead of the available width, which
-    # collapsed the reading column to ~320 px in a 1,430 px dock and clipped
-    # every row mid-sentence.
-    # The rule is about the CAPPED READING COLUMN, which is what a centring flag
-    # starves: given one, Qt hands it its sizeHint instead of the available
+    # The connect view is its own view and comes first; the work (tabs, pages,
+    # transcript) is a different view the panel switches to once connected.
+    assert "for view in (connect_view, main_view, settings_page):" in PANEL
+    show = PANEL[PANEL.index("def show_connected(connected):"):PANEL.index("def _back():")]
+    assert "views.setCurrentWidget(connect_view)" in show
+    # The capped column is centred by stretches, never by an alignment flag:
+    # given one, Qt hands the widget its sizeHint instead of the available
     # width, and a 1,430 px dock rendered a 320 px column clipped mid-sentence.
-    #
-    # This was a blanket ban on the string anywhere in the file, and that is a
-    # proxy rather than the rule. It cost a real defect the other way: the drop
-    # zone centred its labels between two stretches to avoid the word, and since
-    # `allow_narrow` floors every wrapping label at one pixel, the hint rendered
-    # one word per line. A stretch centres a WIDGET in a row; a flag centres
-    # TEXT in a widget, and a label that owns its full width needs the flag.
+    # A flag that centres TEXT inside a label that owns its width is fine.
     for line in PANEL.splitlines():
         if "AlignHCenter" not in line:
             continue
@@ -269,10 +261,13 @@ def test_the_choice_sits_above_the_reading():
             "an alignment flag is centring the capped reading column again, "
             "which starves it: {}".format(line.strip())
         )
+    # ONE helper owns the capped column, and every band and scroll body in the
+    # panel goes through it, so all of them share one right edge.
+    ui_source = (PACKAGE / "ui.py").read_text(encoding="utf-8")
+    assert ui_source.count("setMaximumWidth(max_width)") == 2, (
+        "the column cap has more than one owner per kind again"
+    )
     assert "setMaximumWidth(READING_WIDTH)" in PANEL
-    # ONE capped column owns the width. Capping each element separately gave
-    # three different right edges - status in one place, transcript in another,
-    # composer in a third - and a ragged edge is what reads as "not responsive".
     assert PANEL.count("setMaximumWidth(READING_WIDTH)") == 1, (
         "the width is capped in more than one place again"
     )
@@ -281,15 +276,13 @@ def test_the_choice_sits_above_the_reading():
 def test_first_open_is_only_the_connection_gate():
     """Onboarding must not compete with a disabled Nivo transcript.
 
-    Once either route can answer, the normal pages return. Until then the
-    connection label, short title and two actions are the whole screen.
+    Before a connection the connect view is the whole screen: no tabs, no
+    conversation controls. Once connected, the normal view returns.
     """
     body = _method(PLUGIN, "_refresh_ui")
-    assert "(self.status, not first)" in body, body
-    assert "(self.tabs, not first)" in body, body
-    assert "(self.nivo_new_button, not first)" in body, body
-    assert "(self.nivo_history_button, not first)" in body, body
-    # There is no header Settings control to hide: it became a tab.
+    assert "show_connected(connected)" in body, body
+    assert "button.setVisible(bool(connected) and on_nivo)" in body, body
+    # There is no header Settings TOGGLE to hide: Settings is its own view.
     assert "self.settings_button" not in body, body
     assert "_onboarding_settings" not in body, body
 
@@ -297,18 +290,25 @@ def test_first_open_is_only_the_connection_gate():
 def test_own_model_choice_is_not_available_before_connection():
     body = _method(PLUGIN, "_refresh_ui")
     assert "self.own_model" not in body, body
-    assert "self.connect_button.setVisible(not connected)" in body, body
+    # The connect view carries no model choice: that lives in Settings, which
+    # is reachable only from the connected header.
+    connect_view = PANEL[PANEL.index("# Connect view"):PANEL.index("# Main view")]
+    assert "MODEL_CHOICES" not in connect_view
+    assert "model_group" not in connect_view
+    assert "open_settings_button" not in connect_view
 
 
 def test_empty_chat_is_one_owned_welcome_card():
-    """The fixed Nivo header owns the sender; the reading owns its action."""
+    """The empty chat is the start screen; the reading owns its action."""
     opening = _method(PLUGIN, "opening_turns")
     turn = _method(PLUGIN, "_turn_widget")
+    render = _method(PLUGIN, "_render_nivo_turns")
     assert 'opening=True' in opening, opening
     assert 'turns[-1]["actions"].append' in opening, opening
     assert 'See what Nivo can do' in opening, opening
     assert 'mapdexOpeningTurn' in turn, turn
-    assert 'if not turn.get("opening")' in turn, turn
+    # No turn yet: one start widget, not an empty transcript plus a card.
+    assert "self._start_widget(" in render, render
 
 
 def test_idle_nivo_keeps_full_chat_height_without_repeating_stale_status():
@@ -443,31 +443,34 @@ def test_choosing_a_discovery_prompt_removes_the_choice_card():
 def test_all_turns_share_one_wide_screen_measure():
     body = _method(PLUGIN, "_turn_widget")
     assert "QSizePolicy," in PLUGIN[:PLUGIN.index("from qgis.core import")]
-    assert "card.setMaximumWidth(BUBBLE_WIDTH)" in body, body
-    assert body.index("card.setMaximumWidth(BUBBLE_WIDTH)") < body.index("if sender !="), body
+    # The transcript column is capped once; a turn sets no width of its own,
+    # so answers, cards and the start screen share one right edge. Only the
+    # user's bubble is narrower, by design (80% of the column).
+    assert "card.setMaximumWidth" not in body, body
+    assert "transcript.setMaximumWidth(READING_WIDTH)" in PANEL
+    bubble = _method(PLUGIN, "_user_bubble")
+    assert "0.8" in bubble, bubble
 
 
 def test_settings_form_is_a_named_panel_not_loose_fields():
     assert 'connection_panel.setObjectName("mapdexSettingsPanel")' in PANEL
-    assert 'settings_title = QLabel("Settings")' in PANEL
-    assert 'settings_title.setObjectName("mapdexSettingsTitle")' in PANEL
-    assert 'settings_description.setObjectName("mapdexSettingsDescription")' in PANEL
-    assert "Choose how Nivo connects" in PANEL
+    assert 'settings_title = ui.label("Settings"' in PANEL
+    for section in ("Account", "Which model answers in Nivo"):
+        assert section in PANEL, section
 
 
 def test_header_controls_use_direct_svg_icons_and_combos_keep_painted_arrow():
-    assert '"lucide-new-chat.svg"' in PANEL
-    assert '"lucide-history.svg"' in PANEL
-    assert 'control.setIcon(QIcon(os.path.join(' in PANEL
+    # Header icons are the vendored Lucide set, coloured from the theme and
+    # drawn by direct path; a missing file fails loudly in icons.lucide_svg.
+    header = PANEL[PANEL.index('wordmark = ui.label("Mapdex"'):PANEL.index("header.layout_.addLayout(header_row)")]
+    for name in ('"message-square-plus"', '"history"', '"sliders"'):
+        assert name in header, name
     assert "surface_asset_path(asset_name)" not in PANEL
     assert "class _ArrowComboBox(QComboBox):" in PANEL
     assert "painter.drawLine" in PANEL
     # The rule, rather than a count of the combos that happen to exist today.
-    # This was `== 7`, and it went red for a Task page that replaced two combos
-    # with workflow cards and a drop zone - a layout change the guard has no
-    # opinion about. What it is actually protecting is that no combo escapes
-    # the painted chevron: a bare QComboBox draws QGIS's own arrow, which on
-    # this always-dark surface is the missing-icon look the class exists to fix.
+    # A bare QComboBox draws QGIS's own arrow, which is the missing-icon look the
+    # class exists to fix.
     assert "_elastic(QComboBox())" not in PANEL
     assert re.search(r"=\s*QComboBox\(\)", PANEL) is None, (
         "a bare QComboBox is being constructed; use _elastic(_ArrowComboBox())"
@@ -494,11 +497,10 @@ def test_open_project_uses_the_unlocalized_app_route():
 
 
 def test_open_project_uses_the_shared_secondary_button_style():
-    creation = PANEL.index('open_project_button = QPushButton("Open in Mapdex")')
-    placement = PANEL.index("workspace_layout.addLayout", creation)
-    block = PANEL[creation:placement]
-
-    assert 'open_project_button.setObjectName("mapdexSecondaryButton")' in block
+    # The project selector is retired from view (tasks go to the workspace's
+    # default project), but its Open control keeps the shared secondary style
+    # for the code paths that still drive it.
+    assert 'open_project_button = ui.secondary_button("Open in Mapdex")' in PANEL
 
 
 def test_discovery_stays_at_the_top_after_a_tall_resize():
@@ -521,21 +523,18 @@ def test_the_settings_panel_states_the_stored_key_as_text():
 
 def test_the_page_is_changed_through_the_panels_own_switcher():
     """A page change owns three things at once: the stack index, the visibility
-    of every page, and which segment button is checked.
+    of every page, and which tab is current.
 
     `setCurrentIndex` sets one of them. Pressing a Mapdex action therefore moved
     the stack to Task while the Nivo page stayed visible and the tab bar stayed
     on Nivo - the founder's "navigation is broken, the tab looks like Task and
     the content is not".
     """
-    # Narrowed to the page stack: the combo boxes in this method legitimately
-    # use setCurrentIndex, and a check that forbids the whole name would be a
-    # guard nobody can satisfy.
     assert "self.tabs.setCurrentIndex" not in PLUGIN, (
         "the page is moved behind the switcher's back again"
     )
     assert "self.switch_page(" in _method(PLUGIN, "_preselect_workflow")
     assert '"switch_page": switch_page' in PANEL, "the switcher is not handed to the plugin"
-    switcher = PANEL[PANEL.index("def switch_page(target):"):PANEL.index("for index, title in enumerate")]
-    for owned in ("setCurrentIndex", "setVisible", "setChecked"):
+    switcher = PANEL[PANEL.index("def _show_page(target):"):PANEL.index("def show_connected(connected):")]
+    for owned in ("setCurrentIndex", "setVisible", "tab_bar.set_current"):
         assert owned in switcher, "the switcher stopped owning {}".format(owned)

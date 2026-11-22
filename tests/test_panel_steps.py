@@ -10,7 +10,8 @@ calls is the defect this plugin has already shipped more than once.
 import ast
 import pathlib
 
-PLUGIN = (pathlib.Path(__file__).resolve().parents[1] / "mapdex_qgis" / "plugin.py").read_text(
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+PLUGIN = (ROOT / "mapdex_qgis" / "plugin.py").read_text(
     encoding="utf-8"
 )
 
@@ -66,7 +67,7 @@ def test_successful_steps_do_not_dump_raw_arguments_into_chat():
 
 def test_capability_result_updates_the_current_answer_instead_of_adding_one():
     body = _method("_run_capability", "\n    def _report_action_result")
-    assert "self._replace_last_assistant_turn(described)" in body
+    assert "self._replace_last_assistant_turn(described" in body
     assert "self._say(described)" not in body
 
 
@@ -74,8 +75,15 @@ def test_step_text_never_takes_a_rich_text_path():
     # QLabel sniffs its string and renders anything HTML-shaped as HTML. A layer
     # name containing `<b>` is data, and a server-supplied message even more so.
     body = _method("_step_widget", "\n    @guarded")
-    assert "self._plain(QLabel()" in body
+    # The step is a StatusLine, whose detail is the shared plain-text label;
+    # the optional detail line goes through _plain.
+    assert "ui.StatusLine(" in body
+    assert "self._plain(" in body
     assert "QLabel(line)" not in body
+    ui_source = (ROOT / "mapdex_qgis" / "ui.py").read_text(encoding="utf-8")
+    status_line = ui_source[ui_source.index("class StatusLine"):ui_source.index("class IconButton")]
+    assert 'self.detail = label("", "mapdexStatusDetail")' in status_line
+    assert '"PlainText"' in status_line
     assert "setText(" not in body, "text must go through _plain, which pins PlainText"
 
 
@@ -123,8 +131,9 @@ def test_every_assistant_turn_is_built_by_one_constructor():
         if name != "transcript_turn":
             offenders.append(node.lineno)
     assert not offenders, "hand-built transcript entries at lines {}".format(offenders)
-    # Two sites: the user's own turn, and _say for every assistant turn.
-    assert PLUGIN.count("self._nivo_turns.append(") == 2
+    # Three sites: the user's own turn, _say for every assistant turn, and the
+    # confirmation card a consequential action waits on.
+    assert PLUGIN.count("self._nivo_turns.append(") == 3
     assert "def transcript_turn(sender, text" in PLUGIN, "the constructor was renamed away"
 
     # And ASSIGNMENT, which this guard did not cover and which is how the

@@ -117,13 +117,13 @@ def task_guidance(
 
     if state in {"created", "queued", "pending"}:
         return {"phase": "Queued", "progress": 20, "busy": False,
-                "hint": "You can keep working in QGIS. Mapdex is processing your task in the background.",
+                "hint": "You can keep working in QGIS.",
                 "action": ""}
     if state in {"running", "cancelling"}:
         progress = min(95, max(30, int(completed * 100 / total))) if total else 55
         return {"phase": "Processing in Mapdex", "progress": progress,
                 "busy": total == 0 or completed == 0,
-                "hint": "Mapdex is analyzing the source. You can leave this panel open and continue mapping.",
+                "hint": "You can continue mapping while Mapdex works.",
                 "action": ""}
     if review:
         return {"phase": "Review required", "progress": 100, "busy": False,

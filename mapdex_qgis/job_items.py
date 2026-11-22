@@ -51,13 +51,26 @@ _MARK = {
     STATE_CANCELLED: "x",
 }
 
+# The web app's words (My maps): what waits on the person is "Needs you", what
+# is finished and usable is "Ready", what is in flight is "Working".
 _LABEL = {
     STATE_FAILED: "Failed",
-    STATE_NEEDS_REVIEW: "Needs review",
-    STATE_RUNNING: "Running",
+    STATE_NEEDS_REVIEW: "Needs you",
+    STATE_RUNNING: "Working",
     STATE_PENDING: "Queued",
-    STATE_SUCCEEDED: "Done",
+    STATE_SUCCEEDED: "Ready",
     STATE_CANCELLED: "Cancelled",
+}
+
+# The status tone each state is drawn with (`theme.TONES`): a solid icon and a
+# coloured word. Amber waits on you, red failed, green is done, blue is working.
+_TONE = {
+    STATE_FAILED: "err",
+    STATE_NEEDS_REVIEW: "warn",
+    STATE_RUNNING: "working",
+    STATE_PENDING: "neutral",
+    STATE_SUCCEEDED: "ok",
+    STATE_CANCELLED: "neutral",
 }
 
 
@@ -139,6 +152,7 @@ def item_status(item: Dict[str, Any]) -> Dict[str, str]:
         # An unheard-of state is shown as itself. Mapping it onto a known label
         # would report something this build cannot actually know.
         "label": _LABEL.get(state, state.replace("_", " ").capitalize() or "Unknown"),
+        "tone": _TONE.get(state, "neutral"),
         "detail": detail,
     }
 
@@ -153,11 +167,11 @@ def item_action(item: Dict[str, Any]) -> Dict[str, str]:
     state = item_state(item)
     run_id = str((item or {}).get("run_id") or "")
     if state == STATE_FAILED:
-        return {"key": "open", "label": "Why", "run_id": run_id}
+        return {"key": "open", "label": "See why in Mapdex", "run_id": run_id}
     if state == STATE_NEEDS_REVIEW:
-        return {"key": "review", "label": "Review", "run_id": run_id}
+        return {"key": "review", "label": "Open in Mapdex", "run_id": run_id}
     if state == STATE_SUCCEEDED:
-        return {"key": "import", "label": "Add", "run_id": run_id}
+        return {"key": "import", "label": "Add to QGIS", "run_id": run_id}
     return {"key": "", "label": "", "run_id": run_id}
 
 
@@ -184,3 +198,166 @@ def items_summary(items: Sequence[Dict[str, Any]]) -> str:
     if done:
         parts.append("{} done".format(done))
     return " · ".join(parts)
+
+
+def _counts(items: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in items or []:
+        state = item_state(item)
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def jobs_headline(items: Sequence[Dict[str, Any]]) -> str:
+    """The Jobs page title: how many sheets, and how many need the person.
+
+    "4 sheets: 1 needs you" leads with what is waiting, the web app's rule for
+    a batch digest. A failure counts as needing the person: nothing else will
+    happen to it until somebody looks.
+    """
+    items = list(items or [])
+    if not items:
+        return ""
+    total = len(items)
+    counts = _counts(items)
+    waiting = counts.get(STATE_NEEDS_REVIEW, 0) + counts.get(STATE_FAILED, 0)
+    sheets = "1 sheet" if total == 1 else "{} sheets".format(total)
+    if waiting:
+        return "{}: {} {}".format(sheets, waiting, "needs you" if waiting == 1 else "need you")
+    if counts.get(STATE_RUNNING, 0) or counts.get(STATE_PENDING, 0):
+        return "{}: working".format(sheets)
+    if counts.get(STATE_SUCCEEDED, 0) == total:
+        return "{}: ready".format(sheets) if total == 1 else "{}: all ready".format(sheets)
+    return "{}: finished".format(sheets)
+
+
+_LINE_WORDS = (
+    (STATE_SUCCEEDED, "ready"),
+    (STATE_RUNNING, "working"),
+    (STATE_PENDING, "queued"),
+    (STATE_NEEDS_REVIEW, "waiting for review"),
+    (STATE_FAILED, "failed"),
+    (STATE_CANCELLED, "cancelled"),
+)
+
+
+def jobs_line(items: Sequence[Dict[str, Any]]) -> str:
+    """The line under the title, naming every sheet by state.
+
+    Its counts add up to the total in the title. "4 sheets: 2 need you" over
+    "1 ready, 1 working, 1 failed" left the sheet waiting on review out, so the
+    line read as three of four. A state this build does not know is counted
+    too, rather than dropped.
+    """
+    counts = _counts(items)
+    parts = []
+    for state, word in _LINE_WORDS:
+        if counts.get(state):
+            parts.append("{} {}".format(counts[state], word))
+    known = {state for state, _word in _LINE_WORDS}
+    other = sum(count for state, count in counts.items() if state not in known)
+    if other:
+        parts.append("{} in another state".format(other))
+    return ", ".join(parts)
+
+
+# -- the batch as one state, with a clock and a real fraction -----------------
+
+_QUEUED = {"created", "queued", "pending"}
+_RUNNING = {"running", "processing"}
+
+
+def batch_status(state: str, counts: Dict[str, Any], active: bool, uploading: bool = False) -> Dict[str, str]:
+    """ONE state for the batch, from the real job state: a tone and a word.
+
+    "Queued" and "Working" are never shown together: the word is what the
+    server says the job is doing now.
+    """
+    state = str(state or "").lower()
+    counts = counts or {}
+
+    def _n(key):
+        try:
+            return max(0, int(counts.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    if uploading:
+        return {"tone": "working", "word": "Uploading"}
+    if active:
+        if state == "cancelling":
+            return {"tone": "working", "word": "Cancelling"}
+        if state in _QUEUED:
+            return {"tone": "working", "word": "Queued"}
+        return {"tone": "working", "word": "Working"}
+    if _n("failed"):
+        return {"tone": "err", "word": "Failed"}
+    if _n("needs_review"):
+        return {"tone": "warn", "word": "Needs you"}
+    if _n("succeeded"):
+        return {"tone": "ok", "word": "Ready"}
+    if _n("cancelled") or state == "cancelled":
+        return {"tone": "neutral", "word": "Cancelled"}
+    return {"tone": "neutral", "word": ""}
+
+
+def sheet_fraction(counts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Sheets done of sheets sent, or None when there is no real fraction.
+
+    Only a batch of more than one sheet has one. A percentage made from steps
+    is never shown: it sits still and reads as stuck.
+    """
+    counts = counts or {}
+    try:
+        total = int(counts.get("total", 0) or 0)
+        done = sum(max(0, int(counts.get(key, 0) or 0))
+                   for key in ("succeeded", "needs_review", "failed", "cancelled"))
+    except (TypeError, ValueError):
+        return None
+    if total <= 1:
+        return None
+    done = min(done, total)
+    return {"done": done, "total": total, "text": "{} of {} sheets".format(done, total)}
+
+
+def elapsed_text(seconds: Any) -> str:
+    """A live clock: "12 s", "1 min 12 s", "1 h 3 min"."""
+    try:
+        seconds = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return ""
+    if seconds < 60:
+        return "{} s".format(seconds)
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return "{} min {} s".format(minutes, rest)
+    hours, minutes = divmod(minutes, 60)
+    return "{} h {} min".format(hours, minutes)
+
+
+def running_count(counts: Dict[str, Any]) -> int:
+    """How many sheets are still in progress (at least one while active)."""
+    counts = counts or {}
+    try:
+        total = int(counts.get("total", 0) or 0)
+        done = sum(max(0, int(counts.get(key, 0) or 0))
+                   for key in ("succeeded", "needs_review", "failed", "cancelled"))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, total - done)
+
+
+def created_at_seconds(value: Any) -> float:
+    """Epoch seconds from the server's ISO 8601 `created_at`, or 0.0."""
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
