@@ -1,7 +1,7 @@
 [general]
 name=Mapdex for QGIS
 description=Nivo AI assistant for QGIS: ask questions about your layers and PostGIS in plain language, get measured spatial analysis on the map, run Processing, and georeference or digitize scanned maps with Mapdex.
-version=0.14.0
+version=0.14.1
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 supportsQt6=True
@@ -16,7 +16,23 @@ deprecated=False
 homepage=https://mapdex.ai/qgis
 tracker=https://github.com/MapdexAI/mapdex-qgis/issues
 repository=https://github.com/MapdexAI/mapdex-qgis
-changelog=0.14.0
+changelog=0.14.1
+    - A Processing operation you approved now always ends its card with what
+      happened: Done with the new layer, No result, Not run with the reason
+      (for example the layer was removed), or Failed. It no longer stays at
+      "Running" when nothing ran.
+    - Results, refusals and errors under the tabs stay until the next status
+      instead of fading after a few seconds; only progress notes fade.
+    - The send arrow is lit only when there is a question to send.
+    - Names in tooltips (workspace, layer, file, account) are shown exactly as
+      written, never as formatting.
+    - The Task footer says a placed map is charged the first time it is
+      downloaded or exported.
+    - The Jobs summary line counts every sheet, including those waiting for
+      review.
+    - The bundled icon licence now includes the MIT notice for the icons
+      derived from Feather.
+    0.14.0
     - The panel is redesigned to match the Mapdex web app: a slim header with
       your workspace name, three tabs (Nivo, Task, Jobs) and Settings behind
       the header icon. It follows your QGIS theme, light or dark, and uses the
