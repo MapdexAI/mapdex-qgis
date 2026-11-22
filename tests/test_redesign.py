@@ -447,8 +447,7 @@ def test_every_exit_of_a_confirmed_run_settles_its_card():
     assert "settlement.layer_may_exist = True\n                QgsProject.instance().addMapLayer(output_layer)" in body
     # The settlement writes to the card, and nothing settles it around the object.
     assert "lambda state, detail: self._settle_confirmation(action, state, detail)" in wrapper
-    assert "self._settle_confirmation(action" not in body.replace(
-        "lambda state, detail: self._settle_confirmation(action, state, detail)", "")
+    assert body.count("_settle_confirmation(") == 1, "something settles the card around the settlement"
     # Layer gone, no algorithm, empty input, the task failing, and both
     # successes each settle the card; every other refusal goes through not_run.
     assert 'settlement.settle("not_run", "the layer is no longer in the project")' in body

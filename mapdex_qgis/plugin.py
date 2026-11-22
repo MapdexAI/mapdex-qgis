@@ -5854,8 +5854,8 @@ class MapdexPlugin:
             outcome = describe_processing_outcome(operation, output_name, produced, source_name)
             if output_name and produced != 0:
                 outcome += describe_textual_fields(textual)
-            self._settle_confirmation(
-                action, "done" if (output_name and produced != 0) else "empty",
+            settlement.settle(
+                "done" if (output_name and produced != 0) else "empty",
                 confirm_card.done_detail(output_name, produced))
             self._say(outcome)
             self.iface.mapCanvas().refresh()
